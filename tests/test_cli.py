@@ -228,7 +228,7 @@ def test_scan_url_command_prints_discovered_links(monkeypatch: pytest.MonkeyPatc
     assert "[0.78] https://example.com/jobs/backend - Backend Engineer" in result.output
 
 
-def test_scan_company_uses_saved_careers_url(
+def test_scan_company_uses_saved_career_page(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -252,8 +252,54 @@ def test_scan_company_uses_saved_careers_url(
 
     assert result.exit_code == 0
     assert scanned_urls == ["https://example.com/careers"]
-    assert "Scanning Acme: https://example.com/careers" in result.output
+    assert "Scanning Acme: 1 careers page(s)" in result.output
+    assert "Scanning URL: https://example.com/careers" in result.output
     assert "No job links discovered." in result.output
+
+
+def test_company_career_page_commands_and_scan_multiple_pages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scanned_urls: list[str] = []
+
+    async def fake_scan_careers_page(url: str) -> CareersPageScanResult:
+        scanned_urls.append(url)
+        return CareersPageScanResult(
+            source_url=url,
+            final_url=url,
+            candidates_scanned=0,
+            confidence=ExtractionConfidence.LOW,
+        )
+
+    database = tmp_path / "career-pages.sqlite3"
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    monkeypatch.setattr("callumployed.cli.scan_careers_page", fake_scan_careers_page)
+
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com/main"], env=env)
+    add_page_result = runner.invoke(
+        app,
+        [
+            "companies",
+            "add-career-page",
+            "1",
+            "https://example.com/internships",
+            "--label",
+            "Internships",
+        ],
+        env=env,
+    )
+    list_pages_result = runner.invoke(app, ["companies", "career-pages", "1"], env=env)
+    scan_result = runner.invoke(app, ["scan", "company", "1"], env=env)
+
+    assert add_page_result.exit_code == 0
+    assert "Added career page #2: https://example.com/internships" in add_page_result.output
+    assert list_pages_result.exit_code == 0
+    assert "1: https://example.com/main (Main)" in list_pages_result.output
+    assert "2: https://example.com/internships (Internships)" in list_pages_result.output
+    assert scan_result.exit_code == 0
+    assert scanned_urls == ["https://example.com/main", "https://example.com/internships"]
+    assert "Scanning Acme: 2 careers page(s)" in scan_result.output
 
 
 def test_database_commands_and_options_are_hidden_from_help() -> None:

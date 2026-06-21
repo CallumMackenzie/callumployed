@@ -20,15 +20,13 @@ def test_initial_schema_creates_minimal_tracking_tables() -> None:
         )
     }
 
-    assert {"companies", "roles", "scan_runs", "events"}.issubset(tables)
+    assert {"companies", "company_career_pages", "roles", "scan_runs", "events"}.issubset(tables)
 
 
 def test_initial_schema_rejects_invalid_role_status() -> None:
     connection = sqlite3.connect(":memory:")
     apply_initial_schema(connection)
-    connection.execute(
-        "INSERT INTO companies (id, name, careers_url) VALUES (1, 'Acme', 'https://example.com')"
-    )
+    connection.execute("INSERT INTO companies (id, name) VALUES (1, 'Acme')")
 
     try:
         connection.execute(
@@ -48,8 +46,14 @@ def test_initial_schema_supports_company_role_scan_and_event() -> None:
     apply_initial_schema(connection)
     connection.execute(
         """
-        INSERT INTO companies (id, name, careers_url, notes, prestige_tier)
-        VALUES (1, 'Acme', 'https://example.com/careers', 'Interesting infra team.', 'A')
+        INSERT INTO companies (id, name, notes, prestige_tier)
+        VALUES (1, 'Acme', 'Interesting infra team.', 'A')
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO company_career_pages (company_id, url, label)
+        VALUES (1, 'https://example.com/careers', 'Main')
         """
     )
     connection.execute(
@@ -89,11 +93,23 @@ def test_initial_schema_supports_company_role_scan_and_event() -> None:
 
     row = connection.execute(
         """
-        SELECT companies.name, roles.title, roles.role_status, scan_runs.scan_status
+        SELECT
+            companies.name,
+            company_career_pages.url,
+            roles.title,
+            roles.role_status,
+            scan_runs.scan_status
         FROM companies
+        JOIN company_career_pages ON company_career_pages.company_id = companies.id
         JOIN roles ON roles.company_id = companies.id
         JOIN scan_runs ON scan_runs.company_id = companies.id
         """
     ).fetchone()
 
-    assert row == ("Acme", "Software Engineer", "discovered", "succeeded")
+    assert row == (
+        "Acme",
+        "https://example.com/careers",
+        "Software Engineer",
+        "discovered",
+        "succeeded",
+    )

@@ -36,11 +36,19 @@ class AppModel(BaseModel):
 class Company(AppModel):
     id: int | None = None
     name: str
-    careers_url: str
     created_at: datetime | None = None
     updated_at: datetime | None = None
     notes: str | None = None
     prestige_tier: str | None = None
+
+
+class CompanyCareerPage(AppModel):
+    id: int | None = None
+    company_id: int
+    url: str
+    label: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class Role(AppModel):

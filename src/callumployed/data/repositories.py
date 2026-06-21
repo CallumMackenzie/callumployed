@@ -1,6 +1,14 @@
 import turso
 
-from callumployed.data.models import Company, Event, EventSource, Role, RoleListItem, RoleStatus
+from callumployed.data.models import (
+    Company,
+    CompanyCareerPage,
+    Event,
+    EventSource,
+    Role,
+    RoleListItem,
+    RoleStatus,
+)
 
 
 def _lastrowid(cursor: turso.Cursor) -> int:
@@ -10,21 +18,37 @@ def _lastrowid(cursor: turso.Cursor) -> int:
 
 
 def add_company(connection: turso.Connection, company: Company) -> Company:
+    if _companies_has_legacy_careers_url(connection):
+        cursor = connection.execute(
+            """
+            INSERT INTO companies (name, careers_url, notes, prestige_tier)
+            VALUES (?, ?, ?, ?)
+            """,
+            (company.name, "", company.notes, company.prestige_tier),
+        )
+        connection.commit()
+        return get_company(connection, _lastrowid(cursor))
+
     cursor = connection.execute(
         """
-        INSERT INTO companies (name, careers_url, notes, prestige_tier)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO companies (name, notes, prestige_tier)
+        VALUES (?, ?, ?)
         """,
-        (company.name, company.careers_url, company.notes, company.prestige_tier),
+        (company.name, company.notes, company.prestige_tier),
     )
     connection.commit()
     return get_company(connection, _lastrowid(cursor))
 
 
+def _companies_has_legacy_careers_url(connection: turso.Connection) -> bool:
+    rows = connection.execute("PRAGMA table_info(companies)").fetchall()
+    return any(row["name"] == "careers_url" for row in rows)
+
+
 def get_company(connection: turso.Connection, company_id: int) -> Company:
     row = connection.execute(
         """
-        SELECT id, name, careers_url, created_at, updated_at, notes, prestige_tier
+        SELECT id, name, created_at, updated_at, notes, prestige_tier
         FROM companies
         WHERE id = ?
         """,
@@ -38,12 +62,68 @@ def get_company(connection: turso.Connection, company_id: int) -> Company:
 def list_companies(connection: turso.Connection) -> list[Company]:
     rows = connection.execute(
         """
-        SELECT id, name, careers_url, created_at, updated_at, notes, prestige_tier
+        SELECT id, name, created_at, updated_at, notes, prestige_tier
         FROM companies
         ORDER BY name
         """
     ).fetchall()
     return [Company.model_validate(dict(row)) for row in rows]
+
+
+def add_company_career_page(
+    connection: turso.Connection,
+    career_page: CompanyCareerPage,
+) -> CompanyCareerPage:
+    cursor = connection.execute(
+        """
+        INSERT INTO company_career_pages (company_id, url, label)
+        VALUES (?, ?, ?)
+        """,
+        (
+            career_page.company_id,
+            career_page.url,
+            career_page.label,
+        ),
+    )
+    connection.commit()
+    return get_company_career_page(connection, _lastrowid(cursor))
+
+
+def get_company_career_page(
+    connection: turso.Connection,
+    career_page_id: int,
+) -> CompanyCareerPage:
+    row = connection.execute(
+        """
+        SELECT id, company_id, url, label, created_at, updated_at
+        FROM company_career_pages
+        WHERE id = ?
+        """,
+        (career_page_id,),
+    ).fetchone()
+    if row is None:
+        raise LookupError(f"company career page not found: {career_page_id}")
+    return _career_page_from_row(row)
+
+
+def list_company_career_pages(
+    connection: turso.Connection,
+    company_id: int,
+) -> list[CompanyCareerPage]:
+    rows = connection.execute(
+        """
+        SELECT id, company_id, url, label, created_at, updated_at
+        FROM company_career_pages
+        WHERE company_id = ?
+        ORDER BY id
+        """,
+        (company_id,),
+    ).fetchall()
+    return [_career_page_from_row(row) for row in rows]
+
+
+def _career_page_from_row(row: turso.Row) -> CompanyCareerPage:
+    return CompanyCareerPage.model_validate(dict(row))
 
 
 def add_role(connection: turso.Connection, role: Role) -> Role:

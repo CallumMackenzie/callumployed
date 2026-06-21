@@ -3,7 +3,6 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS companies (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
-    careers_url TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     notes TEXT,
@@ -11,6 +10,19 @@ CREATE TABLE IF NOT EXISTS companies (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_name ON companies (name);
+
+CREATE TABLE IF NOT EXISTS company_career_pages (
+    id INTEGER PRIMARY KEY,
+    company_id INTEGER NOT NULL,
+    url TEXT NOT NULL,
+    label TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (company_id) REFERENCES companies (id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_company_career_pages_company_url
+    ON company_career_pages (company_id, url);
 
 CREATE TABLE IF NOT EXISTS roles (
     id INTEGER PRIMARY KEY,

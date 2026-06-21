@@ -28,7 +28,24 @@ def connect(database: str | Path | None = None) -> turso.Connection:
 def run_migrations(connection: turso.Connection) -> None:
     for migration in sorted(MIGRATIONS_DIR.glob("*.sql")):
         connection.executescript(migration.read_text())
+    _backfill_legacy_company_career_pages(connection)
     connection.commit()
+
+
+def _backfill_legacy_company_career_pages(connection: turso.Connection) -> None:
+    company_columns = connection.execute("PRAGMA table_info(companies)").fetchall()
+    if not any(row["name"] == "careers_url" for row in company_columns):
+        return
+
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO company_career_pages (company_id, url, label)
+        SELECT id, careers_url, 'Main'
+        FROM companies
+        WHERE careers_url IS NOT NULL
+            AND careers_url != ''
+        """
+    )
 
 
 def ensure_initialized() -> None:
