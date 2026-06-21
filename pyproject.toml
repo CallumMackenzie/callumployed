@@ -17,6 +17,7 @@ dependencies = [
   "playwright>=1.44",
   "pydantic>=2.7",
   "pydantic-settings>=2.3",
+  "pyturso>=0.6.1",
   "python-dotenv>=1.0",
   "rich>=13.7",
   "typer>=0.12",
@@ -36,9 +37,6 @@ agents = [
 ]
 mcp = [
   "mcp",
-]
-turso = [
-  "pyturso",
 ]
 
 [project.scripts]

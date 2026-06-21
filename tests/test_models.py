@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from callumployed.models import Event, EventSource, Role, RoleStatus, ScanRun, ScanStatus
+from callumployed.data.models import Event, EventSource, Role, RoleStatus, ScanRun, ScanStatus
 
 
 def test_role_status_values_match_planned_lifecycle() -> None:
@@ -38,7 +38,7 @@ def test_event_source_rejects_future_sources_for_now() -> None:
             company_id=1,
             role_id=1,
             event_type="status_changed",
-            source="mailbox",
+            source="mailbox",  # type: ignore[arg-type]
             summary="Mailbox integration comes later.",
         )
 
