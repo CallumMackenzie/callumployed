@@ -8,6 +8,7 @@ from callumployed.webscraping.models import (
     CareersPageScanResult,
     DiscoveredJobLink,
     ExtractionConfidence,
+    ScoredLinkCandidate,
 )
 
 runner = CliRunner()
@@ -24,6 +25,8 @@ def test_company_and_role_commands_share_database_file(tmp_path: Path) -> None:
             "add",
             "Acme",
             "https://example.com/careers",
+            "--external-browser-port",
+            "9222",
         ],
         env=env,
     )
@@ -122,6 +125,128 @@ def test_roles_list_filters_by_status_and_search_query(tmp_path: Path) -> None:
     assert "Beta - Product Designer" not in location_result.output
     assert empty_result.exit_code == 0
     assert empty_result.output == "No roles found.\n"
+
+
+def test_companies_update_command_sets_scan_options(tmp_path: Path) -> None:
+    database = tmp_path / "company-update.sqlite3"
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com/careers"], env=env)
+    result = runner.invoke(
+        app,
+        [
+            "companies",
+            "update",
+            "1",
+            "--external-browser-port",
+            "9222",
+            "--career-page",
+            "https://example.com/jobs",
+        ],
+        env=env,
+    )
+    show_result = runner.invoke(app, ["companies", "show", "1"], env=env)
+
+    assert result.exit_code == 0
+    assert "Updated company #1: Acme" in result.output
+    assert show_result.exit_code == 0
+    assert "External browser CDP port: 9222" in show_result.output
+    assert "- 1: https://example.com/jobs (Main)" in show_result.output
+
+
+def test_companies_update_requires_at_least_one_flag(tmp_path: Path) -> None:
+    database = tmp_path / "company-empty-update.sqlite3"
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com/careers"], env=env)
+    result = runner.invoke(
+        app,
+        ["companies", "update", "1"],
+        env=env,
+    )
+
+    assert result.exit_code != 0
+    assert "provide at least one of --external-browser-port or" in result.output
+    assert "--career-page" in result.output
+
+
+def test_companies_show_command_prints_saved_company_info(tmp_path: Path) -> None:
+    database = tmp_path / "company-show.sqlite3"
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+
+    runner.invoke(
+        app,
+        [
+            "companies",
+            "add",
+            "Acme",
+            "https://example.com/careers",
+            "--notes",
+            "High-priority target.",
+            "--prestige-tier",
+            "A",
+            "--external-browser-port",
+            "9222",
+        ],
+        env=env,
+    )
+    runner.invoke(
+        app,
+        [
+            "companies",
+            "add-career-page",
+            "1",
+            "https://example.com/internships",
+            "--label",
+            "Internships",
+        ],
+        env=env,
+    )
+
+    result = runner.invoke(app, ["companies", "show", "1"], env=env)
+
+    assert result.exit_code == 0
+    assert "Company #1: Acme" in result.output
+    assert "Prestige tier: A" in result.output
+    assert "Notes: High-priority target." in result.output
+    assert "External browser CDP port: 9222" in result.output
+    assert "Created:" in result.output
+    assert "Updated:" in result.output
+    assert "Career pages:" in result.output
+    assert "- 1: https://example.com/careers (Main)" in result.output
+    assert "- 2: https://example.com/internships (Internships)" in result.output
+
+
+def test_companies_show_reports_missing_company(tmp_path: Path) -> None:
+    database = tmp_path / "missing-company-show.sqlite3"
+
+    result = runner.invoke(
+        app,
+        ["companies", "show", "999"],
+        env={"CALLUMPLOYED_DATABASE_PATH": str(database)},
+    )
+
+    assert result.exit_code != 0
+    assert "company not found: 999" in result.output
+
+
+def test_config_external_browser_port_commands(tmp_path: Path) -> None:
+    database = tmp_path / "config.sqlite3"
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+
+    set_result = runner.invoke(app, ["config", "set-external-browser-port", "9222"], env=env)
+    show_result = runner.invoke(app, ["config", "show"], env=env)
+    clear_result = runner.invoke(app, ["config", "clear-external-browser-port"], env=env)
+    show_after_clear_result = runner.invoke(app, ["config", "show"], env=env)
+
+    assert set_result.exit_code == 0
+    assert "Default external browser CDP port: 9222" in set_result.output
+    assert show_result.exit_code == 0
+    assert "external_browser_port: 9222" in show_result.output
+    assert clear_result.exit_code == 0
+    assert "Default external browser CDP port cleared." in clear_result.output
+    assert show_after_clear_result.exit_code == 0
+    assert show_after_clear_result.output == "No app config set.\n"
 
 
 def test_roles_show_and_update_commands(tmp_path: Path) -> None:
@@ -233,12 +358,44 @@ def test_scan_company_uses_saved_career_page(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scanned_urls: list[str] = []
+    scanned_external_browser_ports: list[int | None] = []
 
-    async def fake_scan_careers_page(url: str) -> CareersPageScanResult:
+    async def fake_scan_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+    ) -> CareersPageScanResult:
         scanned_urls.append(url)
+        scanned_external_browser_ports.append(external_browser_port)
         return CareersPageScanResult(
             source_url=url,
             final_url=url,
+            candidates=[
+                ScoredLinkCandidate(
+                    url="https://example.com/jobs/backend",
+                    source_url=url,
+                    text="Backend Engineer",
+                    confidence=0.78,
+                    reasons=["job-like URL path"],
+                ),
+                ScoredLinkCandidate(
+                    url="https://example.com/about",
+                    source_url=url,
+                    text="About",
+                    confidence=0.0,
+                    reasons=[],
+                ),
+            ],
+            links=[
+                DiscoveredJobLink(
+                    url="https://example.com/jobs/backend",
+                    source_url=url,
+                    text="Backend Engineer",
+                    confidence=0.78,
+                    discovery_method="heuristic",
+                    reasons=["job-like URL path"],
+                )
+            ],
             candidates_scanned=0,
             confidence=ExtractionConfidence.LOW,
         )
@@ -246,15 +403,123 @@ def test_scan_company_uses_saved_career_page(
     database = tmp_path / "scan-company.sqlite3"
     env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
     monkeypatch.setattr("callumployed.cli.scan_careers_page", fake_scan_careers_page)
-    runner.invoke(app, ["companies", "add", "Acme", "https://example.com/careers"], env=env)
+    runner.invoke(
+        app,
+        [
+            "companies",
+            "add",
+            "Acme",
+            "https://example.com/careers",
+            "--external-browser-port",
+            "9222",
+        ],
+        env=env,
+    )
 
     result = runner.invoke(app, ["scan", "company", "1"], env=env)
 
     assert result.exit_code == 0
     assert scanned_urls == ["https://example.com/careers"]
+    assert scanned_external_browser_ports == [9222]
     assert "Scanning Acme: 1 careers page(s)" in result.output
+    assert "Scan run #1" in result.output
+    assert "External browser CDP port: 9222 (company)" in result.output
     assert "Scanning URL: https://example.com/careers" in result.output
-    assert "No job links discovered." in result.output
+    assert "[0.78] https://example.com/jobs/backend - Backend Engineer" in result.output
+
+
+def test_scan_company_uses_default_external_browser_port(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scanned_external_browser_ports: list[int | None] = []
+
+    async def fake_scan_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+    ) -> CareersPageScanResult:
+        scanned_external_browser_ports.append(external_browser_port)
+        return CareersPageScanResult(
+            source_url=url,
+            final_url=url,
+            candidates_scanned=0,
+            confidence=ExtractionConfidence.LOW,
+        )
+
+    database = tmp_path / "scan-company-default-browser.sqlite3"
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    monkeypatch.setattr("callumployed.cli.scan_careers_page", fake_scan_careers_page)
+
+    runner.invoke(app, ["config", "set-external-browser-port", "9222"], env=env)
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com/careers"], env=env)
+    result = runner.invoke(app, ["scan", "company", "1"], env=env)
+
+    assert result.exit_code == 0
+    assert scanned_external_browser_ports == [9222]
+    assert "External browser CDP port: 9222 (app default)" in result.output
+
+
+def test_scan_history_and_show_include_all_candidates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_scan_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+    ) -> CareersPageScanResult:
+        return CareersPageScanResult(
+            source_url=url,
+            final_url=url,
+            title="Example Careers",
+            candidates=[
+                ScoredLinkCandidate(
+                    url="https://example.com/jobs/backend",
+                    source_url=url,
+                    text="Backend Engineer",
+                    confidence=0.78,
+                    reasons=["job-like URL path"],
+                ),
+                ScoredLinkCandidate(
+                    url="https://example.com/about",
+                    source_url=url,
+                    text="About",
+                    confidence=0.0,
+                    reasons=["generic careers navigation text"],
+                ),
+            ],
+            links=[
+                DiscoveredJobLink(
+                    url="https://example.com/jobs/backend",
+                    source_url=url,
+                    text="Backend Engineer",
+                    confidence=0.78,
+                    discovery_method="heuristic",
+                    reasons=["job-like URL path"],
+                )
+            ],
+            candidates_scanned=2,
+            confidence=ExtractionConfidence.MEDIUM,
+        )
+
+    database = tmp_path / "scan-history.sqlite3"
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    monkeypatch.setattr("callumployed.cli.scan_careers_page", fake_scan_careers_page)
+
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com/careers"], env=env)
+    scan_result = runner.invoke(app, ["scan", "company", "1"], env=env)
+    history_result = runner.invoke(app, ["scan", "history"], env=env)
+    show_result = runner.invoke(app, ["scan", "show", "1"], env=env)
+
+    assert scan_result.exit_code == 0
+    assert history_result.exit_code == 0
+    assert "1: [succeeded] Acme (#1)" in history_result.output
+    assert show_result.exit_code == 0
+    assert "Scan run #1: Acme [succeeded]" in show_result.output
+    assert "Page #1: https://example.com/careers" in show_result.output
+    assert "* [0.78] https://example.com/jobs/backend - Backend Engineer" in show_result.output
+    assert "- [0.00] https://example.com/about - About" in show_result.output
 
 
 def test_company_career_page_commands_and_scan_multiple_pages(
@@ -263,7 +528,12 @@ def test_company_career_page_commands_and_scan_multiple_pages(
 ) -> None:
     scanned_urls: list[str] = []
 
-    async def fake_scan_careers_page(url: str) -> CareersPageScanResult:
+    async def fake_scan_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+    ) -> CareersPageScanResult:
+        assert external_browser_port is None
         scanned_urls.append(url)
         return CareersPageScanResult(
             source_url=url,
@@ -289,14 +559,10 @@ def test_company_career_page_commands_and_scan_multiple_pages(
         ],
         env=env,
     )
-    list_pages_result = runner.invoke(app, ["companies", "career-pages", "1"], env=env)
     scan_result = runner.invoke(app, ["scan", "company", "1"], env=env)
 
     assert add_page_result.exit_code == 0
     assert "Added career page #2: https://example.com/internships" in add_page_result.output
-    assert list_pages_result.exit_code == 0
-    assert "1: https://example.com/main (Main)" in list_pages_result.output
-    assert "2: https://example.com/internships (Internships)" in list_pages_result.output
     assert scan_result.exit_code == 0
     assert scanned_urls == ["https://example.com/main", "https://example.com/internships"]
     assert "Scanning Acme: 2 careers page(s)" in scan_result.output

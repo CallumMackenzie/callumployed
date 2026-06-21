@@ -20,7 +20,16 @@ def test_initial_schema_creates_minimal_tracking_tables() -> None:
         )
     }
 
-    assert {"companies", "company_career_pages", "roles", "scan_runs", "events"}.issubset(tables)
+    assert {
+        "companies",
+        "app_config",
+        "company_career_pages",
+        "roles",
+        "scan_runs",
+        "scan_pages",
+        "scan_candidates",
+        "events",
+    }.issubset(tables)
 
 
 def test_initial_schema_rejects_invalid_role_status() -> None:
@@ -46,8 +55,14 @@ def test_initial_schema_supports_company_role_scan_and_event() -> None:
     apply_initial_schema(connection)
     connection.execute(
         """
-        INSERT INTO companies (id, name, notes, prestige_tier)
-        VALUES (1, 'Acme', 'Interesting infra team.', 'A')
+        INSERT INTO companies (
+            id,
+            name,
+            notes,
+            prestige_tier,
+            external_browser_port
+        )
+        VALUES (1, 'Acme', 'Interesting infra team.', 'A', 9222)
         """
     )
     connection.execute(
@@ -95,6 +110,7 @@ def test_initial_schema_supports_company_role_scan_and_event() -> None:
         """
         SELECT
             companies.name,
+            companies.external_browser_port,
             company_career_pages.url,
             roles.title,
             roles.role_status,
@@ -108,6 +124,7 @@ def test_initial_schema_supports_company_role_scan_and_event() -> None:
 
     assert row == (
         "Acme",
+        9222,
         "https://example.com/careers",
         "Software Engineer",
         "discovered",

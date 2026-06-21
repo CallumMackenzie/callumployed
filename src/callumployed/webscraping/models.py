@@ -52,6 +52,7 @@ class CareersPageScanResult(WebscrapingModel):
     source_url: str
     final_url: str
     title: str | None = None
+    candidates: list[ScoredLinkCandidate] = Field(default_factory=list)
     links: list[DiscoveredJobLink] = Field(default_factory=list)
     candidates_scanned: int = 0
     confidence: ExtractionConfidence = ExtractionConfidence.LOW

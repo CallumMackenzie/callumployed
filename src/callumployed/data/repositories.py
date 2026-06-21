@@ -1,3 +1,5 @@
+import json
+
 import turso
 
 from callumployed.data.models import (
@@ -8,7 +10,15 @@ from callumployed.data.models import (
     Role,
     RoleListItem,
     RoleStatus,
+    ScanCandidate,
+    ScanPage,
+    ScanRun,
+    ScanRunListItem,
+    ScanStatus,
 )
+from callumployed.webscraping.models import CareersPageScanResult, ScoredLinkCandidate
+
+EXTERNAL_BROWSER_PORT_CONFIG_KEY = "external_browser_port"
 
 
 def _lastrowid(cursor: turso.Cursor) -> int:
@@ -21,20 +31,37 @@ def add_company(connection: turso.Connection, company: Company) -> Company:
     if _companies_has_legacy_careers_url(connection):
         cursor = connection.execute(
             """
-            INSERT INTO companies (name, careers_url, notes, prestige_tier)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO companies (
+                name,
+                careers_url,
+                notes,
+                prestige_tier,
+                external_browser_port
+            )
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (company.name, "", company.notes, company.prestige_tier),
+            (
+                company.name,
+                "",
+                company.notes,
+                company.prestige_tier,
+                company.external_browser_port,
+            ),
         )
         connection.commit()
         return get_company(connection, _lastrowid(cursor))
 
     cursor = connection.execute(
         """
-        INSERT INTO companies (name, notes, prestige_tier)
-        VALUES (?, ?, ?)
+        INSERT INTO companies (name, notes, prestige_tier, external_browser_port)
+        VALUES (?, ?, ?, ?)
         """,
-        (company.name, company.notes, company.prestige_tier),
+        (
+            company.name,
+            company.notes,
+            company.prestige_tier,
+            company.external_browser_port,
+        ),
     )
     connection.commit()
     return get_company(connection, _lastrowid(cursor))
@@ -45,10 +72,89 @@ def _companies_has_legacy_careers_url(connection: turso.Connection) -> bool:
     return any(row["name"] == "careers_url" for row in rows)
 
 
+def set_config_value(connection: turso.Connection, key: str, value: str) -> None:
+    connection.execute(
+        """
+        INSERT INTO app_config (key, value, updated_at)
+        VALUES (?, ?, datetime('now'))
+        ON CONFLICT(key) DO UPDATE SET
+            value = excluded.value,
+            updated_at = datetime('now')
+        """,
+        (key, value),
+    )
+    connection.commit()
+
+
+def get_config_value(connection: turso.Connection, key: str) -> str | None:
+    row = connection.execute(
+        """
+        SELECT value
+        FROM app_config
+        WHERE key = ?
+        """,
+        (key,),
+    ).fetchone()
+    if row is None:
+        return None
+    return str(row["value"])
+
+
+def list_config_values(connection: turso.Connection) -> dict[str, str]:
+    rows = connection.execute(
+        """
+        SELECT key, value
+        FROM app_config
+        ORDER BY key
+        """
+    ).fetchall()
+    return {str(row["key"]): str(row["value"]) for row in rows}
+
+
+def delete_config_value(connection: turso.Connection, key: str) -> None:
+    connection.execute(
+        """
+        DELETE FROM app_config
+        WHERE key = ?
+        """,
+        (key,),
+    )
+    connection.commit()
+
+
+def set_default_external_browser_port(
+    connection: turso.Connection,
+    external_browser_port: int,
+) -> None:
+    set_config_value(
+        connection,
+        EXTERNAL_BROWSER_PORT_CONFIG_KEY,
+        str(external_browser_port),
+    )
+
+
+def get_default_external_browser_port(connection: turso.Connection) -> int | None:
+    value = get_config_value(connection, EXTERNAL_BROWSER_PORT_CONFIG_KEY)
+    if value is None:
+        return None
+    return int(value)
+
+
+def clear_default_external_browser_port(connection: turso.Connection) -> None:
+    delete_config_value(connection, EXTERNAL_BROWSER_PORT_CONFIG_KEY)
+
+
 def get_company(connection: turso.Connection, company_id: int) -> Company:
     row = connection.execute(
         """
-        SELECT id, name, created_at, updated_at, notes, prestige_tier
+        SELECT
+            id,
+            name,
+            created_at,
+            updated_at,
+            notes,
+            prestige_tier,
+            external_browser_port
         FROM companies
         WHERE id = ?
         """,
@@ -62,12 +168,36 @@ def get_company(connection: turso.Connection, company_id: int) -> Company:
 def list_companies(connection: turso.Connection) -> list[Company]:
     rows = connection.execute(
         """
-        SELECT id, name, created_at, updated_at, notes, prestige_tier
+        SELECT
+            id,
+            name,
+            created_at,
+            updated_at,
+            notes,
+            prestige_tier,
+            external_browser_port
         FROM companies
         ORDER BY name
         """
     ).fetchall()
     return [Company.model_validate(dict(row)) for row in rows]
+
+
+def set_company_external_browser_port(
+    connection: turso.Connection,
+    company_id: int,
+    external_browser_port: int | None,
+) -> Company:
+    connection.execute(
+        """
+        UPDATE companies
+        SET external_browser_port = ?, updated_at = datetime('now')
+        WHERE id = ?
+        """,
+        (external_browser_port, company_id),
+    )
+    connection.commit()
+    return get_company(connection, company_id)
 
 
 def add_company_career_page(
@@ -87,6 +217,36 @@ def add_company_career_page(
     )
     connection.commit()
     return get_company_career_page(connection, _lastrowid(cursor))
+
+
+def set_primary_company_career_page_url(
+    connection: turso.Connection,
+    company_id: int,
+    url: str,
+) -> CompanyCareerPage:
+    career_pages = list_company_career_pages(connection, company_id)
+    if not career_pages:
+        return add_company_career_page(
+            connection,
+            CompanyCareerPage(company_id=company_id, url=url, label="Main"),
+        )
+
+    primary_page = next(
+        (page for page in career_pages if page.label and page.label.lower() == "main"),
+        career_pages[0],
+    )
+    connection.execute(
+        """
+        UPDATE company_career_pages
+        SET url = ?, updated_at = datetime('now')
+        WHERE id = ?
+        """,
+        (url, primary_page.id),
+    )
+    connection.commit()
+    if primary_page.id is None:
+        raise RuntimeError("primary company career page did not include an id")
+    return get_company_career_page(connection, primary_page.id)
 
 
 def get_company_career_page(
@@ -342,6 +502,298 @@ def set_role_status(
     )
     connection.commit()
     return get_role(connection, role_id)
+
+
+def create_scan_run(connection: turso.Connection, company_id: int) -> ScanRun:
+    cursor = connection.execute(
+        """
+        INSERT INTO scan_runs (company_id)
+        VALUES (?)
+        """,
+        (company_id,),
+    )
+    connection.commit()
+    return get_scan_run(connection, _lastrowid(cursor))
+
+
+def finish_scan_run(
+    connection: turso.Connection,
+    scan_run_id: int,
+    scan_status: ScanStatus,
+    *,
+    error: str | None = None,
+    agent_trace: str | None = None,
+) -> ScanRun:
+    connection.execute(
+        """
+        UPDATE scan_runs
+        SET
+            scan_status = ?,
+            finished_at = datetime('now'),
+            error = ?,
+            agent_trace = ?
+        WHERE id = ?
+        """,
+        (scan_status.value, error, agent_trace, scan_run_id),
+    )
+    connection.commit()
+    return get_scan_run(connection, scan_run_id)
+
+
+def get_scan_run(connection: turso.Connection, scan_run_id: int) -> ScanRun:
+    row = connection.execute(
+        """
+        SELECT
+            id,
+            company_id,
+            started_at,
+            finished_at,
+            scan_status,
+            error,
+            created_at,
+            agent_trace
+        FROM scan_runs
+        WHERE id = ?
+        """,
+        (scan_run_id,),
+    ).fetchone()
+    if row is None:
+        raise LookupError(f"scan run not found: {scan_run_id}")
+    return ScanRun.model_validate(dict(row))
+
+
+def list_scan_runs(
+    connection: turso.Connection,
+    *,
+    company_id: int | None = None,
+    limit: int = 10,
+) -> list[ScanRunListItem]:
+    clauses = []
+    values: list[object] = []
+    if company_id is not None:
+        clauses.append("scan_runs.company_id = ?")
+        values.append(company_id)
+    values.append(limit)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = connection.execute(
+        f"""
+        SELECT
+            scan_runs.id,
+            scan_runs.company_id,
+            companies.name AS company_name,
+            scan_runs.started_at,
+            scan_runs.finished_at,
+            scan_runs.scan_status,
+            scan_runs.error,
+            scan_runs.created_at,
+            scan_runs.agent_trace
+        FROM scan_runs
+        JOIN companies ON companies.id = scan_runs.company_id
+        {where}
+        ORDER BY scan_runs.started_at DESC, scan_runs.id DESC
+        LIMIT ?
+        """,
+        values,
+    ).fetchall()
+    return [ScanRunListItem.model_validate(dict(row)) for row in rows]
+
+
+def add_scan_page(
+    connection: turso.Connection,
+    scan_run_id: int,
+    result: CareersPageScanResult,
+    *,
+    company_career_page_id: int | None = None,
+) -> ScanPage:
+    cursor = connection.execute(
+        """
+        INSERT INTO scan_pages (
+            scan_run_id,
+            company_career_page_id,
+            source_url,
+            final_url,
+            title,
+            candidates_scanned,
+            confidence
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            scan_run_id,
+            company_career_page_id,
+            result.source_url,
+            result.final_url,
+            result.title,
+            result.candidates_scanned,
+            result.confidence.value,
+        ),
+    )
+    connection.commit()
+    return get_scan_page(connection, _lastrowid(cursor))
+
+
+def get_scan_page(connection: turso.Connection, scan_page_id: int) -> ScanPage:
+    row = connection.execute(
+        """
+        SELECT
+            id,
+            scan_run_id,
+            company_career_page_id,
+            source_url,
+            final_url,
+            title,
+            candidates_scanned,
+            confidence,
+            created_at
+        FROM scan_pages
+        WHERE id = ?
+        """,
+        (scan_page_id,),
+    ).fetchone()
+    if row is None:
+        raise LookupError(f"scan page not found: {scan_page_id}")
+    return ScanPage.model_validate(dict(row))
+
+
+def list_scan_pages(connection: turso.Connection, scan_run_id: int) -> list[ScanPage]:
+    rows = connection.execute(
+        """
+        SELECT
+            id,
+            scan_run_id,
+            company_career_page_id,
+            source_url,
+            final_url,
+            title,
+            candidates_scanned,
+            confidence,
+            created_at
+        FROM scan_pages
+        WHERE scan_run_id = ?
+        ORDER BY id
+        """,
+        (scan_run_id,),
+    ).fetchall()
+    return [ScanPage.model_validate(dict(row)) for row in rows]
+
+
+def add_scan_candidates(
+    connection: turso.Connection,
+    scan_page_id: int,
+    candidates: list[ScoredLinkCandidate],
+    result: CareersPageScanResult,
+) -> list[ScanCandidate]:
+    selected_links = {link.url: link for link in result.links}
+    created_candidates = []
+    for candidate in candidates:
+        selected_link = selected_links.get(candidate.url)
+        cursor = connection.execute(
+            """
+            INSERT INTO scan_candidates (
+                scan_page_id,
+                url,
+                source_url,
+                text,
+                tag,
+                css_id,
+                css_classes_json,
+                aria_label,
+                title,
+                surrounding_text,
+                confidence,
+                reasons_json,
+                selected,
+                discovery_method
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                scan_page_id,
+                candidate.url,
+                candidate.source_url,
+                candidate.text,
+                candidate.tag,
+                candidate.css_id,
+                json.dumps(list(candidate.css_classes)),
+                candidate.aria_label,
+                candidate.title,
+                candidate.surrounding_text,
+                candidate.confidence,
+                json.dumps(candidate.reasons),
+                1 if selected_link is not None else 0,
+                selected_link.discovery_method if selected_link is not None else None,
+            ),
+        )
+        created_candidates.append(get_scan_candidate(connection, _lastrowid(cursor)))
+    connection.commit()
+    return created_candidates
+
+
+def get_scan_candidate(connection: turso.Connection, scan_candidate_id: int) -> ScanCandidate:
+    row = connection.execute(
+        """
+        SELECT
+            id,
+            scan_page_id,
+            url,
+            source_url,
+            text,
+            tag,
+            css_id,
+            css_classes_json,
+            aria_label,
+            title,
+            surrounding_text,
+            confidence,
+            reasons_json,
+            selected,
+            discovery_method,
+            created_at
+        FROM scan_candidates
+        WHERE id = ?
+        """,
+        (scan_candidate_id,),
+    ).fetchone()
+    if row is None:
+        raise LookupError(f"scan candidate not found: {scan_candidate_id}")
+    return _scan_candidate_from_row(row)
+
+
+def list_scan_candidates(connection: turso.Connection, scan_page_id: int) -> list[ScanCandidate]:
+    rows = connection.execute(
+        """
+        SELECT
+            id,
+            scan_page_id,
+            url,
+            source_url,
+            text,
+            tag,
+            css_id,
+            css_classes_json,
+            aria_label,
+            title,
+            surrounding_text,
+            confidence,
+            reasons_json,
+            selected,
+            discovery_method,
+            created_at
+        FROM scan_candidates
+        WHERE scan_page_id = ?
+        ORDER BY confidence DESC, id
+        """,
+        (scan_page_id,),
+    ).fetchall()
+    return [_scan_candidate_from_row(row) for row in rows]
+
+
+def _scan_candidate_from_row(row: turso.Row) -> ScanCandidate:
+    candidate = dict(row)
+    candidate["css_classes"] = tuple(json.loads(candidate.pop("css_classes_json")))
+    candidate["reasons"] = json.loads(candidate.pop("reasons_json"))
+    candidate["selected"] = bool(candidate["selected"])
+    return ScanCandidate.model_validate(candidate)
 
 
 def add_event(connection: turso.Connection, event: Event) -> Event:

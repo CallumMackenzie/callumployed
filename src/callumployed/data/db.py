@@ -28,8 +28,30 @@ def connect(database: str | Path | None = None) -> turso.Connection:
 def run_migrations(connection: turso.Connection) -> None:
     for migration in sorted(MIGRATIONS_DIR.glob("*.sql")):
         connection.executescript(migration.read_text())
+    _ensure_app_config_table(connection)
+    _ensure_company_external_browser_port_column(connection)
     _backfill_legacy_company_career_pages(connection)
     connection.commit()
+
+
+def _ensure_app_config_table(connection: turso.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app_config (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+
+
+def _ensure_company_external_browser_port_column(connection: turso.Connection) -> None:
+    company_columns = connection.execute("PRAGMA table_info(companies)").fetchall()
+    if any(row["name"] == "external_browser_port" for row in company_columns):
+        return
+
+    connection.execute("ALTER TABLE companies ADD COLUMN external_browser_port INTEGER")
 
 
 def _backfill_legacy_company_career_pages(connection: turso.Connection) -> None:

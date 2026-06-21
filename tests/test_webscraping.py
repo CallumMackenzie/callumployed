@@ -3,6 +3,14 @@ from pathlib import Path
 
 import pytest
 
+from callumployed.webscraping.browser import (
+    CONTENT_SETTLE_MIN_WAIT_MS,
+    CONTENT_SETTLE_TIMEOUT_MS,
+    DEFAULT_TIMEOUT_MS,
+    PROFILE_DIR_NAME,
+    managed_browser_profile_path,
+    navigation_error_message,
+)
 from callumployed.webscraping.classifier import (
     classify_candidates,
     prepare_candidates,
@@ -13,6 +21,15 @@ from callumployed.webscraping.models import ExtractionConfidence, RenderedPageSt
 from callumployed.webscraping.scanner import scan_careers_page
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
+
+
+def test_default_browser_timeout_is_at_least_20_seconds() -> None:
+    assert DEFAULT_TIMEOUT_MS >= 20_000
+
+
+def test_dynamic_content_settle_waits_long_enough_for_hydration() -> None:
+    assert CONTENT_SETTLE_MIN_WAIT_MS >= 10_000
+    assert CONTENT_SETTLE_TIMEOUT_MS >= 20_000
 
 
 def _fixture_page() -> RenderedPageState:
@@ -45,6 +62,51 @@ def test_extract_link_candidates_normalizes_urls_without_deduping() -> None:
     assert "https://jobs.lever.co/example/infra-intern" in urls
     assert "https://example.com/positions/data-platform-engineer" in urls
     assert len([url for url in urls if url.endswith("/jobs/software-engineer-product")]) == 2
+
+
+def test_extract_link_candidates_keeps_all_relative_hrefs_for_scoring() -> None:
+    page = RenderedPageState(
+        url="https://www.tesla.com/careers/search/?query=Software",
+        final_url="https://www.tesla.com/careers/search/?query=Software",
+        html="""
+        <a href="/careers/search/job/software-engineer-intern-123">Software Intern</a>
+        <a href="/careers">Careers</a>
+        <a href="/about">About</a>
+        """,
+    )
+
+    candidates = extract_link_candidates(page)
+    urls = {candidate.url for candidate in candidates}
+
+    assert urls == {
+        "https://www.tesla.com/careers/search/job/software-engineer-intern-123",
+        "https://www.tesla.com/careers",
+        "https://www.tesla.com/about",
+    }
+
+
+def test_tesla_search_result_anchor_is_selected_when_present() -> None:
+    page = RenderedPageState(
+        url="https://www.tesla.com/careers/search/?type=intern&site=US&query=Software",
+        final_url="https://www.tesla.com/careers/search/?type=intern&site=US&query=Software",
+        title="Tesla Careers",
+        html="""
+        <a class="style_TitleLink__PepSM tds-text--h4 tds-link tds-link--secondary"
+           href="/careers/search/job/internship-software-engineer-service-engineering-summer-2026-259221">
+           Internship, <span class="style_highlighted__fVCzm">Software</span>
+           Engineer, Service Engineering (Summer 2026)
+        </a>
+        """,
+    )
+
+    candidates = extract_link_candidates(page)
+    links = asyncio.run(classify_candidates(candidates, page))
+
+    assert links
+    assert links[0].url.endswith(
+        "/careers/search/job/internship-software-engineer-service-engineering-summer-2026-259221"
+    )
+    assert links[0].confidence >= 0.35
 
 
 def test_prepare_candidates_dedupes_by_best_extraction_quality() -> None:
@@ -96,7 +158,14 @@ def test_score_candidates_includes_reasons() -> None:
 def test_scan_careers_page_orchestrates_render_extract_and_score(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def fake_render_careers_page(url: str) -> RenderedPageState:
+    rendered_external_browser_ports: list[int | None] = []
+
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+    ) -> RenderedPageState:
+        rendered_external_browser_ports.append(external_browser_port)
         page = _fixture_page()
         return page.model_copy(update={"url": url})
 
@@ -105,11 +174,32 @@ def test_scan_careers_page_orchestrates_render_extract_and_score(
         fake_render_careers_page,
     )
 
-    result = asyncio.run(scan_careers_page("https://example.com/careers"))
+    result = asyncio.run(
+        scan_careers_page(
+            "https://example.com/careers",
+            external_browser_port=9222,
+        )
+    )
 
+    assert rendered_external_browser_ports == [9222]
     assert result.source_url == "https://example.com/careers"
     assert result.final_url == "https://example.com/careers"
     assert result.title == "Example Careers"
     assert result.candidates_scanned >= 3
+    assert len(result.candidates) == result.candidates_scanned
     assert len(result.links) == 3
     assert result.confidence is ExtractionConfidence.HIGH
+
+
+def test_managed_browser_profile_path_uses_app_data_dir() -> None:
+    profile_path = managed_browser_profile_path()
+
+    assert profile_path.name == PROFILE_DIR_NAME
+    assert "callumployed" in profile_path.parts
+
+
+def test_navigation_error_message_for_403_recommends_external_browser() -> None:
+    message = navigation_error_message("https://example.com", 403)
+
+    assert "companies update" in message
+    assert "--external-browser-port" in message

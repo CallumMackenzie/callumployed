@@ -15,6 +15,7 @@ dependencies = [
   "lxml>=5.2",
   "platformdirs>=4.2",
   "playwright>=1.44",
+  "playwright-stealth>=2.0",
   "pydantic>=2.7",
   "pydantic-settings>=2.3",
   "pyturso>=0.6.1",

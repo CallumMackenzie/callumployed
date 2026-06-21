@@ -1,17 +1,36 @@
 from callumployed.data import db
-from callumployed.data.models import Company, CompanyCareerPage, Role, RoleStatus
+from callumployed.data.models import Company, CompanyCareerPage, Role, RoleStatus, ScanStatus
 from callumployed.data.repositories import (
     add_company,
     add_company_career_page,
     add_role,
+    add_scan_candidates,
+    add_scan_page,
+    clear_default_external_browser_port,
+    create_scan_run,
+    finish_scan_run,
+    get_default_external_browser_port,
     get_event,
     list_companies,
     list_company_career_pages,
+    list_config_values,
     list_role_events,
     list_role_items,
     list_roles,
+    list_scan_candidates,
+    list_scan_pages,
+    list_scan_runs,
+    set_company_external_browser_port,
+    set_default_external_browser_port,
+    set_primary_company_career_page_url,
     set_role_status,
     update_role,
+)
+from callumployed.webscraping.models import (
+    CareersPageScanResult,
+    DiscoveredJobLink,
+    ExtractionConfidence,
+    ScoredLinkCandidate,
 )
 
 
@@ -21,11 +40,43 @@ def test_company_repository_adds_and_lists_companies() -> None:
 
     company = add_company(
         connection,
-        Company(name="Acme", prestige_tier="A"),
+        Company(
+            name="Acme",
+            prestige_tier="A",
+            external_browser_port=9222,
+        ),
     )
 
     assert company.id == 1
+    assert company.external_browser_port == 9222
     assert list_companies(connection) == [company]
+
+
+def test_company_repository_sets_external_browser_port() -> None:
+    connection = db.connect(":memory:")
+    db.run_migrations(connection)
+
+    company = add_company(connection, Company(name="Acme"))
+    assert company.id is not None
+
+    updated_company = set_company_external_browser_port(connection, company.id, 9222)
+
+    assert updated_company.external_browser_port == 9222
+
+
+def test_config_repository_sets_lists_and_clears_default_external_browser_port() -> None:
+    connection = db.connect(":memory:")
+    db.run_migrations(connection)
+
+    set_default_external_browser_port(connection, 9222)
+
+    assert get_default_external_browser_port(connection) == 9222
+    assert list_config_values(connection) == {"external_browser_port": "9222"}
+
+    clear_default_external_browser_port(connection)
+
+    assert get_default_external_browser_port(connection) is None
+    assert list_config_values(connection) == {}
 
 
 def test_company_repository_tracks_multiple_career_pages() -> None:
@@ -66,6 +117,113 @@ def test_company_repository_tracks_multiple_career_pages() -> None:
         "https://example.com/internships",
         "https://example.com/students",
     ]
+
+
+def test_company_repository_updates_primary_career_page() -> None:
+    connection = db.connect(":memory:")
+    db.run_migrations(connection)
+
+    company = add_company(connection, Company(name="Acme"))
+    assert company.id is not None
+    add_company_career_page(
+        connection,
+        CompanyCareerPage(
+            company_id=company.id,
+            url="https://example.com/main",
+            label="Main",
+        ),
+    )
+    add_company_career_page(
+        connection,
+        CompanyCareerPage(
+            company_id=company.id,
+            url="https://example.com/internships",
+            label="Internships",
+        ),
+    )
+
+    updated_page = set_primary_company_career_page_url(
+        connection,
+        company.id,
+        "https://example.com/jobs",
+    )
+    career_pages = list_company_career_pages(connection, company.id)
+
+    assert updated_page.url == "https://example.com/jobs"
+    assert [page.url for page in career_pages] == [
+        "https://example.com/jobs",
+        "https://example.com/internships",
+    ]
+
+
+def test_scan_repository_persists_pages_and_candidates() -> None:
+    connection = db.connect(":memory:")
+    db.run_migrations(connection)
+
+    company = add_company(connection, Company(name="Acme"))
+    assert company.id is not None
+    career_page = add_company_career_page(
+        connection,
+        CompanyCareerPage(company_id=company.id, url="https://example.com/careers"),
+    )
+    assert career_page.id is not None
+    scan_run = create_scan_run(connection, company.id)
+    assert scan_run.id is not None
+    result = CareersPageScanResult(
+        source_url="https://example.com/careers",
+        final_url="https://example.com/careers",
+        candidates=[
+            ScoredLinkCandidate(
+                url="https://example.com/jobs/backend",
+                source_url="https://example.com/careers",
+                text="Backend Engineer",
+                confidence=0.78,
+                reasons=["job-like URL path"],
+            ),
+            ScoredLinkCandidate(
+                url="https://example.com/about",
+                source_url="https://example.com/careers",
+                text="About",
+                confidence=0.0,
+                reasons=[],
+            ),
+        ],
+        links=[
+            DiscoveredJobLink(
+                url="https://example.com/jobs/backend",
+                source_url="https://example.com/careers",
+                text="Backend Engineer",
+                confidence=0.78,
+                discovery_method="heuristic",
+                reasons=["job-like URL path"],
+            )
+        ],
+        candidates_scanned=2,
+        confidence=ExtractionConfidence.MEDIUM,
+    )
+
+    scan_page = add_scan_page(
+        connection,
+        scan_run.id,
+        result,
+        company_career_page_id=career_page.id,
+    )
+    assert scan_page.id is not None
+    add_scan_candidates(connection, scan_page.id, result.candidates, result)
+    finished_run = finish_scan_run(connection, scan_run.id, ScanStatus.SUCCEEDED)
+    scan_runs = list_scan_runs(connection)
+    scan_pages = list_scan_pages(connection, scan_run.id)
+    scan_candidates = list_scan_candidates(connection, scan_page.id)
+
+    assert finished_run.scan_status is ScanStatus.SUCCEEDED
+    assert scan_runs[0].company_name == "Acme"
+    assert scan_pages == [scan_page]
+    assert [candidate.url for candidate in scan_candidates] == [
+        "https://example.com/jobs/backend",
+        "https://example.com/about",
+    ]
+    assert scan_candidates[0].selected is True
+    assert scan_candidates[1].selected is False
 
 
 def test_company_repository_adds_company_with_legacy_careers_url_column() -> None:

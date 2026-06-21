@@ -40,6 +40,7 @@ class Company(AppModel):
     updated_at: datetime | None = None
     notes: str | None = None
     prestige_tier: str | None = None
+    external_browser_port: int | None = None
 
 
 class CompanyCareerPage(AppModel):
@@ -86,6 +87,41 @@ class ScanRun(AppModel):
     error: str | None = None
     created_at: datetime | None = None
     agent_trace: str | None = None
+
+
+class ScanRunListItem(ScanRun):
+    company_name: str
+
+
+class ScanPage(AppModel):
+    id: int | None = None
+    scan_run_id: int
+    company_career_page_id: int | None = None
+    source_url: str
+    final_url: str
+    title: str | None = None
+    candidates_scanned: int = 0
+    confidence: str = "low"
+    created_at: datetime | None = None
+
+
+class ScanCandidate(AppModel):
+    id: int | None = None
+    scan_page_id: int
+    url: str
+    source_url: str
+    text: str | None = None
+    tag: str = "a"
+    css_id: str | None = None
+    css_classes: tuple[str, ...] = ()
+    aria_label: str | None = None
+    title: str | None = None
+    surrounding_text: str | None = None
+    confidence: float
+    reasons: list[str] = Field(default_factory=list)
+    selected: bool = False
+    discovery_method: str | None = None
+    created_at: datetime | None = None
 
 
 class Event(AppModel):

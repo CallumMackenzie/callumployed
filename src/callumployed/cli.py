@@ -4,17 +4,31 @@ from typing import Annotated
 import typer
 
 from callumployed.data import db
-from callumployed.data.models import Company, CompanyCareerPage, Role, RoleStatus
+from callumployed.data.models import Company, CompanyCareerPage, Role, RoleStatus, ScanStatus
 from callumployed.data.repositories import (
     add_company,
     add_company_career_page,
     add_role,
+    add_scan_candidates,
+    add_scan_page,
+    clear_default_external_browser_port,
+    create_scan_run,
+    finish_scan_run,
     get_company,
+    get_default_external_browser_port,
     get_role,
+    get_scan_run,
     list_companies,
     list_company_career_pages,
+    list_config_values,
     list_role_events,
     list_role_items,
+    list_scan_candidates,
+    list_scan_pages,
+    list_scan_runs,
+    set_company_external_browser_port,
+    set_default_external_browser_port,
+    set_primary_company_career_page_url,
     set_role_status,
     update_role,
 )
@@ -26,10 +40,12 @@ app = typer.Typer(help="Local-first job-search automation CLI.")
 companies_app = typer.Typer(help="Manage target companies.")
 roles_app = typer.Typer(help="Manage job roles.")
 scan_app = typer.Typer(help="Scan careers pages.")
+config_app = typer.Typer(help="Manage app-wide configuration.")
 
 app.add_typer(companies_app, name="companies")
 app.add_typer(roles_app, name="roles")
 app.add_typer(scan_app, name="scan")
+app.add_typer(config_app, name="config")
 
 
 @app.callback()
@@ -48,6 +64,13 @@ def add_company_command(
         str | None,
         typer.Option("--prestige-tier", help="Optional tier label."),
     ] = None,
+    external_browser_port: Annotated[
+        int | None,
+        typer.Option(
+            "--external-browser-port",
+            help="Optional CDP port for an already-running external Chromium browser.",
+        ),
+    ] = None,
 ) -> None:
     """Add a target company."""
     with db.connect() as connection:
@@ -57,6 +80,7 @@ def add_company_command(
                 name=name,
                 notes=notes,
                 prestige_tier=prestige_tier,
+                external_browser_port=external_browser_port,
             ),
         )
         if company.id is None:
@@ -66,6 +90,44 @@ def add_company_command(
             CompanyCareerPage(company_id=company.id, url=career_page_url, label="Main"),
         )
     typer.echo(f"Added company #{company.id}: {company.name}")
+
+
+@companies_app.command("update")
+def update_company_command(
+    company_id: Annotated[int, typer.Argument(help="Company ID.")],
+    external_browser_port: Annotated[
+        int | None,
+        typer.Option(
+            "--external-browser-port",
+            help="CDP port for an already-running external Chromium browser.",
+        ),
+    ] = None,
+    career_page: Annotated[
+        str | None,
+        typer.Option("--career-page", help="Primary careers page URL."),
+    ] = None,
+) -> None:
+    """Update scan settings for a company."""
+    if external_browser_port is None and career_page is None:
+        raise typer.BadParameter(
+            "provide at least one of --external-browser-port or --career-page"
+        )
+
+    with db.connect() as connection:
+        try:
+            company = get_company(connection, company_id)
+            if external_browser_port is not None:
+                company = set_company_external_browser_port(
+                    connection,
+                    company_id,
+                    external_browser_port,
+                )
+            if career_page is not None:
+                set_primary_company_career_page_url(connection, company_id, career_page)
+        except LookupError as error:
+            raise typer.BadParameter(str(error)) from error
+
+    typer.echo(f"Updated company #{company.id}: {company.name}")
 
 
 @companies_app.command("list")
@@ -80,6 +142,40 @@ def list_companies_command() -> None:
 
     for company in companies:
         typer.echo(f"{company.id}: {company.name}")
+
+
+@companies_app.command("show")
+def show_company_command(
+    company_id: Annotated[int, typer.Argument(help="Company ID.")],
+) -> None:
+    """Show all saved info for a company."""
+    with db.connect() as connection:
+        try:
+            company = get_company(connection, company_id)
+        except LookupError as error:
+            raise typer.BadParameter(str(error)) from error
+        career_pages = list_company_career_pages(connection, company_id)
+
+    typer.echo(f"Company #{company.id}: {company.name}")
+    if company.prestige_tier:
+        typer.echo(f"Prestige tier: {company.prestige_tier}")
+    if company.notes:
+        typer.echo(f"Notes: {company.notes}")
+    if company.external_browser_port is not None:
+        typer.echo(f"External browser CDP port: {company.external_browser_port}")
+    if company.created_at:
+        typer.echo(f"Created: {company.created_at}")
+    if company.updated_at:
+        typer.echo(f"Updated: {company.updated_at}")
+
+    if not career_pages:
+        typer.echo("Career pages: none")
+        return
+
+    typer.echo("Career pages:")
+    for career_page in career_pages:
+        label = f" ({career_page.label})" if career_page.label else ""
+        typer.echo(f"- {career_page.id}: {career_page.url}{label}")
 
 
 @companies_app.command("add-career-page")
@@ -106,25 +202,38 @@ def add_company_career_page_command(
     typer.echo(f"Added career page #{career_page.id}: {career_page.url}")
 
 
-@companies_app.command("career-pages")
-def list_company_career_pages_command(
-    company_id: Annotated[int, typer.Argument(help="Company ID.")],
+@config_app.command("set-external-browser-port")
+def set_default_external_browser_port_command(
+    port: Annotated[int, typer.Argument(help="Default CDP port for external browser scans.")],
 ) -> None:
-    """List careers pages for a company."""
+    """Set the app-wide external browser CDP port."""
     with db.connect() as connection:
-        try:
-            company = get_company(connection, company_id)
-        except LookupError as error:
-            raise typer.BadParameter(str(error)) from error
-        career_pages = list_company_career_pages(connection, company_id)
+        set_default_external_browser_port(connection, port)
 
-    if not career_pages:
-        typer.echo(f"No career pages found for {company.name}.")
+    typer.echo(f"Default external browser CDP port: {port}")
+
+
+@config_app.command("clear-external-browser-port")
+def clear_default_external_browser_port_command() -> None:
+    """Clear the app-wide external browser CDP port."""
+    with db.connect() as connection:
+        clear_default_external_browser_port(connection)
+
+    typer.echo("Default external browser CDP port cleared.")
+
+
+@config_app.command("show")
+def show_config_command() -> None:
+    """Show app-wide configuration."""
+    with db.connect() as connection:
+        values = list_config_values(connection)
+
+    if not values:
+        typer.echo("No app config set.")
         return
 
-    for career_page in career_pages:
-        label = f" ({career_page.label})" if career_page.label else ""
-        typer.echo(f"{career_page.id}: {career_page.url}{label}")
+    for key, value in values.items():
+        typer.echo(f"{key}: {value}")
 
 
 @scan_app.command("url")
@@ -151,21 +260,126 @@ def scan_company_command(
         except LookupError as error:
             raise typer.BadParameter(str(error)) from error
         career_pages = list_company_career_pages(connection, company_id)
+        default_external_browser_port = get_default_external_browser_port(connection)
 
     urls = [career_page.url for career_page in career_pages]
     if not urls:
         typer.echo(f"No career pages found for {company.name}.")
         return
+    external_browser_port = company.external_browser_port or default_external_browser_port
+
+    with db.connect() as connection:
+        scan_run = create_scan_run(connection, company_id)
+    if scan_run.id is None:
+        raise RuntimeError("created scan run did not include an id")
 
     typer.echo(f"Scanning {company.name}: {len(urls)} careers page(s)")
-    for url in urls:
-        typer.echo(f"Scanning URL: {url}")
-        try:
-            result = asyncio.run(scan_careers_page(url))
-        except ScrapingError as error:
-            raise typer.BadParameter(str(error)) from error
+    typer.echo(f"Scan run #{scan_run.id}")
+    if external_browser_port:
+        source = "company" if company.external_browser_port else "app default"
+        typer.echo(f"External browser CDP port: {external_browser_port} ({source})")
+    try:
+        for career_page in career_pages:
+            typer.echo(f"Scanning URL: {career_page.url}")
+            result = asyncio.run(
+                scan_careers_page(
+                    career_page.url,
+                    external_browser_port=external_browser_port,
+                )
+            )
+            with db.connect() as connection:
+                scan_page = add_scan_page(
+                    connection,
+                    scan_run.id,
+                    result,
+                    company_career_page_id=career_page.id,
+                )
+                if scan_page.id is None:
+                    raise RuntimeError("created scan page did not include an id")
+                add_scan_candidates(connection, scan_page.id, result.candidates, result)
 
-        _print_scan_result(result)
+            _print_scan_result(result)
+    except ScrapingError as error:
+        with db.connect() as connection:
+            finish_scan_run(connection, scan_run.id, ScanStatus.FAILED, error=str(error))
+        raise typer.BadParameter(str(error)) from error
+    else:
+        with db.connect() as connection:
+            finish_scan_run(connection, scan_run.id, ScanStatus.SUCCEEDED)
+
+
+@scan_app.command("history")
+def scan_history_command(
+    company_id: Annotated[
+        int | None,
+        typer.Option("--company-id", help="Filter by company ID."),
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", help="Maximum scan runs to show.")] = 10,
+) -> None:
+    """List historical company scan runs."""
+    with db.connect() as connection:
+        scan_runs = list_scan_runs(connection, company_id=company_id, limit=limit)
+
+    if not scan_runs:
+        typer.echo("No scan runs found.")
+        return
+
+    for scan_run in scan_runs:
+        finished = f", finished {scan_run.finished_at}" if scan_run.finished_at else ""
+        typer.echo(
+            f"{scan_run.id}: [{scan_run.scan_status.value}] "
+            f"{scan_run.company_name} (#{scan_run.company_id}) "
+            f"started {scan_run.started_at}{finished}"
+        )
+        if scan_run.error:
+            typer.echo(f"  Error: {scan_run.error}")
+
+
+@scan_app.command("show")
+def scan_show_command(
+    scan_run_id: Annotated[int, typer.Argument(help="Scan run ID.")],
+) -> None:
+    """Show a historical scan run with all candidates."""
+    with db.connect() as connection:
+        try:
+            scan_run = get_scan_run(connection, scan_run_id)
+        except LookupError as error:
+            raise typer.BadParameter(str(error)) from error
+        company = get_company(connection, scan_run.company_id)
+        scan_pages = list_scan_pages(connection, scan_run_id)
+        candidates_by_page = {
+            page.id: list_scan_candidates(connection, page.id)
+            for page in scan_pages
+            if page.id is not None
+        }
+
+    typer.echo(f"Scan run #{scan_run.id}: {company.name} [{scan_run.scan_status.value}]")
+    typer.echo(f"Started: {scan_run.started_at}")
+    if scan_run.finished_at:
+        typer.echo(f"Finished: {scan_run.finished_at}")
+    if scan_run.error:
+        typer.echo(f"Error: {scan_run.error}")
+    if not scan_pages:
+        typer.echo("No scanned pages recorded.")
+        return
+
+    for page in scan_pages:
+        typer.echo(f"Page #{page.id}: {page.source_url}")
+        if page.final_url != page.source_url:
+            typer.echo(f"Final URL: {page.final_url}")
+        if page.title:
+            typer.echo(f"Title: {page.title}")
+        typer.echo(f"Candidates scanned: {page.candidates_scanned}")
+        candidates = candidates_by_page.get(page.id, []) if page.id is not None else []
+        if not candidates:
+            typer.echo("Candidates: none")
+            continue
+        typer.echo("Candidates:")
+        for candidate in candidates:
+            marker = "*" if candidate.selected else "-"
+            text = f" - {candidate.text}" if candidate.text else ""
+            reasons = f" ({'; '.join(candidate.reasons)})" if candidate.reasons else ""
+            typer.echo(f"{marker} [{candidate.confidence:.2f}] {candidate.url}{text}{reasons}")
 
 
 @roles_app.command("add")

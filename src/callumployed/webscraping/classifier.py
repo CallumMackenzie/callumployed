@@ -36,13 +36,17 @@ POSITIVE_TERMS = (
     "role",
     "software",
 )
-URL_PATTERNS = (
-    "/apply",
+JOB_DETAIL_HREF_PATTERNS = (
+    "/careers/search/job/",
     "/details/",
     "/job",
     "/jobs",
-    "/opening",
     "/positions",
+)
+URL_PATTERNS = (
+    "/apply",
+    *JOB_DETAIL_HREF_PATTERNS,
+    "/opening",
     "/requisition",
 )
 NEGATIVE_TERMS = (

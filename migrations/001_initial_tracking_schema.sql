@@ -6,10 +6,17 @@ CREATE TABLE IF NOT EXISTS companies (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     notes TEXT,
-    prestige_tier TEXT
+    prestige_tier TEXT,
+    external_browser_port INTEGER
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_name ON companies (name);
+
+CREATE TABLE IF NOT EXISTS app_config (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 CREATE TABLE IF NOT EXISTS company_career_pages (
     id INTEGER PRIMARY KEY,
@@ -74,6 +81,46 @@ CREATE TABLE IF NOT EXISTS scan_runs (
 CREATE INDEX IF NOT EXISTS idx_scan_runs_company_started_at
     ON scan_runs (company_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_scan_runs_status ON scan_runs (scan_status);
+
+CREATE TABLE IF NOT EXISTS scan_pages (
+    id INTEGER PRIMARY KEY,
+    scan_run_id INTEGER NOT NULL,
+    company_career_page_id INTEGER,
+    source_url TEXT NOT NULL,
+    final_url TEXT NOT NULL,
+    title TEXT,
+    candidates_scanned INTEGER NOT NULL DEFAULT 0,
+    confidence TEXT NOT NULL DEFAULT 'low' CHECK (confidence IN ('low', 'medium', 'high')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (scan_run_id) REFERENCES scan_runs (id) ON DELETE CASCADE,
+    FOREIGN KEY (company_career_page_id) REFERENCES company_career_pages (id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_scan_pages_scan_run_id ON scan_pages (scan_run_id);
+
+CREATE TABLE IF NOT EXISTS scan_candidates (
+    id INTEGER PRIMARY KEY,
+    scan_page_id INTEGER NOT NULL,
+    url TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    text TEXT,
+    tag TEXT NOT NULL,
+    css_id TEXT,
+    css_classes_json TEXT NOT NULL DEFAULT '[]',
+    aria_label TEXT,
+    title TEXT,
+    surrounding_text TEXT,
+    confidence REAL NOT NULL,
+    reasons_json TEXT NOT NULL DEFAULT '[]',
+    selected INTEGER NOT NULL DEFAULT 0 CHECK (selected IN (0, 1)),
+    discovery_method TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (scan_page_id) REFERENCES scan_pages (id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_scan_candidates_scan_page_id
+    ON scan_candidates (scan_page_id);
+CREATE INDEX IF NOT EXISTS idx_scan_candidates_selected ON scan_candidates (selected);
 
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY,
