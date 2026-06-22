@@ -14,6 +14,7 @@ DEFAULT_TIMEOUT_MS = 30_000
 CONTENT_SETTLE_MIN_WAIT_MS = 10_000
 CONTENT_SETTLE_TIMEOUT_MS = 20_000
 CONTENT_SETTLE_POLL_MS = 1_000
+LAZY_SCROLL_STEP_DELAY_MS = 350
 PROFILE_DIR_NAME = "browser-profile"
 
 
@@ -174,15 +175,108 @@ async def _wait_for_dynamic_content(page: Page, *, timeout_ms: int) -> None:
 async def _trigger_lazy_loading_scroll(page: Page) -> None:
     await page.evaluate(
         """
-        async () => {
+        async (stepDelayMs) => {
             const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-            const steps = [0.25, 0.5, 0.75, 1, 0.5, 0];
-            for (const step of steps) {
-                window.scrollTo(0, Math.max(0, document.body.scrollHeight * step));
-                await delay(500);
-            }
+            const collected = new Map();
+            const collectLinks = () => {
+                for (const anchor of document.querySelectorAll('a[href]')) {
+                    const href = anchor.getAttribute('href');
+                    if (!href || collected.has(href)) {
+                        continue;
+                    }
+                    collected.set(href, {
+                        href,
+                        text: anchor.innerText || anchor.textContent || '',
+                        ariaLabel: anchor.getAttribute('aria-label') || '',
+                        title: anchor.getAttribute('title') || '',
+                        className: anchor.getAttribute('class') || '',
+                        id: anchor.getAttribute('id') || '',
+                    });
+                }
+            };
+            const appendCollectedLinks = () => {
+                let container = document.querySelector('[data-callumployed-collected-links]');
+                if (!container) {
+                    container = document.createElement('div');
+                    container.setAttribute('data-callumployed-collected-links', 'lazy-scroll');
+                    container.setAttribute('hidden', '');
+                    document.body.appendChild(container);
+                }
+                const existingHrefs = new Set(
+                    Array.from(document.querySelectorAll('a[href]'))
+                        .map((anchor) => anchor.getAttribute('href') || '')
+                );
+                for (const link of collected.values()) {
+                    if (existingHrefs.has(link.href)) {
+                        continue;
+                    }
+                    const anchor = document.createElement('a');
+                    anchor.setAttribute('href', link.href);
+                    anchor.setAttribute('data-callumployed-collected-link', 'lazy-scroll');
+                    if (link.ariaLabel) anchor.setAttribute('aria-label', link.ariaLabel);
+                    if (link.title) anchor.setAttribute('title', link.title);
+                    if (link.className) anchor.setAttribute('class', link.className);
+                    if (link.id) anchor.setAttribute('id', link.id);
+                    anchor.textContent = link.text;
+                    container.appendChild(anchor);
+                }
+            };
+            const scrollWindow = async () => {
+                const viewportHeight = Math.max(window.innerHeight || 0, 600);
+                const stepSize = Math.max(Math.floor(viewportHeight * 0.8), 400);
+                let previousY = -1;
+                for (
+                    let position = 0;
+                    position <= document.body.scrollHeight;
+                    position += stepSize
+                ) {
+                    window.scrollTo(0, position);
+                    await delay(stepDelayMs);
+                    collectLinks();
+                    if (window.scrollY === previousY && position > 0) {
+                        break;
+                    }
+                    previousY = window.scrollY;
+                }
+                window.scrollTo(0, Math.max(0, document.body.scrollHeight));
+                await delay(stepDelayMs);
+                collectLinks();
+            };
+            const scrollScrollableElements = async () => {
+                const elements = Array.from(document.querySelectorAll('body *'))
+                    .filter((element) => {
+                        const style = window.getComputedStyle(element);
+                        return element.scrollHeight > element.clientHeight + 100
+                            && /(auto|scroll)/.test(style.overflowY);
+                    })
+                    .sort((left, right) => right.scrollHeight - left.scrollHeight)
+                    .slice(0, 5);
+                for (const element of elements) {
+                    const stepSize = Math.max(Math.floor(element.clientHeight * 0.8), 300);
+                    let previousTop = -1;
+                    for (let position = 0; position <= element.scrollHeight; position += stepSize) {
+                        element.scrollTop = position;
+                        await delay(stepDelayMs);
+                        collectLinks();
+                        if (element.scrollTop === previousTop && position > 0) {
+                            break;
+                        }
+                        previousTop = element.scrollTop;
+                    }
+                    element.scrollTop = 0;
+                }
+            };
+            collectLinks();
+            await scrollWindow();
+            await scrollScrollableElements();
+            appendCollectedLinks();
+            window.scrollTo(0, 0);
+            await delay(stepDelayMs);
+            collectLinks();
+            appendCollectedLinks();
         }
-        """
+        """,
+        LAZY_SCROLL_STEP_DELAY_MS,
     )
 
 

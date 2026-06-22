@@ -106,11 +106,22 @@ def update_company_command(
         str | None,
         typer.Option("--career-page", help="Primary careers page URL."),
     ] = None,
+    add_career_page: Annotated[
+        str | None,
+        typer.Option("--add-career-page", help="Add another careers page URL."),
+    ] = None,
+    label: Annotated[
+        str | None,
+        typer.Option("--label", help="Optional label for the added careers page."),
+    ] = None,
 ) -> None:
     """Update scan settings for a company."""
-    if external_browser_port is None and career_page is None:
+    if label is not None and add_career_page is None:
+        raise typer.BadParameter("use --label only when adding a careers page")
+    if external_browser_port is None and career_page is None and add_career_page is None:
         raise typer.BadParameter(
-            "provide at least one of --external-browser-port or --career-page"
+            "provide at least one of --external-browser-port, --career-page, "
+            "or --add-career-page"
         )
 
     with db.connect() as connection:
@@ -124,6 +135,15 @@ def update_company_command(
                 )
             if career_page is not None:
                 set_primary_company_career_page_url(connection, company_id, career_page)
+            if add_career_page is not None:
+                add_company_career_page(
+                    connection,
+                    CompanyCareerPage(
+                        company_id=company_id,
+                        url=add_career_page,
+                        label=label,
+                    ),
+                )
         except LookupError as error:
             raise typer.BadParameter(str(error)) from error
 
@@ -176,30 +196,6 @@ def show_company_command(
     for career_page in career_pages:
         label = f" ({career_page.label})" if career_page.label else ""
         typer.echo(f"- {career_page.id}: {career_page.url}{label}")
-
-
-@companies_app.command("add-career-page")
-def add_company_career_page_command(
-    company_id: Annotated[int, typer.Argument(help="Company ID.")],
-    url: Annotated[str, typer.Argument(help="Careers page URL.")],
-    label: Annotated[str | None, typer.Option("--label", help="Optional page label.")] = None,
-) -> None:
-    """Add an additional careers page for a company."""
-    with db.connect() as connection:
-        try:
-            get_company(connection, company_id)
-            career_page = add_company_career_page(
-                connection,
-                CompanyCareerPage(
-                    company_id=company_id,
-                    url=url,
-                    label=label,
-                ),
-            )
-        except LookupError as error:
-            raise typer.BadParameter(str(error)) from error
-
-    typer.echo(f"Added career page #{career_page.id}: {career_page.url}")
 
 
 @config_app.command("set-external-browser-port")
@@ -338,8 +334,17 @@ def scan_history_command(
 @scan_app.command("show")
 def scan_show_command(
     scan_run_id: Annotated[int, typer.Argument(help="Scan run ID.")],
+    candidate_limit: Annotated[
+        int,
+        typer.Option(
+            "--candidates",
+            "--candidate-limit",
+            min=0,
+            help="Number of link candidates to show per scanned page.",
+        ),
+    ] = 0,
 ) -> None:
-    """Show a historical scan run with all candidates."""
+    """Show a historical scan run."""
     with db.connect() as connection:
         try:
             scan_run = get_scan_run(connection, scan_run_id)
@@ -347,11 +352,13 @@ def scan_show_command(
             raise typer.BadParameter(str(error)) from error
         company = get_company(connection, scan_run.company_id)
         scan_pages = list_scan_pages(connection, scan_run_id)
-        candidates_by_page = {
-            page.id: list_scan_candidates(connection, page.id)
-            for page in scan_pages
-            if page.id is not None
-        }
+        candidates_by_page = {}
+        if candidate_limit > 0:
+            candidates_by_page = {
+                page.id: list_scan_candidates(connection, page.id)[:candidate_limit]
+                for page in scan_pages
+                if page.id is not None
+            }
 
     typer.echo(f"Scan run #{scan_run.id}: {company.name} [{scan_run.scan_status.value}]")
     typer.echo(f"Started: {scan_run.started_at}")
@@ -370,6 +377,8 @@ def scan_show_command(
         if page.title:
             typer.echo(f"Title: {page.title}")
         typer.echo(f"Candidates scanned: {page.candidates_scanned}")
+        if candidate_limit == 0:
+            continue
         candidates = candidates_by_page.get(page.id, []) if page.id is not None else []
         if not candidates:
             typer.echo("Candidates: none")

@@ -109,6 +109,29 @@ def test_tesla_search_result_anchor_is_selected_when_present() -> None:
     assert links[0].confidence >= 0.35
 
 
+def test_collected_lazy_scroll_anchor_is_selected_after_dom_virtualization() -> None:
+    page = RenderedPageState(
+        url="https://www.tesla.com/careers/search/?type=intern&site=US&query=Software",
+        final_url="https://www.tesla.com/careers/search/?type=intern&site=US&query=Software",
+        title="Tesla Careers",
+        html="""
+        <div data-callumployed-collected-links="lazy-scroll" hidden>
+          <a href="/careers/search/job/software-engineering-intern-summer-2026-111"
+             data-callumployed-collected-link="lazy-scroll">
+             Software Engineering Intern, Summer 2026
+          </a>
+        </div>
+        """,
+    )
+
+    candidates = extract_link_candidates(page)
+    links = asyncio.run(classify_candidates(candidates, page))
+
+    assert links
+    assert links[0].url.endswith("/careers/search/job/software-engineering-intern-summer-2026-111")
+    assert links[0].confidence >= 0.35
+
+
 def test_prepare_candidates_dedupes_by_best_extraction_quality() -> None:
     candidates = extract_link_candidates(_fixture_page())
     prepared_candidates = prepare_candidates(candidates)

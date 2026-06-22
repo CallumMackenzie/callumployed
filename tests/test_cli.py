@@ -166,8 +166,24 @@ def test_companies_update_requires_at_least_one_flag(tmp_path: Path) -> None:
     )
 
     assert result.exit_code != 0
-    assert "provide at least one of --external-browser-port or" in result.output
+    assert "provide at least one of --external-browser-port" in result.output
     assert "--career-page" in result.output
+    assert "--add-career-page" in result.output
+
+
+def test_companies_update_label_requires_add_career_page(tmp_path: Path) -> None:
+    database = tmp_path / "company-update-label.sqlite3"
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com/careers"], env=env)
+    result = runner.invoke(
+        app,
+        ["companies", "update", "1", "--label", "Internships"],
+        env=env,
+    )
+
+    assert result.exit_code != 0
+    assert "use --label only when adding a careers page" in result.output
 
 
 def test_companies_show_command_prints_saved_company_info(tmp_path: Path) -> None:
@@ -194,8 +210,9 @@ def test_companies_show_command_prints_saved_company_info(tmp_path: Path) -> Non
         app,
         [
             "companies",
-            "add-career-page",
+            "update",
             "1",
+            "--add-career-page",
             "https://example.com/internships",
             "--label",
             "Internships",
@@ -460,7 +477,7 @@ def test_scan_company_uses_default_external_browser_port(
     assert "External browser CDP port: 9222 (app default)" in result.output
 
 
-def test_scan_history_and_show_include_all_candidates(
+def test_scan_history_and_show_optionally_includes_link_candidates(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -511,6 +528,11 @@ def test_scan_history_and_show_include_all_candidates(
     scan_result = runner.invoke(app, ["scan", "company", "1"], env=env)
     history_result = runner.invoke(app, ["scan", "history"], env=env)
     show_result = runner.invoke(app, ["scan", "show", "1"], env=env)
+    show_candidates_result = runner.invoke(
+        app,
+        ["scan", "show", "1", "--candidates", "1"],
+        env=env,
+    )
 
     assert scan_result.exit_code == 0
     assert history_result.exit_code == 0
@@ -518,8 +540,13 @@ def test_scan_history_and_show_include_all_candidates(
     assert show_result.exit_code == 0
     assert "Scan run #1: Acme [succeeded]" in show_result.output
     assert "Page #1: https://example.com/careers" in show_result.output
-    assert "* [0.78] https://example.com/jobs/backend - Backend Engineer" in show_result.output
-    assert "- [0.00] https://example.com/about - About" in show_result.output
+    assert "* [0.78] https://example.com/jobs/backend - Backend Engineer" not in show_result.output
+    assert "- [0.00] https://example.com/about - About" not in show_result.output
+    assert show_candidates_result.exit_code == 0
+    assert "* [0.78] https://example.com/jobs/backend - Backend Engineer" in (
+        show_candidates_result.output
+    )
+    assert "- [0.00] https://example.com/about - About" not in show_candidates_result.output
 
 
 def test_company_career_page_commands_and_scan_multiple_pages(
@@ -551,8 +578,9 @@ def test_company_career_page_commands_and_scan_multiple_pages(
         app,
         [
             "companies",
-            "add-career-page",
+            "update",
             "1",
+            "--add-career-page",
             "https://example.com/internships",
             "--label",
             "Internships",
@@ -562,7 +590,7 @@ def test_company_career_page_commands_and_scan_multiple_pages(
     scan_result = runner.invoke(app, ["scan", "company", "1"], env=env)
 
     assert add_page_result.exit_code == 0
-    assert "Added career page #2: https://example.com/internships" in add_page_result.output
+    assert "Updated company #1: Acme" in add_page_result.output
     assert scan_result.exit_code == 0
     assert scanned_urls == ["https://example.com/main", "https://example.com/internships"]
     assert "Scanning Acme: 2 careers page(s)" in scan_result.output
