@@ -109,8 +109,16 @@ def prepare_candidates(candidates: list[LinkCandidate]) -> list[LinkCandidate]:
     return list(candidates_by_url.values())
 
 
-def score_candidates(candidates: list[LinkCandidate]) -> list[ScoredLinkCandidate]:
-    scored = [_score_candidate(candidate) for candidate in candidates]
+def score_candidates(
+    candidates: list[LinkCandidate],
+    *,
+    existing_posting_urls: set[str] | None = None,
+) -> list[ScoredLinkCandidate]:
+    known_posting_urls = existing_posting_urls or set()
+    scored = [
+        _score_candidate(candidate, existing_posting_urls=known_posting_urls)
+        for candidate in candidates
+    ]
     return sorted(scored, key=lambda candidate: candidate.confidence, reverse=True)
 
 
@@ -180,7 +188,11 @@ def candidate_quality(candidate: LinkCandidate) -> int:
     )
 
 
-def _score_candidate(candidate: LinkCandidate) -> ScoredLinkCandidate:
+def _score_candidate(
+    candidate: LinkCandidate,
+    *,
+    existing_posting_urls: set[str],
+) -> ScoredLinkCandidate:
     parsed = urlparse(candidate.url)
     domain = parsed.netloc.lower()
     path = parsed.path.lower()
@@ -214,6 +226,7 @@ def _score_candidate(candidate: LinkCandidate) -> ScoredLinkCandidate:
             _score_generic_careers_navigation_text(link_text),
             _score_job_like_text(haystack),
             _score_rejected_text(haystack),
+            _score_existing_posting(candidate.url, existing_posting_urls),
         )
         if result is not None
     ]
@@ -276,4 +289,10 @@ def _score_rejected_text(haystack: str) -> ScoreRuleResult | None:
         return -min(0.45, 0.15 * len(matching_negative_terms)), (
             f"rejected text: {', '.join(matching_negative_terms[:3])}"
         )
+    return None
+
+
+def _score_existing_posting(url: str, existing_posting_urls: set[str]) -> ScoreRuleResult | None:
+    if url in existing_posting_urls:
+        return -999.0, "already in database"
     return None

@@ -445,6 +445,49 @@ def test_scan_company_uses_saved_career_page(
     assert "[0.78] <https://example.com/jobs/backend> - Backend Engineer" in result.output
 
 
+def test_scan_company_scores_existing_role_urls_from_database(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scanned_existing_posting_urls: list[set[str] | None] = []
+
+    async def fake_scan_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+        existing_posting_urls: set[str] | None = None,
+    ) -> CareersPageScanResult:
+        scanned_existing_posting_urls.append(existing_posting_urls)
+        return CareersPageScanResult(
+            source_url=url,
+            final_url=url,
+            candidates_scanned=0,
+            confidence=ExtractionConfidence.LOW,
+        )
+
+    database = tmp_path / "scan-existing-role.sqlite3"
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    monkeypatch.setattr("callumployed.cli.scan_careers_page", fake_scan_careers_page)
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com/careers"], env=env)
+    runner.invoke(app, ["companies", "add", "Beta", "https://beta.example.com/careers"], env=env)
+    runner.invoke(
+        app,
+        [
+            "roles",
+            "add",
+            "2",
+            "Backend Engineer",
+            "https://example.com/jobs/backend",
+        ],
+        env=env,
+    )
+
+    result = runner.invoke(app, ["scan", "company", "1"], env=env)
+
+    assert result.exit_code == 0
+    assert scanned_existing_posting_urls == [{"https://example.com/jobs/backend"}]
+
+
 def test_scan_company_uses_default_external_browser_port(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

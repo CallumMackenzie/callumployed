@@ -23,6 +23,7 @@ from callumployed.data.repositories import (
     list_config_values,
     list_role_events,
     list_role_items,
+    list_roles,
     list_scan_candidates,
     list_scan_pages,
     list_scan_runs,
@@ -304,6 +305,7 @@ def _scan_company(company: Company, *, default_external_browser_port: int | None
 
     with db.connect() as connection:
         career_pages = list_company_career_pages(connection, company.id)
+        existing_posting_urls = {role.role_url for role in list_roles(connection)}
 
     urls = [career_page.url for career_page in career_pages]
     if not urls:
@@ -325,12 +327,21 @@ def _scan_company(company: Company, *, default_external_browser_port: int | None
     try:
         for career_page in career_pages:
             typer.echo(f"Scanning URL: {career_page.url}")
-            result = asyncio.run(
-                scan_careers_page(
-                    career_page.url,
-                    external_browser_port=external_browser_port,
+            if existing_posting_urls:
+                result = asyncio.run(
+                    scan_careers_page(
+                        career_page.url,
+                        external_browser_port=external_browser_port,
+                        existing_posting_urls=existing_posting_urls,
+                    )
                 )
-            )
+            else:
+                result = asyncio.run(
+                    scan_careers_page(
+                        career_page.url,
+                        external_browser_port=external_browser_port,
+                    )
+                )
             with db.connect() as connection:
                 scan_page = add_scan_page(
                     connection,

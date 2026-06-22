@@ -15,13 +15,17 @@ async def scan_careers_page(
     url: str,
     *,
     external_browser_port: int | None = None,
+    existing_posting_urls: set[str] | None = None,
 ) -> CareersPageScanResult:
     page = await render_careers_page(
         url,
         external_browser_port=external_browser_port,
     )
     candidates = extract_link_candidates(page)
-    scored_candidates = score_candidates(prepare_candidates(candidates))
+    scored_candidates = score_candidates(
+        prepare_candidates(candidates),
+        existing_posting_urls=existing_posting_urls,
+    )
     links = select_heuristic_links(scored_candidates)
 
     return CareersPageScanResult(

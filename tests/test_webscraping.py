@@ -16,6 +16,7 @@ from callumployed.webscraping.classifier import (
     classify_candidates,
     prepare_candidates,
     score_candidates,
+    select_heuristic_links,
 )
 from callumployed.webscraping.extraction import extract_link_candidates
 from callumployed.webscraping.models import ExtractionConfidence, RenderedPageState
@@ -253,6 +254,18 @@ def test_score_candidates_includes_reasons() -> None:
     top = scored[0]
     assert top.confidence > 0.0
     assert top.reasons
+
+
+def test_score_candidates_hard_declines_existing_posting_urls() -> None:
+    existing_url = "https://example.com/jobs/software-engineer-product"
+    candidates = prepare_candidates(extract_link_candidates(_fixture_page()))
+
+    scored = score_candidates(candidates, existing_posting_urls={existing_url})
+    scored_by_url = {candidate.url: candidate for candidate in scored}
+
+    assert scored_by_url[existing_url].confidence == 0.0
+    assert "already in database" in scored_by_url[existing_url].reasons
+    assert existing_url not in {link.url for link in select_heuristic_links(scored)}
 
 
 def test_scan_careers_page_orchestrates_render_extract_and_score(
