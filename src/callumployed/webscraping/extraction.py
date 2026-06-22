@@ -1,3 +1,6 @@
+import re
+from urllib.parse import ParseResult
+
 from bs4 import BeautifulSoup, Tag
 
 from callumployed.webscraping.errors import ExtractionError
@@ -5,6 +8,8 @@ from callumployed.webscraping.models import LinkCandidate, RenderedPageState
 
 MAX_TEXT_LENGTH = 180
 MAX_SURROUNDING_TEXT_LENGTH = 240
+ABSOLUTE_URL_PATTERN = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
+TRAILING_URL_PUNCTUATION = ".,;:)]}"
 
 
 def extract_link_candidates(page: RenderedPageState) -> list[LinkCandidate]:
@@ -64,9 +69,9 @@ def _candidate_href(element: Tag) -> str | None:
 
 
 def _normalize_url(href: str, base_url: str) -> str | None:
-    from urllib.parse import urldefrag, urljoin, urlparse
+    from urllib.parse import urldefrag, urljoin, urlparse, urlunparse
 
-    href = href.strip()
+    href = _extract_url_like_href(href)
     if not href or href.startswith(("#", "mailto:", "tel:", "javascript:")):
         return None
 
@@ -74,7 +79,32 @@ def _normalize_url(href: str, base_url: str) -> str | None:
     parsed = urlparse(normalized)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return None
+    parsed = _fix_known_relative_urljoin_artifacts(parsed)
+    normalized = urlunparse(parsed)
     return normalized
+
+
+def _fix_known_relative_urljoin_artifacts(parsed: ParseResult) -> ParseResult:
+    if parsed.netloc == "www.google.com":
+        parsed = parsed._replace(
+            path=parsed.path.replace(
+                "/about/careers/applications/jobs/jobs/results/",
+                "/about/careers/applications/jobs/results/",
+            )
+        )
+    return parsed
+
+
+def _extract_url_like_href(href: str) -> str:
+    href = href.strip()
+    absolute_match = ABSOLUTE_URL_PATTERN.search(href)
+    if absolute_match is not None:
+        return absolute_match.group(0).rstrip(TRAILING_URL_PUNCTUATION)
+
+    if href.startswith(("/", "./", "../")):
+        return href.split()[0].rstrip(TRAILING_URL_PUNCTUATION)
+
+    return href
 
 
 def _attr_string(value: object) -> str | None:

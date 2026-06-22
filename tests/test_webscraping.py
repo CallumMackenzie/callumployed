@@ -8,6 +8,7 @@ from callumployed.webscraping.browser import (
     CONTENT_SETTLE_TIMEOUT_MS,
     DEFAULT_TIMEOUT_MS,
     PROFILE_DIR_NAME,
+    _render_with_context,
     managed_browser_profile_path,
     navigation_error_message,
 )
@@ -27,9 +28,9 @@ def test_default_browser_timeout_is_at_least_20_seconds() -> None:
     assert DEFAULT_TIMEOUT_MS >= 20_000
 
 
-def test_dynamic_content_settle_waits_long_enough_for_hydration() -> None:
-    assert CONTENT_SETTLE_MIN_WAIT_MS >= 10_000
-    assert CONTENT_SETTLE_TIMEOUT_MS >= 20_000
+def test_dynamic_content_settle_wait_is_bounded_for_responsive_scans() -> None:
+    assert 2_000 <= CONTENT_SETTLE_MIN_WAIT_MS <= 5_000
+    assert 5_000 <= CONTENT_SETTLE_TIMEOUT_MS <= 10_000
 
 
 def _fixture_page() -> RenderedPageState:
@@ -83,6 +84,55 @@ def test_extract_link_candidates_keeps_all_relative_hrefs_for_scoring() -> None:
         "https://www.tesla.com/careers",
         "https://www.tesla.com/about",
     }
+
+
+def test_extract_link_candidates_sanitizes_maybe_link_text() -> None:
+    page = RenderedPageState(
+        url="https://www.janestreet.com/join-jane-street/",
+        final_url="https://www.janestreet.com/join-jane-street/",
+        html="""
+        <a href="https://www.janestreet.com/join-jane-street/position/5869205002/
+                 - Tools and Compilers Research and Development Internship New York">
+          Tools and Compilers Research and Development Internship
+        </a>
+        <a href="/join-jane-street/position/12345/ - Software Engineering Internship">
+          Software Engineering Internship
+        </a>
+        """,
+    )
+
+    candidates = extract_link_candidates(page)
+    urls = {candidate.url for candidate in candidates}
+
+    assert urls == {
+        "https://www.janestreet.com/join-jane-street/position/5869205002/",
+        "https://www.janestreet.com/join-jane-street/position/12345/",
+    }
+
+
+def test_extract_link_candidates_fixes_google_jobs_relative_results_paths() -> None:
+    page = RenderedPageState(
+        url=(
+            "https://www.google.com/about/careers/applications/jobs/results"
+            "?target_level=INTERN_AND_APPRENTICE"
+        ),
+        final_url=(
+            "https://www.google.com/about/careers/applications/jobs/results"
+            "?target_level=INTERN_AND_APPRENTICE"
+        ),
+        html="""
+        <a href="jobs/results/120997883141857990-software-engineering-intern-summer-2027">
+          Learn more about Software Engineering Intern, Summer 2027
+        </a>
+        """,
+    )
+
+    candidates = extract_link_candidates(page)
+
+    assert candidates[0].url == (
+        "https://www.google.com/about/careers/applications/jobs/results/"
+        "120997883141857990-software-engineering-intern-summer-2027"
+    )
 
 
 def test_tesla_search_result_anchor_is_selected_when_present() -> None:
@@ -169,6 +219,33 @@ def test_classify_candidates_prefers_apple_detail_links_over_generic_careers_nav
     assert "https://jobs.apple.com/careers/choose-country-region.html" not in urls
 
 
+def test_classify_candidates_accepts_numeric_job_ids_and_rejects_closed_roles() -> None:
+    page = RenderedPageState(
+        url="https://www.janestreet.com/join-jane-street/open-roles/?type=internship",
+        final_url="https://www.janestreet.com/join-jane-street/open-roles/?type=internship",
+        html="""
+        <a href="/join-jane-street/position/5869205002/">
+          Tools and Compilers Research and Development Internship
+        </a>
+        <a href="/join-jane-street/closed-internship/software-engineer-may-august-nyc/">
+          Software Engineer (not currently accepting applications) Internship
+        </a>
+        <a href="/join-jane-street/internships/">INTERNSHIPS</a>
+        """,
+    )
+
+    candidates = extract_link_candidates(page)
+    links = asyncio.run(classify_candidates(candidates, page))
+    urls = {link.url for link in links}
+
+    assert "https://www.janestreet.com/join-jane-street/position/5869205002/" in urls
+    assert (
+        "https://www.janestreet.com/join-jane-street/closed-internship/"
+        "software-engineer-may-august-nyc/"
+    ) not in urls
+    assert "https://www.janestreet.com/join-jane-street/internships/" not in urls
+
+
 def test_score_candidates_includes_reasons() -> None:
     candidates = prepare_candidates(extract_link_candidates(_fixture_page()))
     scored = score_candidates(candidates)
@@ -212,6 +289,78 @@ def test_scan_careers_page_orchestrates_render_extract_and_score(
     assert len(result.candidates) == result.candidates_scanned
     assert len(result.links) == 3
     assert result.confidence is ExtractionConfidence.HIGH
+
+
+def test_render_with_context_closes_page_after_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeResponse:
+        status = 200
+
+    class FakeBodyLocator:
+        async def inner_text(self, *, timeout: int) -> str:
+            return "Example Careers"
+
+    class FakePage:
+        url = "https://example.com/careers"
+
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def goto(self, url: str, *, wait_until: str, timeout: int) -> FakeResponse:
+            return FakeResponse()
+
+        async def wait_for_load_state(self, state: str, *, timeout: int) -> None:
+            return None
+
+        async def title(self) -> str:
+            return "Example Careers"
+
+        async def content(self) -> str:
+            return "<html><body>Example Careers</body></html>"
+
+        def locator(self, selector: str) -> FakeBodyLocator:
+            return FakeBodyLocator()
+
+        async def close(self) -> None:
+            self.closed = True
+
+    class FakeContext:
+        def __init__(self) -> None:
+            self.page = FakePage()
+
+        def set_default_timeout(self, timeout: int) -> None:
+            return None
+
+        def set_default_navigation_timeout(self, timeout: int) -> None:
+            return None
+
+        async def route(self, pattern: str, handler: object) -> None:
+            return None
+
+        async def new_page(self) -> FakePage:
+            return self.page
+
+    async def fake_wait_for_dynamic_content(page: object, *, timeout_ms: int) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "callumployed.webscraping.browser._wait_for_dynamic_content",
+        fake_wait_for_dynamic_content,
+    )
+    context = FakeContext()
+
+    result = asyncio.run(
+        _render_with_context(
+            context,  # type: ignore[arg-type]
+            "https://example.com/careers",
+            timeout_ms=1_000,
+            blocked_types=set(),
+        )
+    )
+
+    assert result.final_url == "https://example.com/careers"
+    assert context.page.closed is True
 
 
 def test_managed_browser_profile_path_uses_app_data_dir() -> None:

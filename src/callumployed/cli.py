@@ -255,17 +255,65 @@ def scan_company_command(
             company = get_company(connection, company_id)
         except LookupError as error:
             raise typer.BadParameter(str(error)) from error
-        career_pages = list_company_career_pages(connection, company_id)
         default_external_browser_port = get_default_external_browser_port(connection)
+
+    try:
+        _scan_company(company, default_external_browser_port=default_external_browser_port)
+    except ScrapingError as error:
+        raise typer.BadParameter(str(error)) from error
+
+
+@scan_app.command("all")
+def scan_all_command() -> None:
+    """Scan all saved companies sequentially."""
+    with db.connect() as connection:
+        companies = list_companies(connection)
+        default_external_browser_port = get_default_external_browser_port(connection)
+
+    if not companies:
+        typer.echo("No companies found.")
+        return
+
+    typer.echo(f"Scanning all companies: {len(companies)} total")
+    succeeded = 0
+    failed = 0
+    skipped = 0
+    for company in companies:
+        typer.echo(f"--- {company.name} (#{company.id}) ---")
+        try:
+            scanned = _scan_company(
+                company,
+                default_external_browser_port=default_external_browser_port,
+            )
+        except ScrapingError as error:
+            failed += 1
+            typer.echo(f"Failed: {error}")
+            continue
+
+        if scanned:
+            succeeded += 1
+        else:
+            skipped += 1
+
+    typer.echo(f"Scan all complete: {succeeded} succeeded, {failed} failed, {skipped} skipped")
+
+
+def _scan_company(company: Company, *, default_external_browser_port: int | None) -> bool:
+    if company.id is None:
+        raise RuntimeError("company did not include an id")
+
+    with db.connect() as connection:
+        career_pages = list_company_career_pages(connection, company.id)
 
     urls = [career_page.url for career_page in career_pages]
     if not urls:
         typer.echo(f"No career pages found for {company.name}.")
-        return
+        return False
+
     external_browser_port = company.external_browser_port or default_external_browser_port
 
     with db.connect() as connection:
-        scan_run = create_scan_run(connection, company_id)
+        scan_run = create_scan_run(connection, company.id)
     if scan_run.id is None:
         raise RuntimeError("created scan run did not include an id")
 
@@ -298,10 +346,11 @@ def scan_company_command(
     except ScrapingError as error:
         with db.connect() as connection:
             finish_scan_run(connection, scan_run.id, ScanStatus.FAILED, error=str(error))
-        raise typer.BadParameter(str(error)) from error
-    else:
-        with db.connect() as connection:
-            finish_scan_run(connection, scan_run.id, ScanStatus.SUCCEEDED)
+        raise
+
+    with db.connect() as connection:
+        finish_scan_run(connection, scan_run.id, ScanStatus.SUCCEEDED)
+    return True
 
 
 @scan_app.command("history")
@@ -352,13 +401,15 @@ def scan_show_command(
             raise typer.BadParameter(str(error)) from error
         company = get_company(connection, scan_run.company_id)
         scan_pages = list_scan_pages(connection, scan_run_id)
+        candidate_counts_by_page = {}
         candidates_by_page = {}
-        if candidate_limit > 0:
-            candidates_by_page = {
-                page.id: list_scan_candidates(connection, page.id)[:candidate_limit]
-                for page in scan_pages
-                if page.id is not None
-            }
+        for page in scan_pages:
+            if page.id is None:
+                continue
+            candidates = list_scan_candidates(connection, page.id)
+            candidate_counts_by_page[page.id] = sum(candidate.selected for candidate in candidates)
+            if candidate_limit > 0:
+                candidates_by_page[page.id] = candidates[:candidate_limit]
 
     typer.echo(f"Scan run #{scan_run.id}: {company.name} [{scan_run.scan_status.value}]")
     typer.echo(f"Started: {scan_run.started_at}")
@@ -377,18 +428,22 @@ def scan_show_command(
         if page.title:
             typer.echo(f"Title: {page.title}")
         typer.echo(f"Candidates scanned: {page.candidates_scanned}")
+        candidate_count = candidate_counts_by_page.get(page.id, 0) if page.id is not None else 0
+        typer.echo(f"Candidates taken: {candidate_count}")
         if candidate_limit == 0:
             continue
         candidates = candidates_by_page.get(page.id, []) if page.id is not None else []
         if not candidates:
             typer.echo("Candidates: none")
             continue
-        typer.echo("Candidates:")
+        typer.echo("Link candidates:")
         for candidate in candidates:
             marker = "*" if candidate.selected else "-"
-            text = f" - {candidate.text}" if candidate.text else ""
-            reasons = f" ({'; '.join(candidate.reasons)})" if candidate.reasons else ""
-            typer.echo(f"{marker} [{candidate.confidence:.2f}] {candidate.url}{text}{reasons}")
+            typer.echo(f"{marker} [{candidate.confidence:.2f}] URL: <{candidate.url}>")
+            if candidate.text:
+                typer.echo(f"  Text: {candidate.text}")
+            if candidate.reasons:
+                typer.echo(f"  Reasons: {'; '.join(candidate.reasons)}")
 
 
 @roles_app.command("add")
@@ -569,4 +624,4 @@ def _print_scan_result(result: CareersPageScanResult) -> None:
     typer.echo("Discovered job links:")
     for link in result.links:
         text = f" - {link.text}" if link.text else ""
-        typer.echo(f"- [{link.confidence:.2f}] {link.url}{text}")
+        typer.echo(f"- [{link.confidence:.2f}] <{link.url}>{text}")

@@ -1,3 +1,4 @@
+import re
 from collections.abc import Awaitable, Callable
 from urllib.parse import urlparse
 
@@ -12,6 +13,7 @@ AgentCandidateClassifier = Callable[
     [list[ScoredLinkCandidate], RenderedPageState],
     Awaitable[list[DiscoveredJobLink]],
 ]
+ScoreRuleResult = tuple[float, str]
 
 JOB_BOARD_DOMAINS = (
     "ashbyhq.com",
@@ -73,7 +75,9 @@ GENERIC_NAV_PATH_PATTERNS = (
     "/careers/ca",
     "/careers/us",
     "/careers/index",
+    "/internships/",
 )
+JOB_ID_PATTERN = re.compile(r"\d{5,}")
 MIN_DISCOVERY_CONFIDENCE = 0.35
 
 
@@ -177,8 +181,6 @@ def candidate_quality(candidate: LinkCandidate) -> int:
 
 
 def _score_candidate(candidate: LinkCandidate) -> ScoredLinkCandidate:
-    score = 0.0
-    reasons: list[str] = []
     parsed = urlparse(candidate.url)
     domain = parsed.netloc.lower()
     path = parsed.path.lower()
@@ -195,37 +197,83 @@ def _score_candidate(candidate: LinkCandidate) -> ScoredLinkCandidate:
         )
         if part
     ).lower()
-
-    if any(domain == board or domain.endswith(f".{board}") for board in JOB_BOARD_DOMAINS):
-        score += 0.45
-        reasons.append("known job board domain")
-
-    if any(pattern in path for pattern in URL_PATTERNS):
-        score += 0.25
-        reasons.append("job-like URL path")
-
-    if any(pattern in path for pattern in GENERIC_NAV_PATH_PATTERNS):
-        score -= 0.3
-        reasons.append("generic careers navigation path")
-
     link_text = " ".join(
         part
         for part in (candidate.text, candidate.aria_label, candidate.title)
         if part
     ).lower()
-    if link_text in GENERIC_CAREERS_TEXT:
-        score -= 0.25
-        reasons.append("generic careers navigation text")
 
-    matching_terms = [term for term in POSITIVE_TERMS if term in haystack]
-    if matching_terms:
-        score += min(0.25, 0.08 * len(matching_terms))
-        reasons.append(f"job-like text: {', '.join(matching_terms[:3])}")
+    rule_results = [
+        result
+        for result in (
+            _score_known_job_board_domain(domain),
+            _score_job_like_url_path(path),
+            _score_generic_careers_navigation_path(path),
+            _score_closed_role(path, haystack),
+            _score_numeric_job_id(path),
+            _score_generic_careers_navigation_text(link_text),
+            _score_job_like_text(haystack),
+            _score_rejected_text(haystack),
+        )
+        if result is not None
+    ]
 
-    matching_negative_terms = [term for term in NEGATIVE_TERMS if term in haystack]
-    if matching_negative_terms:
-        score -= min(0.45, 0.15 * len(matching_negative_terms))
-        reasons.append(f"rejected text: {', '.join(matching_negative_terms[:3])}")
+    score = sum(delta for delta, _reason in rule_results)
+    reasons = [reason for _delta, reason in rule_results]
 
     confidence = max(0.0, min(score, 1.0))
     return ScoredLinkCandidate(**candidate.model_dump(), confidence=confidence, reasons=reasons)
+
+
+def _score_known_job_board_domain(domain: str) -> ScoreRuleResult | None:
+    if any(domain == board or domain.endswith(f".{board}") for board in JOB_BOARD_DOMAINS):
+        return 0.45, "known job board domain"
+    return None
+
+
+def _score_job_like_url_path(path: str) -> ScoreRuleResult | None:
+    if any(pattern in path for pattern in URL_PATTERNS):
+        return 0.25, "job-like URL path"
+    return None
+
+
+def _score_generic_careers_navigation_path(path: str) -> ScoreRuleResult | None:
+    if any(pattern in path for pattern in GENERIC_NAV_PATH_PATTERNS):
+        return -0.3, "generic careers navigation path"
+    return None
+
+
+def _score_closed_role(path: str, haystack: str) -> ScoreRuleResult | None:
+    if "closed" in path or "closed" in haystack:
+        return -0.5, "closed role"
+    return None
+
+
+def _score_numeric_job_id(path: str) -> ScoreRuleResult | None:
+    if JOB_ID_PATTERN.search(path):
+        return 0.18, "numeric job id"
+    return None
+
+
+def _score_generic_careers_navigation_text(link_text: str) -> ScoreRuleResult | None:
+    if link_text in GENERIC_CAREERS_TEXT:
+        return -0.25, "generic careers navigation text"
+    return None
+
+
+def _score_job_like_text(haystack: str) -> ScoreRuleResult | None:
+    matching_terms = [term for term in POSITIVE_TERMS if term in haystack]
+    if matching_terms:
+        return min(0.25, 0.08 * len(matching_terms)), (
+            f"job-like text: {', '.join(matching_terms[:3])}"
+        )
+    return None
+
+
+def _score_rejected_text(haystack: str) -> ScoreRuleResult | None:
+    matching_negative_terms = [term for term in NEGATIVE_TERMS if term in haystack]
+    if matching_negative_terms:
+        return -min(0.45, 0.15 * len(matching_negative_terms)), (
+            f"rejected text: {', '.join(matching_negative_terms[:3])}"
+        )
+    return None

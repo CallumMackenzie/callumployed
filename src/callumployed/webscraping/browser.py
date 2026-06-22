@@ -11,8 +11,8 @@ from callumployed.webscraping.errors import NavigationError
 from callumployed.webscraping.models import RenderedPageState
 
 DEFAULT_TIMEOUT_MS = 30_000
-CONTENT_SETTLE_MIN_WAIT_MS = 10_000
-CONTENT_SETTLE_TIMEOUT_MS = 20_000
+CONTENT_SETTLE_MIN_WAIT_MS = 3_000
+CONTENT_SETTLE_TIMEOUT_MS = 8_000
 CONTENT_SETTLE_POLL_MS = 1_000
 LAZY_SCROLL_STEP_DELAY_MS = 350
 PROFILE_DIR_NAME = "browser-profile"
@@ -113,26 +113,29 @@ async def _render_with_context(
 
     await context.route("**/*", route_handler)
     page = await context.new_page()
-    response = await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-    if response is None:
-        raise NavigationError(f"No response while navigating to {url}")
-    if response.status == 403:
-        raise NavigationError(navigation_error_message(url, response.status))
-    if response.status >= 400:
-        raise NavigationError(navigation_error_message(url, response.status))
+    try:
+        response = await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+        if response is None:
+            raise NavigationError(f"No response while navigating to {url}")
+        if response.status == 403:
+            raise NavigationError(navigation_error_message(url, response.status))
+        if response.status >= 400:
+            raise NavigationError(navigation_error_message(url, response.status))
 
-    await page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 15_000))
-    await _wait_for_dynamic_content(page, timeout_ms=timeout_ms)
-    title = await page.title()
-    html = await page.content()
-    visible_text = await page.locator("body").inner_text(timeout=5_000)
-    return RenderedPageState(
-        url=url,
-        final_url=page.url,
-        title=title or None,
-        html=html,
-        visible_text=visible_text or None,
-    )
+        await page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 15_000))
+        await _wait_for_dynamic_content(page, timeout_ms=timeout_ms)
+        title = await page.title()
+        html = await page.content()
+        visible_text = await page.locator("body").inner_text(timeout=5_000)
+        return RenderedPageState(
+            url=url,
+            final_url=page.url,
+            title=title or None,
+            html=html,
+            visible_text=visible_text or None,
+        )
+    finally:
+        await page.close()
 
 
 async def _wait_for_dynamic_content(page: Page, *, timeout_ms: int) -> None:

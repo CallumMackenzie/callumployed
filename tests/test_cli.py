@@ -367,7 +367,7 @@ def test_scan_url_command_prints_discovered_links(monkeypatch: pytest.MonkeyPatc
     assert "Title: Example Careers" in result.output
     assert "Candidates scanned: 4" in result.output
     assert "Confidence: high" in result.output
-    assert "[0.78] https://example.com/jobs/backend - Backend Engineer" in result.output
+    assert "[0.78] <https://example.com/jobs/backend> - Backend Engineer" in result.output
 
 
 def test_scan_company_uses_saved_career_page(
@@ -442,7 +442,7 @@ def test_scan_company_uses_saved_career_page(
     assert "Scan run #1" in result.output
     assert "External browser CDP port: 9222 (company)" in result.output
     assert "Scanning URL: https://example.com/careers" in result.output
-    assert "[0.78] https://example.com/jobs/backend - Backend Engineer" in result.output
+    assert "[0.78] <https://example.com/jobs/backend> - Backend Engineer" in result.output
 
 
 def test_scan_company_uses_default_external_browser_port(
@@ -475,6 +475,56 @@ def test_scan_company_uses_default_external_browser_port(
     assert result.exit_code == 0
     assert scanned_external_browser_ports == [9222]
     assert "External browser CDP port: 9222 (app default)" in result.output
+
+
+def test_scan_all_scans_saved_companies_sequentially(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scanned: list[tuple[str, int | None]] = []
+
+    async def fake_scan_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+    ) -> CareersPageScanResult:
+        scanned.append((url, external_browser_port))
+        return CareersPageScanResult(
+            source_url=url,
+            final_url=url,
+            candidates_scanned=0,
+            confidence=ExtractionConfidence.LOW,
+        )
+
+    database = tmp_path / "scan-all.sqlite3"
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    monkeypatch.setattr("callumployed.cli.scan_careers_page", fake_scan_careers_page)
+
+    runner.invoke(app, ["config", "set-external-browser-port", "9222"], env=env)
+    runner.invoke(app, ["companies", "add", "Beta", "https://beta.example.com/careers"], env=env)
+    runner.invoke(
+        app,
+        [
+            "companies",
+            "add",
+            "Acme",
+            "https://example.com/careers",
+            "--external-browser-port",
+            "9333",
+        ],
+        env=env,
+    )
+    result = runner.invoke(app, ["scan", "all"], env=env)
+
+    assert result.exit_code == 0
+    assert scanned == [
+        ("https://example.com/careers", 9333),
+        ("https://beta.example.com/careers", 9222),
+    ]
+    assert "Scanning all companies: 2 total" in result.output
+    assert "--- Acme (#2) ---" in result.output
+    assert "--- Beta (#1) ---" in result.output
+    assert "Scan all complete: 2 succeeded, 0 failed, 0 skipped" in result.output
 
 
 def test_scan_history_and_show_optionally_includes_link_candidates(
@@ -540,13 +590,17 @@ def test_scan_history_and_show_optionally_includes_link_candidates(
     assert show_result.exit_code == 0
     assert "Scan run #1: Acme [succeeded]" in show_result.output
     assert "Page #1: https://example.com/careers" in show_result.output
-    assert "* [0.78] https://example.com/jobs/backend - Backend Engineer" not in show_result.output
-    assert "- [0.00] https://example.com/about - About" not in show_result.output
+    assert "Candidates scanned: 2" in show_result.output
+    assert "Candidates taken: 1" in show_result.output
+    assert "* [0.78] URL: <https://example.com/jobs/backend>" not in show_result.output
+    assert "- [0.00] URL: <https://example.com/about>" not in show_result.output
     assert show_candidates_result.exit_code == 0
-    assert "* [0.78] https://example.com/jobs/backend - Backend Engineer" in (
-        show_candidates_result.output
-    )
-    assert "- [0.00] https://example.com/about - About" not in show_candidates_result.output
+    assert "Candidates taken: 1" in show_candidates_result.output
+    assert "Link candidates:" in show_candidates_result.output
+    assert "* [0.78] URL: <https://example.com/jobs/backend>" in show_candidates_result.output
+    assert "Text: Backend Engineer" in show_candidates_result.output
+    assert "Reasons: job-like URL path" in show_candidates_result.output
+    assert "- [0.00] URL: <https://example.com/about>" not in show_candidates_result.output
 
 
 def test_company_career_page_commands_and_scan_multiple_pages(
