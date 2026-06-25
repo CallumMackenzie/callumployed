@@ -36,9 +36,11 @@ from callumployed.data.repositories import (
     set_include_graduate_degree_roles,
     set_include_hardware_roles,
     set_primary_company_career_page_url,
+    set_require_software_keywords,
     set_role_status,
     should_include_graduate_degree_roles,
     should_include_hardware_roles,
+    should_require_software_keywords,
     update_role,
 )
 from callumployed.webscraping.models import (
@@ -122,6 +124,21 @@ def test_config_repository_filters_hardware_roles_by_default() -> None:
     set_include_hardware_roles(connection, False)
     assert should_include_hardware_roles(connection) is False
     assert list_config_values(connection) == {"include_hardware_roles": "false"}
+
+
+def test_config_repository_requires_software_keywords_by_default() -> None:
+    connection = db.connect(":memory:")
+    db.run_migrations(connection)
+
+    assert should_require_software_keywords(connection) is True
+
+    set_require_software_keywords(connection, False)
+    assert should_require_software_keywords(connection) is False
+    assert list_config_values(connection) == {"require_software_keywords": "false"}
+
+    set_require_software_keywords(connection, True)
+    assert should_require_software_keywords(connection) is True
+    assert list_config_values(connection) == {"require_software_keywords": "true"}
 
 
 def test_company_repository_tracks_multiple_career_pages() -> None:

@@ -22,6 +22,7 @@ from callumployed.webscraping.models import CareersPageScanResult, ScoredLinkCan
 EXTERNAL_BROWSER_PORT_CONFIG_KEY = "external_browser_port"
 INCLUDE_GRADUATE_DEGREE_ROLES_CONFIG_KEY = "include_graduate_degree_roles"
 INCLUDE_HARDWARE_ROLES_CONFIG_KEY = "include_hardware_roles"
+REQUIRE_SOFTWARE_KEYWORDS_CONFIG_KEY = "require_software_keywords"
 
 
 def _lastrowid(cursor: turso.Cursor) -> int:
@@ -174,6 +175,21 @@ def should_include_hardware_roles(connection: turso.Connection) -> bool:
     value = get_config_value(connection, INCLUDE_HARDWARE_ROLES_CONFIG_KEY)
     if value is None:
         return False
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+def set_require_software_keywords(connection: turso.Connection, enabled: bool) -> None:
+    set_config_value(
+        connection,
+        REQUIRE_SOFTWARE_KEYWORDS_CONFIG_KEY,
+        "true" if enabled else "false",
+    )
+
+
+def should_require_software_keywords(connection: turso.Connection) -> bool:
+    value = get_config_value(connection, REQUIRE_SOFTWARE_KEYWORDS_CONFIG_KEY)
+    if value is None:
+        return True
     return value.lower() in {"1", "true", "yes", "on"}
 
 

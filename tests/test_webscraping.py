@@ -340,6 +340,35 @@ def test_assess_role_page_accepts_ats_role_without_structured_data() -> None:
     assert assessment.confidence >= 0.8
 
 
+def test_assess_role_page_accepts_common_job_section_signals() -> None:
+    page = RenderedPageState(
+        url=(
+            "https://jobs.apple.com/en-ca/details/200664780-3810/"
+            "machine-learning-and-artificial-intelligence-undergrad-internships?team=STDNT"
+        ),
+        final_url=(
+            "https://jobs.apple.com/en-ca/details/200664780-3810/"
+            "machine-learning-and-artificial-intelligence-undergrad-internships?team=STDNT"
+        ),
+        title="Machine Learning and Artificial Intelligence Undergrad Internships",
+        html="""
+        <h1>Machine Learning and Artificial Intelligence Undergrad Internships</h1>
+        <section>Description</section>
+        <section>Minimum Qualifications</section>
+        <section>Pay & Benefits</section>
+        <section>Compensation</section>
+        """,
+    )
+
+    assessment = assess_role_page(page)
+
+    assert assessment.is_role is True
+    assert assessment.extraction_method == "html_heuristic"
+    assert assessment.confidence == 0.66
+    assert "description" in assessment.reasons
+    assert "qualifications" in assessment.reasons
+
+
 def test_assess_role_page_rejects_generic_careers_listing() -> None:
     page = RenderedPageState(
         url="https://example.com/careers/search",

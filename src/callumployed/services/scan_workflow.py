@@ -35,6 +35,7 @@ from callumployed.data.repositories import (
     list_roles,
     should_include_graduate_degree_roles,
     should_include_hardware_roles,
+    should_require_software_keywords,
 )
 from callumployed.webscraping.browser import (
     ROLE_PAGE_CONTENT_SETTLE_MIN_WAIT_MS,
@@ -71,6 +72,16 @@ HARDWARE_SOFTWARE_ESCAPE_PATTERN = re.compile(
     r"\b(?:software|firmware|sde|swe|developer)\b",
     re.I,
 )
+SOFTWARE_KEYWORD_PATTERN = re.compile(
+    r"\b(?:"
+    r"software|ai|artificial intelligence|ml|machine learning|developer|swe|sde|"
+    r"development|firmware|backend|back-end|frontend|front-end|full[ -]?stack|"
+    r"mobile|ios|android|web|platform|infrastructure|infra|data|cloud|systems|"
+    r"security|devops|site reliability|sre|distributed systems|compiler|"
+    r"programming|coding|automation|qa|quality assurance|test engineering"
+    r")\b",
+    re.I,
+)
 
 
 class ScanWorkflowState(TypedDict, total=False):
@@ -81,6 +92,7 @@ class ScanWorkflowState(TypedDict, total=False):
     external_browser_port: int | None
     include_graduate_degree_roles: bool
     include_hardware_roles: bool
+    require_software_keywords: bool
     existing_posting_urls: set[str]
     llm_settings: LlmSettings | None
     chat_model_factory: ChatModelFactory | None
@@ -107,6 +119,7 @@ class CompanyScanResult(TypedDict):
     external_browser_port: int | None
     include_graduate_degree_roles: bool
     include_hardware_roles: bool
+    require_software_keywords: bool
 
 
 async def render_page_node(state: ScanWorkflowState) -> dict[str, RenderedPageState]:
@@ -172,6 +185,12 @@ def build_result_node(state: ScanWorkflowState) -> dict[str, object]:
         ]
     if not state.get("include_hardware_roles", False):
         links = [link for link in links if not _is_hardware_only_role(link.text)]
+    if state.get("require_software_keywords", True):
+        links = [
+            link
+            for link in links
+            if _has_software_keyword(link.text, " ".join(link.reasons))
+        ]
     page = state["page"]
     result = CareersPageScanResult(
         source_url=state["url"],
@@ -253,6 +272,21 @@ async def visit_discovered_links_node(state: ScanWorkflowState) -> dict[str, obj
                         "reasons": [
                             *assessment.reasons,
                             "hardware-only role filter",
+                        ],
+                    }
+                )
+            if (
+                state.get("require_software_keywords", True)
+                and not _has_software_keyword(assessment.title, assessment.description)
+            ):
+                assessment = assessment.model_copy(
+                    update={
+                        "is_role": False,
+                        "confidence": max(assessment.confidence, 0.8),
+                        "rejection_reason": "software keyword requirement filtered by app config",
+                        "reasons": [
+                            *assessment.reasons,
+                            "software keyword requirement",
                         ],
                     }
                 )
@@ -349,6 +383,11 @@ def _is_hardware_only_role(title: str | None) -> bool:
     )
 
 
+def _has_software_keyword(title: str | None, description: str | None) -> bool:
+    text = " ".join(part for part in (title, description) if part)
+    return bool(SOFTWARE_KEYWORD_PATTERN.search(text))
+
+
 def should_classify(state: ScanWorkflowState) -> Literal["classify", "skip"]:
     if state.get("ambiguous_candidates"):
         return "classify"
@@ -418,6 +457,7 @@ async def scan_career_page(
     external_browser_port: int | None = None,
     include_graduate_degree_roles: bool = False,
     include_hardware_roles: bool = False,
+    require_software_keywords: bool = True,
     existing_posting_urls: set[str] | None = None,
     llm_settings: LlmSettings | None = None,
     chat_model_factory: ChatModelFactory | None = None,
@@ -434,6 +474,7 @@ async def scan_career_page(
                 "external_browser_port": external_browser_port,
                 "include_graduate_degree_roles": include_graduate_degree_roles,
                 "include_hardware_roles": include_hardware_roles,
+                "require_software_keywords": require_software_keywords,
                 "existing_posting_urls": existing_posting_urls or set(),
                 "llm_settings": llm_settings,
                 "chat_model_factory": chat_model_factory,
@@ -461,6 +502,7 @@ async def scan_company(
         existing_posting_urls = {role.role_url for role in list_roles(connection)}
         include_graduate_degree_roles = should_include_graduate_degree_roles(connection)
         include_hardware_roles = should_include_hardware_roles(connection)
+        require_software_keywords = should_require_software_keywords(connection)
 
     if not career_pages:
         return None
@@ -483,6 +525,7 @@ async def scan_company(
                 external_browser_port=external_browser_port,
                 include_graduate_degree_roles=include_graduate_degree_roles,
                 include_hardware_roles=include_hardware_roles,
+                require_software_keywords=require_software_keywords,
                 existing_posting_urls=existing_posting_urls,
                 llm_settings=llm_settings,
                 chat_model_factory=chat_model_factory,
@@ -509,6 +552,7 @@ async def scan_company(
         "external_browser_port": external_browser_port,
         "include_graduate_degree_roles": include_graduate_degree_roles,
         "include_hardware_roles": include_hardware_roles,
+        "require_software_keywords": require_software_keywords,
     }
 
 

@@ -273,6 +273,7 @@ def test_config_external_browser_port_commands(tmp_path: Path) -> None:
     assert "external_browser_port: 9222" in show_result.output
     assert "include_graduate_degree_roles: false (default)" in show_result.output
     assert "include_hardware_roles: false (default)" in show_result.output
+    assert "require_software_keywords: true (default)" in show_result.output
     assert clear_result.exit_code == 0
     assert "Default external browser CDP port cleared." in clear_result.output
     assert show_after_clear_result.exit_code == 0
@@ -280,6 +281,7 @@ def test_config_external_browser_port_commands(tmp_path: Path) -> None:
         "No app config set.\n"
         "include_graduate_degree_roles: false (default)\n"
         "include_hardware_roles: false (default)\n"
+        "require_software_keywords: true (default)\n"
     )
 
 
@@ -325,6 +327,28 @@ def test_config_hardware_role_filter_commands(tmp_path: Path) -> None:
     assert "Hardware role tracking disabled." in exclude_result.output
     assert show_exclude_result.exit_code == 0
     assert "include_hardware_roles: false" in show_exclude_result.output
+
+
+def test_config_software_keyword_requirement_commands(tmp_path: Path) -> None:
+    database = tmp_path / "config-software-keywords.sqlite3"
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+
+    default_result = runner.invoke(app, ["config", "show"], env=env)
+    allow_result = runner.invoke(app, ["config", "allow-non-software-keywords"], env=env)
+    show_allow_result = runner.invoke(app, ["config", "show"], env=env)
+    require_result = runner.invoke(app, ["config", "require-software-keywords"], env=env)
+    show_require_result = runner.invoke(app, ["config", "show"], env=env)
+
+    assert default_result.exit_code == 0
+    assert "require_software_keywords: true (default)" in default_result.output
+    assert allow_result.exit_code == 0
+    assert "Software keyword requirement disabled." in allow_result.output
+    assert show_allow_result.exit_code == 0
+    assert "require_software_keywords: false" in show_allow_result.output
+    assert require_result.exit_code == 0
+    assert "Software keyword requirement enabled." in require_result.output
+    assert show_require_result.exit_code == 0
+    assert "require_software_keywords: true" in show_require_result.output
 
 
 def test_roles_show_and_update_commands(tmp_path: Path) -> None:

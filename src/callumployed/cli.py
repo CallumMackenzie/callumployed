@@ -29,9 +29,11 @@ from callumployed.data.repositories import (
     set_include_graduate_degree_roles,
     set_include_hardware_roles,
     set_primary_company_career_page_url,
+    set_require_software_keywords,
     set_role_status,
     should_include_graduate_degree_roles,
     should_include_hardware_roles,
+    should_require_software_keywords,
     update_role,
 )
 from callumployed.services.scan_workflow import scan_company as run_scan_company
@@ -257,6 +259,24 @@ def exclude_hardware_roles_command() -> None:
     typer.echo("Hardware role tracking disabled.")
 
 
+@config_app.command("require-software-keywords")
+def require_software_keywords_command() -> None:
+    """Require software-related keywords in discovered role links."""
+    with db.connect() as connection:
+        set_require_software_keywords(connection, True)
+
+    typer.echo("Software keyword requirement enabled.")
+
+
+@config_app.command("allow-non-software-keywords")
+def allow_non_software_keywords_command() -> None:
+    """Allow role links without software-related keywords."""
+    with db.connect() as connection:
+        set_require_software_keywords(connection, False)
+
+    typer.echo("Software keyword requirement disabled.")
+
+
 @config_app.command("show")
 def show_config_command() -> None:
     """Show app-wide configuration."""
@@ -264,11 +284,13 @@ def show_config_command() -> None:
         values = list_config_values(connection)
         include_graduate_degree_roles = should_include_graduate_degree_roles(connection)
         include_hardware_roles = should_include_hardware_roles(connection)
+        require_software_keywords = should_require_software_keywords(connection)
 
     if not values:
         typer.echo("No app config set.")
         typer.echo("include_graduate_degree_roles: false (default)")
         typer.echo("include_hardware_roles: false (default)")
+        typer.echo("require_software_keywords: true (default)")
         return
 
     for key, value in values.items():
@@ -282,6 +304,11 @@ def show_config_command() -> None:
         typer.echo(
             "include_hardware_roles: "
             f"{str(include_hardware_roles).lower()} (default)"
+        )
+    if "require_software_keywords" not in values:
+        typer.echo(
+            "require_software_keywords: "
+            f"{str(require_software_keywords).lower()} (default)"
         )
 
 
