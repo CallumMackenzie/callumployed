@@ -621,6 +621,32 @@ def test_scan_history_and_show_optionally_includes_link_candidates(
         external_browser_port: int | None = None,
     ) -> RenderedPageState:
         assert external_browser_port is None
+        if not url.endswith("/careers"):
+            return RenderedPageState(
+                url=url,
+                final_url=url,
+                title="Example Careers",
+                html="""
+                <script type="application/ld+json">
+                {
+                  "@context": "https://schema.org",
+                  "@type": "JobPosting",
+                  "title": "Software Engineering Intern",
+                  "description": "Software Engineering Intern Vancouver Apply now",
+                  "jobLocation": {
+                    "@type": "Place",
+                    "address": {
+                      "@type": "PostalAddress",
+                      "addressLocality": "Vancouver",
+                      "addressRegion": "BC",
+                      "addressCountry": "CA"
+                    }
+                  }
+                }
+                </script>
+                <h1>Example Careers</h1>
+                """,
+            )
         return RenderedPageState(
             url=url,
             final_url=url,
@@ -673,11 +699,16 @@ def test_scan_history_and_show_optionally_includes_link_candidates(
     assert "Text: Software Engineering Intern" in show_candidates_result.output
     assert "Reasons: job-like URL path; numeric job id;" in show_candidates_result.output
     assert "Visit: succeeded" in show_candidates_result.output
+    assert "Is role: True" in show_candidates_result.output
+    assert "Is closed: False" in show_candidates_result.output
+    assert "Assessment confidence:" in show_candidates_result.output
+    assert "Extraction method:" in show_candidates_result.output
+    assert "Excerpt:" in show_candidates_result.output
     assert (
         "Final URL: https://example.com/jobs/software-engineering-intern-12345"
         in show_candidates_result.output
     )
-    assert "Page title: Example Careers" in show_candidates_result.output
+    assert "Page title: Software Engineering Intern" in show_candidates_result.output
     assert "- [0.00] URL: <https://example.com/about>" not in show_candidates_result.output
 
 

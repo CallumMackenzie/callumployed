@@ -32,6 +32,22 @@ def test_initial_schema_creates_minimal_tracking_tables() -> None:
         "events",
     }.issubset(tables)
 
+    role_discovery_columns = {
+        row[1]
+        for row in connection.execute("PRAGMA table_info(role_discovery_attempts)").fetchall()
+    }
+    assert {
+        "assessment_is_role",
+        "assessment_is_closed",
+        "assessment_confidence",
+        "assessment_location",
+        "assessment_description",
+        "assessment_posting_id",
+        "assessment_extraction_method",
+        "assessment_rejection_reason",
+        "assessment_reasons_json",
+    }.issubset(role_discovery_columns)
+
 
 def test_initial_schema_rejects_invalid_role_status() -> None:
     connection = sqlite3.connect(":memory:")

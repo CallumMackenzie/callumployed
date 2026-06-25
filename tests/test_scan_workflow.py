@@ -271,6 +271,14 @@ def test_scan_company_visits_selected_discovered_links(
     assert attempts[0].visible_text_excerpt == (
         "Software Engineering Intern Vancouver Apply now"
     )
+    assert attempts[0].assessment_is_role is True
+    assert attempts[0].assessment_is_closed is False
+    assert attempts[0].assessment_confidence == 0.95
+    assert attempts[0].assessment_description == (
+        "Software Engineering Intern Vancouver Apply now"
+    )
+    assert attempts[0].assessment_extraction_method == "jobposting_structured_data"
+    assert attempts[0].assessment_reasons == ["schema.org JobPosting structured data"]
 
 
 def test_scan_company_records_failed_discovered_link_visits(

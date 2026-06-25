@@ -313,6 +313,15 @@ def test_role_discovery_attempt_repository_persists_page_data() -> None:
             final_url="https://example.com/jobs/backend",
             title="Backend Engineer",
             visible_text_excerpt="Backend Engineer Vancouver Apply now",
+            assessment_is_role=True,
+            assessment_is_closed=False,
+            assessment_confidence=0.95,
+            assessment_location="Vancouver, BC, CA",
+            assessment_description="Backend Engineer Vancouver Apply now",
+            assessment_posting_id="REQ-123",
+            assessment_extraction_method="jobposting_structured_data",
+            assessment_rejection_reason=None,
+            assessment_reasons=["schema.org JobPosting structured data"],
             status=RoleDiscoveryStatus.SUCCEEDED,
         ),
     )
@@ -321,6 +330,14 @@ def test_role_discovery_attempt_repository_persists_page_data() -> None:
 
     assert attempts == [attempt]
     assert attempts[0].title == "Backend Engineer"
+    assert attempts[0].assessment_is_role is True
+    assert attempts[0].assessment_is_closed is False
+    assert attempts[0].assessment_confidence == 0.95
+    assert attempts[0].assessment_location == "Vancouver, BC, CA"
+    assert attempts[0].assessment_description == "Backend Engineer Vancouver Apply now"
+    assert attempts[0].assessment_posting_id == "REQ-123"
+    assert attempts[0].assessment_extraction_method == "jobposting_structured_data"
+    assert attempts[0].assessment_reasons == ["schema.org JobPosting structured data"]
     assert attempts[0].status is RoleDiscoveryStatus.SUCCEEDED
 
 

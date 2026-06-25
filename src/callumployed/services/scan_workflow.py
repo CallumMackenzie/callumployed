@@ -197,6 +197,15 @@ async def visit_discovered_links_node(state: ScanWorkflowState) -> dict[str, obj
                 visible_text_excerpt=_visible_text_excerpt(
                     assessment.description or page.visible_text
                 ),
+                assessment_is_role=assessment.is_role,
+                assessment_is_closed=assessment.is_closed,
+                assessment_confidence=assessment.confidence,
+                assessment_location=assessment.location,
+                assessment_description=assessment.description,
+                assessment_posting_id=assessment.posting_id,
+                assessment_extraction_method=assessment.extraction_method,
+                assessment_rejection_reason=assessment.rejection_reason,
+                assessment_reasons=assessment.reasons,
                 status=RoleDiscoveryStatus.SUCCEEDED,
             )
         except Exception as error:

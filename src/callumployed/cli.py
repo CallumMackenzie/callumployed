@@ -442,6 +442,24 @@ def scan_show_command(
                         typer.echo(f"  Final URL: {attempt.final_url}")
                     if attempt.title:
                         typer.echo(f"  Page title: {attempt.title}")
+                    if attempt.assessment_is_role is not None:
+                        typer.echo(f"  Is role: {attempt.assessment_is_role}")
+                    if attempt.assessment_is_closed is not None:
+                        typer.echo(f"  Is closed: {attempt.assessment_is_closed}")
+                    if attempt.assessment_confidence is not None:
+                        typer.echo(f"  Assessment confidence: {attempt.assessment_confidence:.2f}")
+                    if attempt.assessment_extraction_method:
+                        typer.echo(f"  Extraction method: {attempt.assessment_extraction_method}")
+                    if attempt.assessment_location:
+                        typer.echo(f"  Location: {attempt.assessment_location}")
+                    if attempt.assessment_posting_id:
+                        typer.echo(f"  Posting ID: {attempt.assessment_posting_id}")
+                    if attempt.assessment_rejection_reason:
+                        typer.echo(f"  Rejection: {attempt.assessment_rejection_reason}")
+                    if attempt.assessment_reasons:
+                        typer.echo(f"  Assessment reasons: {'; '.join(attempt.assessment_reasons)}")
+                    if attempt.visible_text_excerpt:
+                        typer.echo(f"  Excerpt: {attempt.visible_text_excerpt[:240]}")
                     if attempt.error:
                         typer.echo(f"  Error: {attempt.error}")
 

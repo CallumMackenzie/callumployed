@@ -812,10 +812,19 @@ def add_role_discovery_attempt(
             final_url,
             title,
             visible_text_excerpt,
+            assessment_is_role,
+            assessment_is_closed,
+            assessment_confidence,
+            assessment_location,
+            assessment_description,
+            assessment_posting_id,
+            assessment_extraction_method,
+            assessment_rejection_reason,
+            assessment_reasons_json,
             status,
             error
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             attempt.scan_run_id,
@@ -826,6 +835,15 @@ def add_role_discovery_attempt(
             attempt.final_url,
             attempt.title,
             attempt.visible_text_excerpt,
+            _optional_bool_to_int(attempt.assessment_is_role),
+            _optional_bool_to_int(attempt.assessment_is_closed),
+            attempt.assessment_confidence,
+            attempt.assessment_location,
+            attempt.assessment_description,
+            attempt.assessment_posting_id,
+            attempt.assessment_extraction_method,
+            attempt.assessment_rejection_reason,
+            json.dumps(attempt.assessment_reasons),
             attempt.status.value,
             attempt.error,
         ),
@@ -850,6 +868,15 @@ def get_role_discovery_attempt(
             final_url,
             title,
             visible_text_excerpt,
+            assessment_is_role,
+            assessment_is_closed,
+            assessment_confidence,
+            assessment_location,
+            assessment_description,
+            assessment_posting_id,
+            assessment_extraction_method,
+            assessment_rejection_reason,
+            assessment_reasons_json,
             status,
             error,
             created_at
@@ -860,7 +887,7 @@ def get_role_discovery_attempt(
     ).fetchone()
     if row is None:
         raise LookupError(f"role discovery attempt not found: {attempt_id}")
-    return RoleDiscoveryAttempt.model_validate(dict(row))
+    return _role_discovery_attempt_from_row(row)
 
 
 def list_role_discovery_attempts(
@@ -891,6 +918,15 @@ def list_role_discovery_attempts(
             final_url,
             title,
             visible_text_excerpt,
+            assessment_is_role,
+            assessment_is_closed,
+            assessment_confidence,
+            assessment_location,
+            assessment_description,
+            assessment_posting_id,
+            assessment_extraction_method,
+            assessment_rejection_reason,
+            assessment_reasons_json,
             status,
             error,
             created_at
@@ -900,7 +936,27 @@ def list_role_discovery_attempts(
         """,
         values,
     ).fetchall()
-    return [RoleDiscoveryAttempt.model_validate(dict(row)) for row in rows]
+    return [_role_discovery_attempt_from_row(row) for row in rows]
+
+
+def _role_discovery_attempt_from_row(row: turso.Row) -> RoleDiscoveryAttempt:
+    attempt = dict(row)
+    attempt["assessment_is_role"] = _optional_int_to_bool(attempt["assessment_is_role"])
+    attempt["assessment_is_closed"] = _optional_int_to_bool(attempt["assessment_is_closed"])
+    attempt["assessment_reasons"] = json.loads(attempt.pop("assessment_reasons_json"))
+    return RoleDiscoveryAttempt.model_validate(attempt)
+
+
+def _optional_bool_to_int(value: bool | None) -> int | None:
+    if value is None:
+        return None
+    return 1 if value else 0
+
+
+def _optional_int_to_bool(value: object) -> bool | None:
+    if value is None:
+        return None
+    return bool(value)
 
 
 def add_event(connection: turso.Connection, event: Event) -> Event:

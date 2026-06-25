@@ -139,6 +139,15 @@ class RoleDiscoveryAttempt(AppModel):
     final_url: str | None = None
     title: str | None = None
     visible_text_excerpt: str | None = None
+    assessment_is_role: bool | None = None
+    assessment_is_closed: bool | None = None
+    assessment_confidence: float | None = None
+    assessment_location: str | None = None
+    assessment_description: str | None = None
+    assessment_posting_id: str | None = None
+    assessment_extraction_method: str | None = None
+    assessment_rejection_reason: str | None = None
+    assessment_reasons: list[str] = Field(default_factory=list)
     status: RoleDiscoveryStatus = RoleDiscoveryStatus.SUCCEEDED
     error: str | None = None
     created_at: datetime | None = None
