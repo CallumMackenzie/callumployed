@@ -12,8 +12,9 @@ from mailbox signals.
 - SQLite/Turso-compatible local database
 - Typer CLI
 - Playwright browser scanning
+- LangGraph scan workflow orchestration
 - pytest
-- Strands agents for AI-heavy tasks
+- LangChain provider adapters for optional LLM classification
 - MCP server exposing the CLI command surface
 
 ## Install dependencies
@@ -25,7 +26,7 @@ cd ~/Downloads/callumployed
 python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
+python -m pip install -e ".[dev,agents]"
 python -m playwright install chromium
 ```
 
@@ -33,7 +34,7 @@ With `uv`:
 
 ```bash
 cd ~/Downloads/callumployed
-uv sync --extra dev
+uv sync --extra dev --extra agents
 uv run playwright install chromium
 ```
 
@@ -60,8 +61,29 @@ Or run it without relying on the installed console script:
 PYTHONPATH=src python -m callumployed.cli --help
 ```
 
-The CLI currently exposes the placeholder app shell only. The job-search commands are
-planned but not implemented yet.
+### Optional LLM classifier
+
+The scan flow uses LangGraph behind the CLI. Plain scans stay deterministic; passing
+`--agent` enables LLM classification only for ambiguous link candidates.
+
+Configure the provider through shell environment variables or a local `.env` file:
+
+```bash
+CALLUMPLOYED_LLM_PROVIDER=openai
+CALLUMPLOYED_LLM_MODEL=gpt-4.1-mini
+OPENAI_API_KEY=...
+```
+
+Examples:
+
+```bash
+callumployed scan url https://example.com/careers
+callumployed scan company 1 --agent
+callumployed scan all --agent
+```
+
+The first graph handles career-page scan orchestration only. It does not use
+LangGraph checkpointing yet.
 
 ## Test
 

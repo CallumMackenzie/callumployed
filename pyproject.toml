@@ -34,7 +34,9 @@ dev = [
   "types-beautifulsoup4",
 ]
 agents = [
-  "strands-agents",
+  "langchain-core",
+  "langchain-openai",
+  "langgraph",
 ]
 mcp = [
   "mcp",
@@ -51,7 +53,7 @@ build-backend = "hatchling.build"
 testpaths = ["tests"]
 addopts = "-ra --strict-markers --strict-config"
 markers = [
-  "agent: tests with mocked Strands/model responses",
+  "agent: tests with mocked LangChain/model responses",
   "browser: tests requiring Playwright/browser runtime",
   "integration: tests touching real services",
   "mcp: MCP server/tool tests",

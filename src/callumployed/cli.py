@@ -4,16 +4,12 @@ from typing import Annotated
 import typer
 
 from callumployed.data import db
-from callumployed.data.models import Company, CompanyCareerPage, Role, RoleStatus, ScanStatus
+from callumployed.data.models import Company, CompanyCareerPage, Role, RoleStatus
 from callumployed.data.repositories import (
     add_company,
     add_company_career_page,
     add_role,
-    add_scan_candidates,
-    add_scan_page,
     clear_default_external_browser_port,
-    create_scan_run,
-    finish_scan_run,
     get_company,
     get_default_external_browser_port,
     get_role,
@@ -21,9 +17,9 @@ from callumployed.data.repositories import (
     list_companies,
     list_company_career_pages,
     list_config_values,
+    list_role_discovery_attempts,
     list_role_events,
     list_role_items,
-    list_roles,
     list_scan_candidates,
     list_scan_pages,
     list_scan_runs,
@@ -33,9 +29,10 @@ from callumployed.data.repositories import (
     set_role_status,
     update_role,
 )
+from callumployed.services.scan_workflow import scan_company as run_scan_company
+from callumployed.services.scan_workflow import scan_url as run_scan_url
 from callumployed.webscraping.errors import ScrapingError
 from callumployed.webscraping.models import CareersPageScanResult
-from callumployed.webscraping.scanner import scan_careers_page
 
 app = typer.Typer(help="Local-first job-search automation CLI.")
 companies_app = typer.Typer(help="Manage target companies.")
@@ -236,10 +233,14 @@ def show_config_command() -> None:
 @scan_app.command("url")
 def scan_url_command(
     url: Annotated[str, typer.Argument(help="Careers page URL.")],
+    use_agent: Annotated[
+        bool,
+        typer.Option("--agent/--no-agent", help="Use the LLM posting-link classifier."),
+    ] = False,
 ) -> None:
     """Scan a careers page URL and print discovered job links."""
     try:
-        result = asyncio.run(scan_careers_page(url))
+        result = asyncio.run(run_scan_url(url, use_agent=use_agent))
     except ScrapingError as error:
         raise typer.BadParameter(str(error)) from error
 
@@ -249,6 +250,10 @@ def scan_url_command(
 @scan_app.command("company")
 def scan_company_command(
     company_id: Annotated[int, typer.Argument(help="Company ID.")],
+    use_agent: Annotated[
+        bool,
+        typer.Option("--agent/--no-agent", help="Use the LLM posting-link classifier."),
+    ] = False,
 ) -> None:
     """Scan a saved company's careers URLs and print discovered job links."""
     with db.connect() as connection:
@@ -259,13 +264,22 @@ def scan_company_command(
         default_external_browser_port = get_default_external_browser_port(connection)
 
     try:
-        _scan_company(company, default_external_browser_port=default_external_browser_port)
+        _scan_company(
+            company,
+            default_external_browser_port=default_external_browser_port,
+            use_agent=use_agent,
+        )
     except ScrapingError as error:
         raise typer.BadParameter(str(error)) from error
 
 
 @scan_app.command("all")
-def scan_all_command() -> None:
+def scan_all_command(
+    use_agent: Annotated[
+        bool,
+        typer.Option("--agent/--no-agent", help="Use the LLM posting-link classifier."),
+    ] = False,
+) -> None:
     """Scan all saved companies sequentially."""
     with db.connect() as connection:
         companies = list_companies(connection)
@@ -285,6 +299,7 @@ def scan_all_command() -> None:
             scanned = _scan_company(
                 company,
                 default_external_browser_port=default_external_browser_port,
+                use_agent=use_agent,
             )
         except ScrapingError as error:
             failed += 1
@@ -299,13 +314,17 @@ def scan_all_command() -> None:
     typer.echo(f"Scan all complete: {succeeded} succeeded, {failed} failed, {skipped} skipped")
 
 
-def _scan_company(company: Company, *, default_external_browser_port: int | None) -> bool:
+def _scan_company(
+    company: Company,
+    *,
+    default_external_browser_port: int | None,
+    use_agent: bool = False,
+) -> bool:
     if company.id is None:
         raise RuntimeError("company did not include an id")
 
     with db.connect() as connection:
         career_pages = list_company_career_pages(connection, company.id)
-        existing_posting_urls = {role.role_url for role in list_roles(connection)}
 
     urls = [career_page.url for career_page in career_pages]
     if not urls:
@@ -314,53 +333,27 @@ def _scan_company(company: Company, *, default_external_browser_port: int | None
 
     external_browser_port = company.external_browser_port or default_external_browser_port
 
-    with db.connect() as connection:
-        scan_run = create_scan_run(connection, company.id)
-    if scan_run.id is None:
-        raise RuntimeError("created scan run did not include an id")
-
     typer.echo(f"Scanning {company.name}: {len(urls)} careers page(s)")
-    typer.echo(f"Scan run #{scan_run.id}")
     if external_browser_port:
         source = "company" if company.external_browser_port else "app default"
         typer.echo(f"External browser CDP port: {external_browser_port} ({source})")
-    try:
-        for career_page in career_pages:
-            typer.echo(f"Scanning URL: {career_page.url}")
-            if existing_posting_urls:
-                result = asyncio.run(
-                    scan_careers_page(
-                        career_page.url,
-                        external_browser_port=external_browser_port,
-                        existing_posting_urls=existing_posting_urls,
-                    )
-                )
-            else:
-                result = asyncio.run(
-                    scan_careers_page(
-                        career_page.url,
-                        external_browser_port=external_browser_port,
-                    )
-                )
-            with db.connect() as connection:
-                scan_page = add_scan_page(
-                    connection,
-                    scan_run.id,
-                    result,
-                    company_career_page_id=career_page.id,
-                )
-                if scan_page.id is None:
-                    raise RuntimeError("created scan page did not include an id")
-                add_scan_candidates(connection, scan_page.id, result.candidates, result)
-
-            _print_scan_result(result)
-    except ScrapingError as error:
-        with db.connect() as connection:
-            finish_scan_run(connection, scan_run.id, ScanStatus.FAILED, error=str(error))
-        raise
-
-    with db.connect() as connection:
-        finish_scan_run(connection, scan_run.id, ScanStatus.SUCCEEDED)
+    if use_agent:
+        typer.echo("Agent link classifier: enabled")
+    scan = asyncio.run(
+        run_scan_company(
+            company,
+            default_external_browser_port=default_external_browser_port,
+            use_agent=use_agent,
+        )
+    )
+    if scan is None:
+        typer.echo(f"No career pages found for {company.name}.")
+        return False
+    typer.echo(f"Scan run #{scan['scan_run'].id}")
+    for career_page in career_pages:
+        typer.echo(f"Scanning URL: {career_page.url}")
+    for result in scan["results"]:
+        _print_scan_result(result)
     return True
 
 
@@ -412,6 +405,10 @@ def scan_show_command(
             raise typer.BadParameter(str(error)) from error
         company = get_company(connection, scan_run.company_id)
         scan_pages = list_scan_pages(connection, scan_run_id)
+        role_discovery_attempts = list_role_discovery_attempts(connection, scan_run_id=scan_run_id)
+        attempts_by_candidate_id = {
+            attempt.scan_candidate_id: attempt for attempt in role_discovery_attempts
+        }
         candidate_counts_by_page = {}
         candidates_by_page = {}
         for page in scan_pages:
@@ -428,6 +425,7 @@ def scan_show_command(
         typer.echo(f"Finished: {scan_run.finished_at}")
     if scan_run.error:
         typer.echo(f"Error: {scan_run.error}")
+    typer.echo(f"Role pages visited: {len(role_discovery_attempts)}")
     if not scan_pages:
         typer.echo("No scanned pages recorded.")
         return
@@ -455,6 +453,16 @@ def scan_show_command(
                 typer.echo(f"  Text: {candidate.text}")
             if candidate.reasons:
                 typer.echo(f"  Reasons: {'; '.join(candidate.reasons)}")
+            if candidate.id is not None:
+                attempt = attempts_by_candidate_id.get(candidate.id)
+                if attempt is not None:
+                    typer.echo(f"  Visit: {attempt.status.value}")
+                    if attempt.final_url:
+                        typer.echo(f"  Final URL: {attempt.final_url}")
+                    if attempt.title:
+                        typer.echo(f"  Page title: {attempt.title}")
+                    if attempt.error:
+                        typer.echo(f"  Error: {attempt.error}")
 
 
 @roles_app.command("add")

@@ -8,6 +8,7 @@ from callumployed.data.models import (
     Event,
     EventSource,
     Role,
+    RoleDiscoveryAttempt,
     RoleListItem,
     RoleStatus,
     ScanCandidate,
@@ -794,6 +795,112 @@ def _scan_candidate_from_row(row: turso.Row) -> ScanCandidate:
     candidate["reasons"] = json.loads(candidate.pop("reasons_json"))
     candidate["selected"] = bool(candidate["selected"])
     return ScanCandidate.model_validate(candidate)
+
+
+def add_role_discovery_attempt(
+    connection: turso.Connection,
+    attempt: RoleDiscoveryAttempt,
+) -> RoleDiscoveryAttempt:
+    cursor = connection.execute(
+        """
+        INSERT INTO role_discovery_attempts (
+            scan_run_id,
+            scan_candidate_id,
+            company_id,
+            role_id,
+            url,
+            final_url,
+            title,
+            visible_text_excerpt,
+            status,
+            error
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            attempt.scan_run_id,
+            attempt.scan_candidate_id,
+            attempt.company_id,
+            attempt.role_id,
+            attempt.url,
+            attempt.final_url,
+            attempt.title,
+            attempt.visible_text_excerpt,
+            attempt.status.value,
+            attempt.error,
+        ),
+    )
+    connection.commit()
+    return get_role_discovery_attempt(connection, _lastrowid(cursor))
+
+
+def get_role_discovery_attempt(
+    connection: turso.Connection,
+    attempt_id: int,
+) -> RoleDiscoveryAttempt:
+    row = connection.execute(
+        """
+        SELECT
+            id,
+            scan_run_id,
+            scan_candidate_id,
+            company_id,
+            role_id,
+            url,
+            final_url,
+            title,
+            visible_text_excerpt,
+            status,
+            error,
+            created_at
+        FROM role_discovery_attempts
+        WHERE id = ?
+        """,
+        (attempt_id,),
+    ).fetchone()
+    if row is None:
+        raise LookupError(f"role discovery attempt not found: {attempt_id}")
+    return RoleDiscoveryAttempt.model_validate(dict(row))
+
+
+def list_role_discovery_attempts(
+    connection: turso.Connection,
+    *,
+    scan_run_id: int | None = None,
+    scan_candidate_id: int | None = None,
+) -> list[RoleDiscoveryAttempt]:
+    clauses = []
+    values: list[object] = []
+    if scan_run_id is not None:
+        clauses.append("scan_run_id = ?")
+        values.append(scan_run_id)
+    if scan_candidate_id is not None:
+        clauses.append("scan_candidate_id = ?")
+        values.append(scan_candidate_id)
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = connection.execute(
+        f"""
+        SELECT
+            id,
+            scan_run_id,
+            scan_candidate_id,
+            company_id,
+            role_id,
+            url,
+            final_url,
+            title,
+            visible_text_excerpt,
+            status,
+            error,
+            created_at
+        FROM role_discovery_attempts
+        {where}
+        ORDER BY id
+        """,
+        values,
+    ).fetchall()
+    return [RoleDiscoveryAttempt.model_validate(dict(row)) for row in rows]
 
 
 def add_event(connection: turso.Connection, event: Event) -> Event:

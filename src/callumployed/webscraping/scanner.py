@@ -1,8 +1,9 @@
 from callumployed.webscraping.browser import render_careers_page
 from callumployed.webscraping.classifier import (
+    AgentCandidateClassifier,
+    classify_candidates,
     prepare_candidates,
     score_candidates,
-    select_heuristic_links,
 )
 from callumployed.webscraping.extraction import extract_link_candidates
 from callumployed.webscraping.models import (
@@ -16,6 +17,7 @@ async def scan_careers_page(
     *,
     external_browser_port: int | None = None,
     existing_posting_urls: set[str] | None = None,
+    agent_classifier: AgentCandidateClassifier | None = None,
 ) -> CareersPageScanResult:
     page = await render_careers_page(
         url,
@@ -26,7 +28,12 @@ async def scan_careers_page(
         prepare_candidates(candidates),
         existing_posting_urls=existing_posting_urls,
     )
-    links = select_heuristic_links(scored_candidates)
+    links = await classify_candidates(
+        candidates,
+        page,
+        agent_classifier=agent_classifier,
+        existing_posting_urls=existing_posting_urls,
+    )
 
     return CareersPageScanResult(
         source_url=url,

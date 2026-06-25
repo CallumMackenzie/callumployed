@@ -122,6 +122,32 @@ CREATE INDEX IF NOT EXISTS idx_scan_candidates_scan_page_id
     ON scan_candidates (scan_page_id);
 CREATE INDEX IF NOT EXISTS idx_scan_candidates_selected ON scan_candidates (selected);
 
+CREATE TABLE IF NOT EXISTS role_discovery_attempts (
+    id INTEGER PRIMARY KEY,
+    scan_run_id INTEGER NOT NULL,
+    scan_candidate_id INTEGER NOT NULL,
+    company_id INTEGER NOT NULL,
+    role_id INTEGER,
+    url TEXT NOT NULL,
+    final_url TEXT,
+    title TEXT,
+    visible_text_excerpt TEXT,
+    status TEXT NOT NULL DEFAULT 'succeeded' CHECK (status IN ('succeeded', 'failed')),
+    error TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (scan_run_id) REFERENCES scan_runs (id) ON DELETE CASCADE,
+    FOREIGN KEY (scan_candidate_id) REFERENCES scan_candidates (id) ON DELETE CASCADE,
+    FOREIGN KEY (company_id) REFERENCES companies (id) ON DELETE CASCADE,
+    FOREIGN KEY (role_id) REFERENCES roles (id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_role_discovery_attempts_scan_run_id
+    ON role_discovery_attempts (scan_run_id);
+CREATE INDEX IF NOT EXISTS idx_role_discovery_attempts_scan_candidate_id
+    ON role_discovery_attempts (scan_candidate_id);
+CREATE INDEX IF NOT EXISTS idx_role_discovery_attempts_company_id
+    ON role_discovery_attempts (company_id);
+
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY,
     company_id INTEGER NOT NULL,

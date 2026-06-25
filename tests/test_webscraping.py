@@ -19,7 +19,12 @@ from callumployed.webscraping.classifier import (
     select_heuristic_links,
 )
 from callumployed.webscraping.extraction import extract_link_candidates
-from callumployed.webscraping.models import ExtractionConfidence, RenderedPageState
+from callumployed.webscraping.models import (
+    DiscoveredJobLink,
+    ExtractionConfidence,
+    RenderedPageState,
+    ScoredLinkCandidate,
+)
 from callumployed.webscraping.scanner import scan_careers_page
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
@@ -302,6 +307,60 @@ def test_scan_careers_page_orchestrates_render_extract_and_score(
     assert len(result.candidates) == result.candidates_scanned
     assert len(result.links) == 3
     assert result.confidence is ExtractionConfidence.HIGH
+
+
+def test_scan_careers_page_merges_agent_classified_ambiguous_links(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+    ) -> RenderedPageState:
+        return RenderedPageState(
+            url=url,
+            final_url=url,
+            title="Example Careers",
+            html="""
+            <a href="/openings/software-intern">Software Intern</a>
+            <a href="/about">About</a>
+            """,
+        )
+
+    agent_candidate_urls: list[str] = []
+
+    async def fake_agent_classifier(
+        candidates: list[ScoredLinkCandidate],
+        page: RenderedPageState,
+    ) -> list[DiscoveredJobLink]:
+        agent_candidate_urls.extend(candidate.url for candidate in candidates)
+        return [
+            DiscoveredJobLink(
+                url="https://example.com/openings/software-intern",
+                source_url=page.final_url,
+                text="Software Intern",
+                confidence=0.91,
+                discovery_method="agent",
+                reasons=["Specific role page."],
+            )
+        ]
+
+    monkeypatch.setattr(
+        "callumployed.webscraping.scanner.render_careers_page",
+        fake_render_careers_page,
+    )
+
+    result = asyncio.run(
+        scan_careers_page(
+            "https://example.com/careers",
+            agent_classifier=fake_agent_classifier,
+        )
+    )
+
+    assert "https://example.com/openings/software-intern" in agent_candidate_urls
+    assert len(result.links) == 1
+    assert result.links[0].discovery_method == "agent"
+    assert result.confidence is ExtractionConfidence.MEDIUM
 
 
 def test_render_with_context_closes_page_after_snapshot(

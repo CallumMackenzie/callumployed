@@ -29,6 +29,11 @@ class EventSource(StrEnum):
     SCAN = "scan"
 
 
+class RoleDiscoveryStatus(StrEnum):
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
 class AppModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -121,6 +126,21 @@ class ScanCandidate(AppModel):
     reasons: list[str] = Field(default_factory=list)
     selected: bool = False
     discovery_method: str | None = None
+    created_at: datetime | None = None
+
+
+class RoleDiscoveryAttempt(AppModel):
+    id: int | None = None
+    scan_run_id: int
+    scan_candidate_id: int
+    company_id: int
+    role_id: int | None = None
+    url: str
+    final_url: str | None = None
+    title: str | None = None
+    visible_text_excerpt: str | None = None
+    status: RoleDiscoveryStatus = RoleDiscoveryStatus.SUCCEEDED
+    error: str | None = None
     created_at: datetime | None = None
 
 

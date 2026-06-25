@@ -86,9 +86,13 @@ async def classify_candidates(
     page: RenderedPageState,
     *,
     agent_classifier: AgentCandidateClassifier | None = None,
+    existing_posting_urls: set[str] | None = None,
 ) -> list[DiscoveredJobLink]:
     prepared_candidates = prepare_candidates(candidates)
-    scored_candidates = score_candidates(prepared_candidates)
+    scored_candidates = score_candidates(
+        prepared_candidates,
+        existing_posting_urls=existing_posting_urls,
+    )
     heuristic_links = select_heuristic_links(scored_candidates)
     agent_links: list[DiscoveredJobLink] = []
     if agent_classifier is not None:

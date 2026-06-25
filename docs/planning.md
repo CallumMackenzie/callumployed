@@ -9,7 +9,7 @@ The app should stay layered:
 - Repositories own persistence.
 - Browser scanning returns normalized deterministic scan results.
 - Mailbox ingestion returns normalized message signals.
-- Strands agents consume normalized records and emit validated structured outputs.
+- LangGraph services orchestrate workflows; LangChain adapters emit validated structured outputs.
 - MCP tools call the same services as the CLI.
 - Config/secrets remain isolated from business logic.
 

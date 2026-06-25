@@ -28,6 +28,7 @@ def test_initial_schema_creates_minimal_tracking_tables() -> None:
         "scan_runs",
         "scan_pages",
         "scan_candidates",
+        "role_discovery_attempts",
         "events",
     }.issubset(tables)
 

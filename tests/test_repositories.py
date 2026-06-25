@@ -1,9 +1,18 @@
 from callumployed.data import db
-from callumployed.data.models import Company, CompanyCareerPage, Role, RoleStatus, ScanStatus
+from callumployed.data.models import (
+    Company,
+    CompanyCareerPage,
+    Role,
+    RoleDiscoveryAttempt,
+    RoleDiscoveryStatus,
+    RoleStatus,
+    ScanStatus,
+)
 from callumployed.data.repositories import (
     add_company,
     add_company_career_page,
     add_role,
+    add_role_discovery_attempt,
     add_scan_candidates,
     add_scan_page,
     clear_default_external_browser_port,
@@ -14,6 +23,7 @@ from callumployed.data.repositories import (
     list_companies,
     list_company_career_pages,
     list_config_values,
+    list_role_discovery_attempts,
     list_role_events,
     list_role_items,
     list_roles,
@@ -224,6 +234,94 @@ def test_scan_repository_persists_pages_and_candidates() -> None:
     ]
     assert scan_candidates[0].selected is True
     assert scan_candidates[1].selected is False
+
+
+def test_role_discovery_attempt_repository_persists_page_data() -> None:
+    connection = db.connect(":memory:")
+    db.run_migrations(connection)
+
+    company = add_company(connection, Company(name="Acme"))
+    assert company.id is not None
+    career_page = add_company_career_page(
+        connection,
+        CompanyCareerPage(company_id=company.id, url="https://example.com/careers"),
+    )
+    assert career_page.id is not None
+    scan_run = create_scan_run(connection, company.id)
+    assert scan_run.id is not None
+    scan_page = add_scan_page(
+        connection,
+        scan_run.id,
+        CareersPageScanResult(
+            source_url=career_page.url,
+            final_url=career_page.url,
+            candidates=[
+                ScoredLinkCandidate(
+                    url="https://example.com/jobs/backend",
+                    source_url=career_page.url,
+                    text="Backend Engineer",
+                    confidence=0.78,
+                )
+            ],
+            links=[
+                DiscoveredJobLink(
+                    url="https://example.com/jobs/backend",
+                    source_url=career_page.url,
+                    text="Backend Engineer",
+                    confidence=0.78,
+                    discovery_method="heuristic",
+                )
+            ],
+        ),
+        company_career_page_id=career_page.id,
+    )
+    assert scan_page.id is not None
+    candidates = add_scan_candidates(
+        connection,
+        scan_page.id,
+        [
+            ScoredLinkCandidate(
+                url="https://example.com/jobs/backend",
+                source_url=career_page.url,
+                text="Backend Engineer",
+                confidence=0.78,
+            )
+        ],
+        CareersPageScanResult(
+            source_url=career_page.url,
+            final_url=career_page.url,
+            links=[
+                DiscoveredJobLink(
+                    url="https://example.com/jobs/backend",
+                    source_url=career_page.url,
+                    text="Backend Engineer",
+                    confidence=0.78,
+                    discovery_method="heuristic",
+                )
+            ],
+        ),
+    )
+    assert candidates[0].id is not None
+
+    attempt = add_role_discovery_attempt(
+        connection,
+        RoleDiscoveryAttempt(
+            scan_run_id=scan_run.id,
+            scan_candidate_id=candidates[0].id,
+            company_id=company.id,
+            url=candidates[0].url,
+            final_url="https://example.com/jobs/backend",
+            title="Backend Engineer",
+            visible_text_excerpt="Backend Engineer Vancouver Apply now",
+            status=RoleDiscoveryStatus.SUCCEEDED,
+        ),
+    )
+
+    attempts = list_role_discovery_attempts(connection, scan_run_id=scan_run.id)
+
+    assert attempts == [attempt]
+    assert attempts[0].title == "Backend Engineer"
+    assert attempts[0].status is RoleDiscoveryStatus.SUCCEEDED
 
 
 def test_company_repository_adds_company_with_legacy_careers_url_column() -> None:
