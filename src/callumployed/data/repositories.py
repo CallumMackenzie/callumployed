@@ -331,6 +331,36 @@ def get_role(connection: turso.Connection, role_id: int) -> Role:
     return Role.model_validate(dict(row))
 
 
+def get_role_by_company_url(
+    connection: turso.Connection,
+    company_id: int,
+    role_url: str,
+) -> Role | None:
+    row = connection.execute(
+        """
+        SELECT
+            id,
+            company_id,
+            title,
+            role_url,
+            location,
+            role_status,
+            first_seen_at,
+            last_seen_at,
+            created_at,
+            updated_at,
+            notes
+        FROM roles
+        WHERE company_id = ?
+            AND role_url = ?
+        """,
+        (company_id, role_url),
+    ).fetchone()
+    if row is None:
+        return None
+    return Role.model_validate(dict(row))
+
+
 def update_role(
     connection: turso.Connection,
     role_id: int,

@@ -4,12 +4,19 @@ from pathlib import Path
 import pytest
 
 from callumployed.data import db
-from callumployed.data.models import Company, CompanyCareerPage, Role, RoleDiscoveryStatus
+from callumployed.data.models import (
+    Company,
+    CompanyCareerPage,
+    Role,
+    RoleDiscoveryStatus,
+    RoleStatus,
+)
 from callumployed.data.repositories import (
     add_company,
     add_company_career_page,
     add_role,
     list_role_discovery_attempts,
+    list_roles,
     list_scan_candidates,
     list_scan_pages,
 )
@@ -255,6 +262,7 @@ def test_scan_company_visits_selected_discovered_links(
     assert scan_run.id is not None
     with db.connect() as connection:
         attempts = list_role_discovery_attempts(connection, scan_run_id=scan_run.id)
+        roles = list_roles(connection)
 
     assert rendered_urls == [
         "https://example.com/careers",
@@ -279,6 +287,70 @@ def test_scan_company_visits_selected_discovered_links(
     )
     assert attempts[0].assessment_extraction_method == "jobposting_structured_data"
     assert attempts[0].assessment_reasons == ["schema.org JobPosting structured data"]
+    assert len(roles) == 1
+    assert attempts[0].role_id == roles[0].id
+    assert roles[0].title == "Software Engineering Intern"
+    assert roles[0].role_url == "https://example.com/jobs/software-engineering-intern-12345"
+    assert roles[0].role_status is RoleStatus.DISCOVERED
+
+
+def test_scan_company_creates_discovered_role_for_closed_application_page(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+    ) -> RenderedPageState:
+        if url.endswith("/careers"):
+            return _page(url)
+        return RenderedPageState(
+            url=url,
+            final_url=url,
+            title="Careers",
+            html="""
+            <script type="application/ld+json">
+            {
+              "@context": "https://schema.org",
+              "@type": "JobPosting",
+              "title": "Software Engineering Intern",
+              "description": "Software Engineering Intern. No longer accepting applications."
+            }
+            </script>
+            <h1>Careers</h1>
+            """,
+        )
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Acme"))
+        if company.id is None:
+            raise AssertionError("company id missing")
+        add_company_career_page(
+            connection,
+            CompanyCareerPage(company_id=company.id, url="https://example.com/careers"),
+        )
+
+    scan = asyncio.run(
+        scan_workflow.scan_company(
+            company,
+            chat_model_factory=lambda _settings: EmptyStructuredModel(),
+        )
+    )
+
+    assert scan is not None
+    with db.connect() as connection:
+        roles = list_roles(connection)
+        attempts = list_role_discovery_attempts(connection, scan_run_id=scan["scan_run"].id)
+
+    assert len(roles) == 1
+    assert roles[0].role_status is RoleStatus.DISCOVERED
+    assert attempts[0].role_id == roles[0].id
+    assert attempts[0].assessment_is_closed is True
 
 
 def test_scan_company_records_failed_discovered_link_visits(

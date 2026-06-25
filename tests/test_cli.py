@@ -699,6 +699,7 @@ def test_scan_history_and_show_optionally_includes_link_candidates(
     assert "Text: Software Engineering Intern" in show_candidates_result.output
     assert "Reasons: job-like URL path; numeric job id;" in show_candidates_result.output
     assert "Visit: succeeded" in show_candidates_result.output
+    assert "Role ID:" in show_candidates_result.output
     assert "Is role: True" in show_candidates_result.output
     assert "Is closed: False" in show_candidates_result.output
     assert "Assessment confidence:" in show_candidates_result.output

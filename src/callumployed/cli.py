@@ -442,6 +442,8 @@ def scan_show_command(
                         typer.echo(f"  Final URL: {attempt.final_url}")
                     if attempt.title:
                         typer.echo(f"  Page title: {attempt.title}")
+                    if attempt.role_id is not None:
+                        typer.echo(f"  Role ID: {attempt.role_id}")
                     if attempt.assessment_is_role is not None:
                         typer.echo(f"  Is role: {attempt.assessment_is_role}")
                     if attempt.assessment_is_closed is not None:

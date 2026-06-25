@@ -11,6 +11,7 @@ from callumployed.data import db
 from callumployed.data.models import (
     Company,
     CompanyCareerPage,
+    Role,
     RoleDiscoveryAttempt,
     RoleDiscoveryStatus,
     ScanCandidate,
@@ -19,6 +20,7 @@ from callumployed.data.models import (
     ScanStatus,
 )
 from callumployed.data.repositories import (
+    add_role,
     add_role_discovery_attempt,
     add_scan_candidates,
     add_scan_page,
@@ -26,6 +28,7 @@ from callumployed.data.repositories import (
     finish_scan_run,
     get_company,
     get_default_external_browser_port,
+    get_role_by_company_url,
     list_company_career_pages,
     list_role_discovery_attempts,
     list_roles,
@@ -48,6 +51,8 @@ from callumployed.webscraping.models import (
     ScoredLinkCandidate,
 )
 from callumployed.webscraping.role_page_classifier import assess_role_page
+
+MIN_ROLE_CREATION_CONFIDENCE = 0.6
 
 
 class ScanWorkflowState(TypedDict, total=False):
@@ -187,10 +192,19 @@ async def visit_discovered_links_node(state: ScanWorkflowState) -> dict[str, obj
                 external_browser_port=state.get("external_browser_port"),
             )
             assessment = assess_role_page(page)
+            role = _create_or_get_assessed_role(
+                company_id=company.id,
+                role_url=candidate.url,
+                title=assessment.title or page.title,
+                location=assessment.location,
+                is_role=assessment.is_role,
+                confidence=assessment.confidence,
+            )
             attempt = RoleDiscoveryAttempt(
                 scan_run_id=scan_run_id,
                 scan_candidate_id=candidate.id,
                 company_id=company.id,
+                role_id=role.id if role is not None else None,
                 url=candidate.url,
                 final_url=page.final_url,
                 title=assessment.title or page.title,
@@ -222,6 +236,34 @@ async def visit_discovered_links_node(state: ScanWorkflowState) -> dict[str, obj
             attempts.append(add_role_discovery_attempt(connection, attempt))
 
     return {"role_discovery_attempts": attempts}
+
+
+def _create_or_get_assessed_role(
+    *,
+    company_id: int,
+    role_url: str,
+    title: str | None,
+    location: str | None,
+    is_role: bool,
+    confidence: float,
+) -> Role | None:
+    if not is_role or confidence < MIN_ROLE_CREATION_CONFIDENCE or title is None:
+        return None
+
+    with db.connect() as connection:
+        existing_role = get_role_by_company_url(connection, company_id, role_url)
+        if existing_role is not None:
+            return existing_role
+        role = add_role(
+            connection,
+            Role(
+                company_id=company_id,
+                title=title,
+                role_url=role_url,
+                location=location,
+            ),
+        )
+    return role
 
 
 def should_classify(state: ScanWorkflowState) -> Literal["classify", "skip"]:
