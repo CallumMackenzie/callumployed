@@ -214,6 +214,91 @@ def test_scan_company_persists_page_and_candidates(
     assert "already in database" in existing.reasons
 
 
+def test_scan_company_skips_previously_rejected_role_candidates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+    rendered_urls: list[str] = []
+
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+        **_render_options: object,
+    ) -> RenderedPageState:
+        rendered_urls.append(url)
+        if url.endswith("/careers"):
+            return _page(url)
+        return RenderedPageState(
+            url=url,
+            final_url=url,
+            title="Careers",
+            html="<h1>Careers</h1><p>Company profile.</p>",
+            visible_text="Careers Company profile.",
+        )
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Acme"))
+        if company.id is None:
+            raise AssertionError("company id missing")
+        add_company_career_page(
+            connection,
+            CompanyCareerPage(company_id=company.id, url="https://example.com/careers"),
+        )
+
+    first_scan = asyncio.run(
+        scan_workflow.scan_company(
+            company,
+            chat_model_factory=lambda _settings: EmptyStructuredModel(),
+        )
+    )
+    assert first_scan is not None
+
+    second_scan = asyncio.run(
+        scan_workflow.scan_company(
+            company,
+            chat_model_factory=lambda _settings: EmptyStructuredModel(),
+        )
+    )
+    assert second_scan is not None
+
+    third_scan = asyncio.run(
+        scan_workflow.scan_company(
+            company,
+            retry_rejected_roles=True,
+            chat_model_factory=lambda _settings: EmptyStructuredModel(),
+        )
+    )
+    assert third_scan is not None
+
+    assert rendered_urls == [
+        "https://example.com/careers",
+        "https://example.com/jobs/software-engineering-intern-12345",
+        "https://example.com/careers",
+        "https://example.com/careers",
+        "https://example.com/jobs/software-engineering-intern-12345",
+    ]
+    assert first_scan["role_discovery_attempts"][0].assessment_is_role is False
+    assert second_scan["role_discovery_attempts"] == []
+    assert third_scan["role_discovery_attempts"][0].assessment_is_role is False
+    second_scan_run = second_scan["scan_run"]
+    assert second_scan_run.id is not None
+    with db.connect() as connection:
+        pages = list_scan_pages(connection, second_scan_run.id)
+        if pages[0].id is None:
+            raise AssertionError("scan page id missing")
+        candidates = list_scan_candidates(connection, pages[0].id)
+
+    by_url = {candidate.url: candidate for candidate in candidates}
+    rejected = by_url["https://example.com/jobs/software-engineering-intern-12345"]
+    assert rejected.confidence == 0.0
+    assert rejected.selected is False
+    assert "already rejected as non-role" in rejected.reasons
+
+
 def test_scan_company_visits_selected_discovered_links(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

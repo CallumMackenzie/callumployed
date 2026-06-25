@@ -618,6 +618,40 @@ def test_scan_company_calls_service_with_company_context(
     assert company_names == ["Acme"]
 
 
+def test_scan_company_can_retry_rejected_roles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    retry_values: list[bool] = []
+
+    async def fake_run_scan_company(
+        company: Company,
+        *,
+        default_external_browser_port: int | None,
+        retry_rejected_roles: bool = False,
+    ) -> dict[str, object]:
+        assert company.name == "Acme"
+        assert default_external_browser_port is None
+        retry_values.append(retry_rejected_roles)
+        result = CareersPageScanResult(
+            source_url="https://example.com/careers",
+            final_url="https://example.com/careers",
+            candidates_scanned=0,
+            confidence=ExtractionConfidence.LOW,
+        )
+        return _scan_payload(result)
+
+    database = tmp_path / "scan-company-retry-rejected.sqlite3"
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    monkeypatch.setattr("callumployed.cli.run_scan_company", fake_run_scan_company)
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com/careers"], env=env)
+
+    result = runner.invoke(app, ["scan", "company", "1", "--retry-rejected-roles"], env=env)
+
+    assert result.exit_code == 0
+    assert retry_values == [True]
+
+
 def test_scan_company_uses_default_external_browser_port(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

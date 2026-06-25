@@ -9,6 +9,7 @@ from callumployed.data.models import (
     EventSource,
     Role,
     RoleDiscoveryAttempt,
+    RoleDiscoveryStatus,
     RoleListItem,
     RoleStatus,
     ScanCandidate,
@@ -1042,6 +1043,30 @@ def list_role_discovery_attempts(
         values,
     ).fetchall()
     return [_role_discovery_attempt_from_row(row) for row in rows]
+
+
+def list_rejected_role_urls(connection: turso.Connection, company_id: int) -> set[str]:
+    rows = connection.execute(
+        """
+        SELECT url, final_url
+        FROM role_discovery_attempts
+        WHERE company_id = ?
+            AND status = ?
+            AND assessment_is_role = 0
+            AND (
+                assessment_rejection_reason IS NULL
+                OR assessment_rejection_reason NOT LIKE '%filtered by app config%'
+            )
+        """,
+        (company_id, RoleDiscoveryStatus.SUCCEEDED.value),
+    ).fetchall()
+    urls: set[str] = set()
+    for row in rows:
+        if row["url"]:
+            urls.add(row["url"])
+        if row["final_url"]:
+            urls.add(row["final_url"])
+    return urls
 
 
 def _role_discovery_attempt_from_row(row: turso.Row) -> RoleDiscoveryAttempt:

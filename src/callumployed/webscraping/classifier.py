@@ -117,10 +117,16 @@ def score_candidates(
     candidates: list[LinkCandidate],
     *,
     existing_posting_urls: set[str] | None = None,
+    rejected_role_urls: set[str] | None = None,
 ) -> list[ScoredLinkCandidate]:
     known_posting_urls = existing_posting_urls or set()
+    known_rejected_urls = rejected_role_urls or set()
     scored = [
-        _score_candidate(candidate, existing_posting_urls=known_posting_urls)
+        _score_candidate(
+            candidate,
+            existing_posting_urls=known_posting_urls,
+            rejected_role_urls=known_rejected_urls,
+        )
         for candidate in candidates
     ]
     return sorted(scored, key=lambda candidate: candidate.confidence, reverse=True)
@@ -196,6 +202,7 @@ def _score_candidate(
     candidate: LinkCandidate,
     *,
     existing_posting_urls: set[str],
+    rejected_role_urls: set[str],
 ) -> ScoredLinkCandidate:
     parsed = urlparse(candidate.url)
     domain = parsed.netloc.lower()
@@ -231,6 +238,7 @@ def _score_candidate(
             _score_job_like_text(haystack),
             _score_rejected_text(haystack),
             _score_existing_posting(candidate.url, existing_posting_urls),
+            _score_rejected_role(candidate.url, rejected_role_urls),
         )
         if result is not None
     ]
@@ -299,4 +307,10 @@ def _score_rejected_text(haystack: str) -> ScoreRuleResult | None:
 def _score_existing_posting(url: str, existing_posting_urls: set[str]) -> ScoreRuleResult | None:
     if url in existing_posting_urls:
         return -999.0, "already in database"
+    return None
+
+
+def _score_rejected_role(url: str, rejected_role_urls: set[str]) -> ScoreRuleResult | None:
+    if url in rejected_role_urls:
+        return -999.0, "already rejected as non-role"
     return None

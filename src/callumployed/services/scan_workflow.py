@@ -31,6 +31,7 @@ from callumployed.data.repositories import (
     get_default_external_browser_port,
     get_role_by_company_url,
     list_company_career_pages,
+    list_rejected_role_urls,
     list_role_discovery_attempts,
     list_roles,
     should_include_graduate_degree_roles,
@@ -94,6 +95,8 @@ class ScanWorkflowState(TypedDict, total=False):
     include_hardware_roles: bool
     require_software_keywords: bool
     existing_posting_urls: set[str]
+    rejected_role_urls: set[str]
+    retry_rejected_roles: bool
     llm_settings: LlmSettings | None
     chat_model_factory: ChatModelFactory | None
     page: RenderedPageState
@@ -140,6 +143,7 @@ def score_candidates_node(
     scored_candidates = score_candidates(
         prepare_candidates(state["raw_candidates"]),
         existing_posting_urls=state.get("existing_posting_urls"),
+        rejected_role_urls=state.get("rejected_role_urls"),
     )
     return {
         "scored_candidates": scored_candidates,
@@ -246,7 +250,8 @@ async def visit_discovered_links_node(state: ScanWorkflowState) -> dict[str, obj
             )
             assessment = assess_role_page(page)
             if (
-                not state.get("include_graduate_degree_roles", False)
+                assessment.is_role
+                and not state.get("include_graduate_degree_roles", False)
                 and _is_graduate_degree_role(assessment.title, assessment.description)
             ):
                 assessment = assessment.model_copy(
@@ -261,7 +266,8 @@ async def visit_discovered_links_node(state: ScanWorkflowState) -> dict[str, obj
                     }
                 )
             if (
-                not state.get("include_hardware_roles", False)
+                assessment.is_role
+                and not state.get("include_hardware_roles", False)
                 and _is_hardware_only_role(assessment.title)
             ):
                 assessment = assessment.model_copy(
@@ -276,7 +282,8 @@ async def visit_discovered_links_node(state: ScanWorkflowState) -> dict[str, obj
                     }
                 )
             if (
-                state.get("require_software_keywords", True)
+                assessment.is_role
+                and state.get("require_software_keywords", True)
                 and not _has_software_keyword(assessment.title, assessment.description)
             ):
                 assessment = assessment.model_copy(
@@ -438,6 +445,8 @@ async def scan_url(
                 "url": url,
                 "external_browser_port": external_browser_port,
                 "existing_posting_urls": existing_posting_urls or set(),
+                "rejected_role_urls": set(),
+                "retry_rejected_roles": False,
                 "llm_settings": llm_settings,
                 "chat_model_factory": chat_model_factory,
                 "agent_links": [],
@@ -459,6 +468,8 @@ async def scan_career_page(
     include_hardware_roles: bool = False,
     require_software_keywords: bool = True,
     existing_posting_urls: set[str] | None = None,
+    rejected_role_urls: set[str] | None = None,
+    retry_rejected_roles: bool = False,
     llm_settings: LlmSettings | None = None,
     chat_model_factory: ChatModelFactory | None = None,
 ) -> CareersPageScanResult:
@@ -476,6 +487,10 @@ async def scan_career_page(
                 "include_hardware_roles": include_hardware_roles,
                 "require_software_keywords": require_software_keywords,
                 "existing_posting_urls": existing_posting_urls or set(),
+                "rejected_role_urls": (
+                    set() if retry_rejected_roles else rejected_role_urls or set()
+                ),
+                "retry_rejected_roles": retry_rejected_roles,
                 "llm_settings": llm_settings,
                 "chat_model_factory": chat_model_factory,
                 "agent_links": [],
@@ -491,6 +506,7 @@ async def scan_company(
     company: Company,
     *,
     default_external_browser_port: int | None = None,
+    retry_rejected_roles: bool = False,
     llm_settings: LlmSettings | None = None,
     chat_model_factory: ChatModelFactory | None = None,
 ) -> CompanyScanResult | None:
@@ -500,6 +516,9 @@ async def scan_company(
     with db.connect() as connection:
         career_pages = list_company_career_pages(connection, company.id)
         existing_posting_urls = {role.role_url for role in list_roles(connection)}
+        rejected_role_urls = (
+            set() if retry_rejected_roles else list_rejected_role_urls(connection, company.id)
+        )
         include_graduate_degree_roles = should_include_graduate_degree_roles(connection)
         include_hardware_roles = should_include_hardware_roles(connection)
         require_software_keywords = should_require_software_keywords(connection)
@@ -527,6 +546,8 @@ async def scan_company(
                 include_hardware_roles=include_hardware_roles,
                 require_software_keywords=require_software_keywords,
                 existing_posting_urls=existing_posting_urls,
+                rejected_role_urls=rejected_role_urls,
+                retry_rejected_roles=retry_rejected_roles,
                 llm_settings=llm_settings,
                 chat_model_factory=chat_model_factory,
             )
@@ -568,6 +589,7 @@ async def scan_company_by_id(
     return await scan_company(
         company,
         default_external_browser_port=default_external_browser_port,
+        retry_rejected_roles=False,
         llm_settings=llm_settings,
         chat_model_factory=chat_model_factory,
     )
