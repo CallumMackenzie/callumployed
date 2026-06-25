@@ -1,0 +1,313 @@
+import asyncio
+from pathlib import Path
+
+import pytest
+
+from callumployed.data import db
+from callumployed.data.models import Company, CompanyCareerPage, Role, RoleDiscoveryStatus
+from callumployed.data.repositories import (
+    add_company,
+    add_company_career_page,
+    add_role,
+    list_role_discovery_attempts,
+    list_scan_candidates,
+    list_scan_pages,
+)
+from callumployed.services import scan_workflow
+from callumployed.webscraping.models import RenderedPageState
+
+
+def _use_database(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(tmp_path / "callumployed.sqlite3"))
+    db.ensure_initialized()
+
+
+def _page(url: str) -> RenderedPageState:
+    return RenderedPageState(
+        url=url,
+        final_url=url,
+        title="Example Careers",
+        html="""
+        <a href="/jobs/software-engineering-intern-12345">
+          Software Engineering Intern
+        </a>
+        <a href="/roles/swe">Software Intern</a>
+        <a href="/about">About</a>
+        """,
+    )
+
+
+class EmptyStructuredModel:
+    async def ainvoke(self, prompt: object) -> object:
+        return {"decisions": []}
+
+
+def test_render_page_node_passes_external_browser_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    rendered_ports: list[int | None] = []
+
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+    ) -> RenderedPageState:
+        rendered_ports.append(external_browser_port)
+        return _page(url)
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    state = asyncio.run(
+        scan_workflow.render_page_node(
+            {"url": "https://example.com/careers", "external_browser_port": 9222}
+        )
+    )
+
+    assert rendered_ports == [9222]
+    assert state["page"].final_url == "https://example.com/careers"
+
+
+def test_graph_calls_llm_for_ambiguous_candidates_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+    ) -> RenderedPageState:
+        return _page(url)
+
+    model_calls = 0
+
+    class FakeStructuredModel:
+        async def ainvoke(self, prompt: object) -> object:
+            nonlocal model_calls
+            model_calls += 1
+            return {"decisions": []}
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    result = asyncio.run(
+        scan_workflow.scan_url(
+            "https://example.com/careers",
+            chat_model_factory=lambda _settings: FakeStructuredModel(),
+        )
+    )
+
+    assert model_calls == 1
+    assert "https://example.com/jobs/software-engineering-intern-12345" in {
+        link.url for link in result.links
+    }
+    assert "https://example.com/roles/swe" not in {link.url for link in result.links}
+
+
+def test_graph_calls_llm_only_with_ambiguous_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prompts: list[str] = []
+
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+    ) -> RenderedPageState:
+        return _page(url)
+
+    class FakeStructuredModel:
+        async def ainvoke(self, prompt: object) -> object:
+            assert isinstance(prompt, str)
+            prompts.append(prompt)
+            return {
+                "decisions": [
+                    {
+                        "url": "https://example.com/roles/swe",
+                        "is_job_posting": True,
+                        "confidence": 0.9,
+                        "title": "Software Intern",
+                        "reasons": ["Specific role page."],
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    result = asyncio.run(
+        scan_workflow.scan_url(
+            "https://example.com/careers",
+            chat_model_factory=lambda _settings: FakeStructuredModel(),
+        )
+    )
+
+    assert len(prompts) == 1
+    assert "https://example.com/roles/swe" in prompts[0]
+    assert "software-engineering-intern-12345" not in prompts[0]
+    assert {link.discovery_method for link in result.links} == {"heuristic", "agent"}
+
+
+def test_scan_company_persists_page_and_candidates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+    ) -> RenderedPageState:
+        return _page(url)
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Acme"))
+        if company.id is None:
+            raise AssertionError("company id missing")
+        add_company_career_page(
+            connection,
+            CompanyCareerPage(company_id=company.id, url="https://example.com/careers"),
+        )
+        add_role(
+            connection,
+            Role(
+                company_id=company.id,
+                title="Existing",
+                role_url="https://example.com/jobs/software-engineering-intern-12345",
+            ),
+        )
+
+    scan = asyncio.run(
+        scan_workflow.scan_company(
+            company,
+            chat_model_factory=lambda _settings: EmptyStructuredModel(),
+        )
+    )
+
+    assert scan is not None
+    scan_run = scan["scan_run"]
+    assert scan_run.id is not None
+    with db.connect() as connection:
+        pages = list_scan_pages(connection, scan_run.id)
+        assert len(pages) == 1
+        assert pages[0].source_url == "https://example.com/careers"
+        if pages[0].id is None:
+            raise AssertionError("scan page id missing")
+        candidates = list_scan_candidates(connection, pages[0].id)
+
+    by_url = {candidate.url: candidate for candidate in candidates}
+    existing = by_url["https://example.com/jobs/software-engineering-intern-12345"]
+    assert existing.confidence == 0.0
+    assert existing.selected is False
+    assert "already in database" in existing.reasons
+
+
+def test_scan_company_visits_selected_discovered_links(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+    rendered_urls: list[str] = []
+
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+    ) -> RenderedPageState:
+        rendered_urls.append(url)
+        if url.endswith("/careers"):
+            return _page(url)
+        return RenderedPageState(
+            url=url,
+            final_url=f"{url}?tracked=true",
+            title="Careers",
+            html="""
+            <script type="application/ld+json">
+            {
+              "@context": "https://schema.org",
+              "@type": "JobPosting",
+              "title": "Software Engineering Intern",
+              "description": "Software Engineering Intern Vancouver Apply now"
+            }
+            </script>
+            <h1>Careers</h1>
+            """,
+            visible_text="Software Engineering Intern Vancouver Apply now",
+        )
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Acme"))
+        if company.id is None:
+            raise AssertionError("company id missing")
+        add_company_career_page(
+            connection,
+            CompanyCareerPage(company_id=company.id, url="https://example.com/careers"),
+        )
+
+    scan = asyncio.run(
+        scan_workflow.scan_company(
+            company,
+            chat_model_factory=lambda _settings: EmptyStructuredModel(),
+        )
+    )
+
+    assert scan is not None
+    scan_run = scan["scan_run"]
+    assert scan_run.id is not None
+    with db.connect() as connection:
+        attempts = list_role_discovery_attempts(connection, scan_run_id=scan_run.id)
+
+    assert rendered_urls == [
+        "https://example.com/careers",
+        "https://example.com/jobs/software-engineering-intern-12345",
+    ]
+    assert len(attempts) == 1
+    assert scan["role_discovery_attempts"] == attempts
+    assert attempts[0].status is RoleDiscoveryStatus.SUCCEEDED
+    assert attempts[0].url == "https://example.com/jobs/software-engineering-intern-12345"
+    assert attempts[0].final_url == (
+        "https://example.com/jobs/software-engineering-intern-12345?tracked=true"
+    )
+    assert attempts[0].title == "Software Engineering Intern"
+    assert attempts[0].visible_text_excerpt == (
+        "Software Engineering Intern Vancouver Apply now"
+    )
+
+
+def test_scan_company_records_failed_discovered_link_visits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+    ) -> RenderedPageState:
+        if url.endswith("/careers"):
+            return _page(url)
+        raise RuntimeError("posting page failed")
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Acme"))
+        if company.id is None:
+            raise AssertionError("company id missing")
+        add_company_career_page(
+            connection,
+            CompanyCareerPage(company_id=company.id, url="https://example.com/careers"),
+        )
+
+    scan = asyncio.run(
+        scan_workflow.scan_company(
+            company,
+            chat_model_factory=lambda _settings: EmptyStructuredModel(),
+        )
+    )
+
+    assert scan is not None
+    attempts = scan["role_discovery_attempts"]
+    assert len(attempts) == 1
+    assert attempts[0].status is RoleDiscoveryStatus.FAILED
+    assert attempts[0].error == "posting page failed"

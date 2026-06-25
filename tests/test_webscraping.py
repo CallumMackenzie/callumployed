@@ -25,6 +25,7 @@ from callumployed.webscraping.models import (
     RenderedPageState,
     ScoredLinkCandidate,
 )
+from callumployed.webscraping.role_page_classifier import assess_role_page
 from callumployed.webscraping.scanner import scan_careers_page
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
@@ -271,6 +272,84 @@ def test_score_candidates_hard_declines_existing_posting_urls() -> None:
     assert scored_by_url[existing_url].confidence == 0.0
     assert "already in database" in scored_by_url[existing_url].reasons
     assert existing_url not in {link.url for link in select_heuristic_links(scored)}
+
+
+def test_assess_role_page_prefers_schema_org_jobposting() -> None:
+    page = RenderedPageState(
+        url="https://example.com/jobs/backend-intern",
+        final_url="https://example.com/jobs/backend-intern",
+        title="Careers",
+        html="""
+        <script type="application/ld+json">
+        {
+          "@context": "https://schema.org",
+          "@type": "JobPosting",
+          "title": "Backend Engineering Intern",
+          "description": "<p>Build internal platforms.</p>",
+          "identifier": {"value": "REQ-123"},
+          "jobLocation": {
+            "@type": "Place",
+            "address": {
+              "@type": "PostalAddress",
+              "addressLocality": "Vancouver",
+              "addressRegion": "BC",
+              "addressCountry": "CA"
+            }
+          }
+        }
+        </script>
+        <h1>Careers</h1>
+        """,
+    )
+
+    assessment = assess_role_page(page)
+
+    assert assessment.is_role is True
+    assert assessment.confidence == 0.95
+    assert assessment.extraction_method == "jobposting_structured_data"
+    assert assessment.title == "Backend Engineering Intern"
+    assert assessment.location == "Vancouver, BC, CA"
+    assert assessment.posting_id == "REQ-123"
+
+
+def test_assess_role_page_accepts_ats_role_without_structured_data() -> None:
+    page = RenderedPageState(
+        url="https://jobs.lever.co/acme/backend-intern",
+        final_url="https://jobs.lever.co/acme/backend-intern",
+        title="Backend Intern",
+        html="""
+        <h1>Backend Intern</h1>
+        <div class="location">Toronto, ON</div>
+        <section>Job description. Responsibilities. Requirements. Apply now.</section>
+        """,
+    )
+
+    assessment = assess_role_page(page)
+
+    assert assessment.is_role is True
+    assert assessment.extraction_method == "ats_heuristic"
+    assert assessment.title == "Backend Intern"
+    assert assessment.location == "Toronto, ON"
+    assert assessment.confidence >= 0.8
+
+
+def test_assess_role_page_rejects_generic_careers_listing() -> None:
+    page = RenderedPageState(
+        url="https://example.com/careers/search",
+        final_url="https://example.com/careers/search",
+        title="Careers",
+        html="""
+        <h1>Open positions</h1>
+        <p>Search jobs across teams and view all jobs.</p>
+        <a href="/jobs/backend-intern">Backend Intern</a>
+        """,
+    )
+
+    assessment = assess_role_page(page)
+
+    assert assessment.is_role is False
+    assert assessment.extraction_method == "html_heuristic"
+    assert assessment.rejection_reason == "page looks like a careers search/listing page"
 
 
 def test_scan_careers_page_orchestrates_render_extract_and_score(

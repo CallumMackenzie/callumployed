@@ -233,14 +233,10 @@ def show_config_command() -> None:
 @scan_app.command("url")
 def scan_url_command(
     url: Annotated[str, typer.Argument(help="Careers page URL.")],
-    use_agent: Annotated[
-        bool,
-        typer.Option("--agent/--no-agent", help="Use the LLM posting-link classifier."),
-    ] = False,
 ) -> None:
     """Scan a careers page URL and print discovered job links."""
     try:
-        result = asyncio.run(run_scan_url(url, use_agent=use_agent))
+        result = asyncio.run(run_scan_url(url))
     except ScrapingError as error:
         raise typer.BadParameter(str(error)) from error
 
@@ -250,10 +246,6 @@ def scan_url_command(
 @scan_app.command("company")
 def scan_company_command(
     company_id: Annotated[int, typer.Argument(help="Company ID.")],
-    use_agent: Annotated[
-        bool,
-        typer.Option("--agent/--no-agent", help="Use the LLM posting-link classifier."),
-    ] = False,
 ) -> None:
     """Scan a saved company's careers URLs and print discovered job links."""
     with db.connect() as connection:
@@ -267,19 +259,13 @@ def scan_company_command(
         _scan_company(
             company,
             default_external_browser_port=default_external_browser_port,
-            use_agent=use_agent,
         )
     except ScrapingError as error:
         raise typer.BadParameter(str(error)) from error
 
 
 @scan_app.command("all")
-def scan_all_command(
-    use_agent: Annotated[
-        bool,
-        typer.Option("--agent/--no-agent", help="Use the LLM posting-link classifier."),
-    ] = False,
-) -> None:
+def scan_all_command() -> None:
     """Scan all saved companies sequentially."""
     with db.connect() as connection:
         companies = list_companies(connection)
@@ -299,7 +285,6 @@ def scan_all_command(
             scanned = _scan_company(
                 company,
                 default_external_browser_port=default_external_browser_port,
-                use_agent=use_agent,
             )
         except ScrapingError as error:
             failed += 1
@@ -318,7 +303,6 @@ def _scan_company(
     company: Company,
     *,
     default_external_browser_port: int | None,
-    use_agent: bool = False,
 ) -> bool:
     if company.id is None:
         raise RuntimeError("company did not include an id")
@@ -337,13 +321,10 @@ def _scan_company(
     if external_browser_port:
         source = "company" if company.external_browser_port else "app default"
         typer.echo(f"External browser CDP port: {external_browser_port} ({source})")
-    if use_agent:
-        typer.echo("Agent link classifier: enabled")
     scan = asyncio.run(
         run_scan_company(
             company,
             default_external_browser_port=default_external_browser_port,
-            use_agent=use_agent,
         )
     )
     if scan is None:

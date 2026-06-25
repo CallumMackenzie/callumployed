@@ -48,6 +48,24 @@ class DiscoveredJobLink(WebscrapingModel):
     reasons: list[str] = Field(default_factory=list)
 
 
+class RolePageAssessment(WebscrapingModel):
+    is_role: bool
+    is_closed: bool = False
+    confidence: float = Field(ge=0.0, le=1.0)
+    title: str | None = None
+    location: str | None = None
+    description: str | None = None
+    posting_id: str | None = None
+    extraction_method: Literal[
+        "jobposting_structured_data",
+        "ats_heuristic",
+        "html_heuristic",
+        "llm",
+    ]
+    rejection_reason: str | None = None
+    reasons: list[str] = Field(default_factory=list)
+
+
 class CareersPageScanResult(WebscrapingModel):
     source_url: str
     final_url: str

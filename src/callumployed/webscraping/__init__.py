@@ -5,7 +5,9 @@ from callumployed.webscraping.models import (
     DiscoveredJobLink,
     ExtractionConfidence,
     LinkCandidate,
+    RolePageAssessment,
 )
+from callumployed.webscraping.role_page_classifier import assess_role_page
 from callumployed.webscraping.scanner import scan_careers_page
 
 __all__ = [
@@ -13,5 +15,7 @@ __all__ = [
     "DiscoveredJobLink",
     "ExtractionConfidence",
     "LinkCandidate",
+    "RolePageAssessment",
+    "assess_role_page",
     "scan_careers_page",
 ]

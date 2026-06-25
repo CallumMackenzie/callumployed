@@ -352,10 +352,7 @@ def test_roles_set_status_reports_missing_role(tmp_path: Path) -> None:
 def test_scan_url_command_prints_discovered_links(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_scan_url(
         url: str,
-        *,
-        use_agent: bool = False,
     ) -> CareersPageScanResult:
-        assert use_agent is False
         return CareersPageScanResult(
             source_url=url,
             final_url=url,
@@ -394,10 +391,8 @@ def test_scan_company_uses_saved_career_page(
         company: Company,
         *,
         default_external_browser_port: int | None,
-        use_agent: bool = False,
     ) -> dict[str, object]:
         assert default_external_browser_port is None
-        assert use_agent is False
         assert company.external_browser_port == 9222
         url = "https://example.com/careers"
         result = CareersPageScanResult(
@@ -463,21 +458,17 @@ def test_scan_company_uses_saved_career_page(
     assert "[0.78] <https://example.com/jobs/backend> - Backend Engineer" in result.output
 
 
-def test_scan_company_agent_flag_passes_agent_classifier(
+def test_scan_company_rejects_removed_agent_flag(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    use_agent_values: list[bool] = []
-
     async def fake_run_scan_company(
         company: Company,
         *,
         default_external_browser_port: int | None,
-        use_agent: bool = False,
     ) -> dict[str, object]:
         assert company.name == "Acme"
         assert default_external_browser_port is None
-        use_agent_values.append(use_agent)
         result = CareersPageScanResult(
             source_url="https://example.com/careers",
             final_url="https://example.com/careers",
@@ -493,9 +484,8 @@ def test_scan_company_agent_flag_passes_agent_classifier(
     runner.invoke(app, ["companies", "add", "Acme", "https://example.com/careers"], env=env)
     result = runner.invoke(app, ["scan", "company", "1", "--agent"], env=env)
 
-    assert result.exit_code == 0
-    assert use_agent_values == [True]
-    assert "Agent link classifier: enabled" in result.output
+    assert result.exit_code != 0
+    assert "No such option: --agent" in result.output
 
 
 def test_scan_company_calls_service_with_company_context(
@@ -508,10 +498,8 @@ def test_scan_company_calls_service_with_company_context(
         company: Company,
         *,
         default_external_browser_port: int | None,
-        use_agent: bool = False,
     ) -> dict[str, object]:
         assert default_external_browser_port is None
-        assert use_agent is False
         company_names.append(company.name)
         result = CareersPageScanResult(
             source_url="https://example.com/careers",
@@ -542,10 +530,8 @@ def test_scan_company_uses_default_external_browser_port(
         company: Company,
         *,
         default_external_browser_port: int | None,
-        use_agent: bool = False,
     ) -> dict[str, object]:
         assert company.name == "Acme"
-        assert use_agent is False
         scanned_external_browser_ports.append(default_external_browser_port)
         result = CareersPageScanResult(
             source_url="https://example.com/careers",
@@ -572,13 +558,12 @@ def test_scan_all_scans_saved_companies_sequentially(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    scanned: list[tuple[str, int | None, bool]] = []
+    scanned: list[tuple[str, int | None]] = []
 
     async def fake_run_scan_company(
         company: Company,
         *,
         default_external_browser_port: int | None,
-        use_agent: bool = False,
     ) -> dict[str, object]:
         external_browser_port = company.external_browser_port or default_external_browser_port
         url = (
@@ -586,7 +571,7 @@ def test_scan_all_scans_saved_companies_sequentially(
             if company.name == "Acme"
             else "https://beta.example.com/careers"
         )
-        scanned.append((url, external_browser_port, use_agent))
+        scanned.append((url, external_browser_port))
         result = CareersPageScanResult(
             source_url=url,
             final_url=url,
@@ -617,8 +602,8 @@ def test_scan_all_scans_saved_companies_sequentially(
 
     assert result.exit_code == 0
     assert scanned == [
-        ("https://example.com/careers", 9333, False),
-        ("https://beta.example.com/careers", 9222, False),
+        ("https://example.com/careers", 9333),
+        ("https://beta.example.com/careers", 9222),
     ]
     assert "Scanning all companies: 2 total" in result.output
     assert "--- Acme (#2) ---" in result.output

@@ -63,8 +63,8 @@ PYTHONPATH=src python -m callumployed.cli --help
 
 ### Optional LLM classifier
 
-The scan flow uses LangGraph behind the CLI. Plain scans stay deterministic; passing
-`--agent` enables LLM classification only for ambiguous link candidates.
+The scan flow uses LangGraph behind the CLI. Deterministic scoring handles obvious links;
+LLM classification is always enabled for ambiguous link candidates.
 
 Configure the provider through shell environment variables or a local `.env` file:
 
@@ -78,8 +78,8 @@ Examples:
 
 ```bash
 callumployed scan url https://example.com/careers
-callumployed scan company 1 --agent
-callumployed scan all --agent
+callumployed scan company 1
+callumployed scan all
 ```
 
 The first graph handles career-page scan orchestration only. It does not use
