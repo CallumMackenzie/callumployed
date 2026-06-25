@@ -194,6 +194,7 @@ def test_scan_company_persists_page_and_candidates(
     )
 
     assert scan is not None
+    assert scan["results"][0].links == []
     scan_run = scan["scan_run"]
     assert scan_run.id is not None
     with db.connect() as connection:
@@ -439,6 +440,7 @@ def test_scan_company_filters_graduate_degree_roles_by_default(
     )
 
     assert scan is not None
+    assert scan["results"][0].links == []
     scan_run = scan["scan_run"]
     assert scan_run.id is not None
     with db.connect() as connection:
@@ -446,12 +448,7 @@ def test_scan_company_filters_graduate_degree_roles_by_default(
         roles = list_roles(connection)
 
     assert roles == []
-    assert len(attempts) == 1
-    assert attempts[0].assessment_is_role is False
-    assert attempts[0].assessment_rejection_reason == (
-        "graduate-degree role filtered by app config"
-    )
-    assert "graduate-degree role filter" in attempts[0].assessment_reasons
+    assert attempts == []
 
 
 def test_scan_company_can_include_graduate_degree_roles_when_configured(
@@ -510,6 +507,9 @@ def test_scan_company_can_include_graduate_degree_roles_when_configured(
     )
 
     assert scan is not None
+    assert {link.url for link in scan["results"][0].links} == {
+        "https://example.com/jobs/phd-research-intern-12345"
+    }
     scan_run = scan["scan_run"]
     assert scan_run.id is not None
     with db.connect() as connection:

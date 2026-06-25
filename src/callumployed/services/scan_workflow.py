@@ -156,6 +156,12 @@ def build_result_node(state: ScanWorkflowState) -> dict[str, object]:
         state.get("heuristic_links", []),
         state.get("agent_links", []),
     )
+    if not state.get("include_graduate_degree_roles", False):
+        links = [
+            link
+            for link in links
+            if not _is_graduate_degree_role(link.text, " ".join(link.reasons))
+        ]
     page = state["page"]
     result = CareersPageScanResult(
         source_url=state["url"],
