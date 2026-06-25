@@ -614,9 +614,21 @@ def list_roles_command(
         int | None,
         typer.Option("--company-id", help="Filter by company ID."),
     ] = None,
+    company: Annotated[
+        str | None,
+        typer.Option("--company", help="Filter by company name text."),
+    ] = None,
     status: Annotated[
         RoleStatus | None,
         typer.Option("--status", help="Filter by role status."),
+    ] = None,
+    title: Annotated[
+        str | None,
+        typer.Option("--title", help="Filter by role title text."),
+    ] = None,
+    link: Annotated[
+        str | None,
+        typer.Option("--link", "--url", help="Filter by role link text."),
     ] = None,
     location: Annotated[
         str | None,
@@ -624,7 +636,7 @@ def list_roles_command(
     ] = None,
     query: Annotated[
         str | None,
-        typer.Option("--query", "-q", help="Search title, company, or location."),
+        typer.Option("--query", "-q", help="Search company, title, link, status, or location."),
     ] = None,
 ) -> None:
     """List roles."""
@@ -632,7 +644,10 @@ def list_roles_command(
         roles = list_role_items(
             connection,
             company_id=company_id,
+            company=company,
             role_status=status,
+            title=title,
+            link=link,
             location=location,
             query=query,
         )
@@ -642,11 +657,8 @@ def list_roles_command(
         return
 
     for role in roles:
-        location = f" ({role.location})" if role.location else ""
-        typer.echo(
-            f"{role.id}: [{role.role_status.value}] "
-            f"{role.company_name} - {role.title}{location} <{role.role_url}>"
-        )
+        location = f" - {role.location}" if role.location else ""
+        typer.echo(f"{role.id}: {role.company_name} - {role.title} <{role.role_url}>{location}")
 
 
 @roles_app.command("show")
@@ -759,9 +771,13 @@ def set_status_command(
     ] = "Status updated manually.",
 ) -> None:
     """Update a role status and record an event."""
+    _set_role_state(role_id, status, summary=summary)
+
+
+def _set_role_state(role_id: int, state: RoleStatus, *, summary: str) -> None:
     with db.connect() as connection:
         try:
-            role = set_role_status(connection, role_id, status, summary=summary)
+            role = set_role_status(connection, role_id, state, summary=summary)
         except LookupError as error:
             raise typer.BadParameter(str(error)) from error
     typer.echo(f"Updated role #{role.id}: {role.role_status.value}")

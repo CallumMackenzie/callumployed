@@ -85,7 +85,10 @@ def test_company_and_role_commands_share_database_file(tmp_path: Path) -> None:
     assert status_result.exit_code == 0
     assert "Updated role #1: interested" in status_result.output
     assert list_result.exit_code == 0
-    assert "1: [interested] Acme - Software Engineer (Vancouver)" in list_result.output
+    assert (
+        "1: Acme - Software Engineer <https://example.com/jobs/1> - Vancouver"
+        in list_result.output
+    )
 
 
 def test_roles_list_filters_by_status_and_search_query(tmp_path: Path) -> None:
@@ -128,7 +131,11 @@ def test_roles_list_filters_by_status_and_search_query(tmp_path: Path) -> None:
 
     interested_result = runner.invoke(app, ["roles", "list", "--status", "interested"], env=env)
     search_result = runner.invoke(app, ["roles", "list", "--query", "designer"], env=env)
+    status_query_result = runner.invoke(app, ["roles", "list", "--query", "interested"], env=env)
     company_result = runner.invoke(app, ["roles", "list", "--company-id", "2"], env=env)
+    company_text_result = runner.invoke(app, ["roles", "list", "--company", "acm"], env=env)
+    title_result = runner.invoke(app, ["roles", "list", "--title", "backend"], env=env)
+    link_result = runner.invoke(app, ["roles", "list", "--link", "designer"], env=env)
     location_result = runner.invoke(app, ["roles", "list", "--location", "vancouver"], env=env)
     empty_result = runner.invoke(app, ["roles", "list", "--location", "Montreal"], env=env)
 
@@ -138,9 +145,21 @@ def test_roles_list_filters_by_status_and_search_query(tmp_path: Path) -> None:
     assert search_result.exit_code == 0
     assert "Beta - Product Designer" in search_result.output
     assert "Acme - Backend Engineer" not in search_result.output
+    assert status_query_result.exit_code == 0
+    assert "Acme - Backend Engineer" in status_query_result.output
+    assert "Beta - Product Designer" not in status_query_result.output
     assert company_result.exit_code == 0
     assert "Beta - Product Designer" in company_result.output
     assert "Acme - Backend Engineer" not in company_result.output
+    assert company_text_result.exit_code == 0
+    assert "Acme - Backend Engineer" in company_text_result.output
+    assert "Beta - Product Designer" not in company_text_result.output
+    assert title_result.exit_code == 0
+    assert "Acme - Backend Engineer" in title_result.output
+    assert "Beta - Product Designer" not in title_result.output
+    assert link_result.exit_code == 0
+    assert "Beta - Product Designer" in link_result.output
+    assert "Acme - Backend Engineer" not in link_result.output
     assert location_result.exit_code == 0
     assert "Acme - Backend Engineer" in location_result.output
     assert "Beta - Product Designer" not in location_result.output

@@ -512,7 +512,7 @@ def test_role_list_items_include_company_and_filter_by_query() -> None:
     db.run_migrations(connection)
     company = add_company(connection, Company(name="Acme"))
     assert company.id is not None
-    add_role(
+    role = add_role(
         connection,
         Role(
             company_id=company.id,
@@ -521,12 +521,18 @@ def test_role_list_items_include_company_and_filter_by_query() -> None:
             location="Vancouver",
         ),
     )
+    assert role.id is not None
+    set_role_status(connection, role.id, RoleStatus.INTERESTED, summary="Worth tracking.")
 
     roles = list_role_items(connection, query="backend")
+    link_roles = list_role_items(connection, link="example.com/jobs")
+    status_roles = list_role_items(connection, query="interested")
 
     assert len(roles) == 1
     assert roles[0].company_name == "Acme"
     assert roles[0].title == "Backend Engineer"
+    assert link_roles == roles
+    assert status_roles == roles
 
 
 def test_update_role_changes_and_clears_fields() -> None:

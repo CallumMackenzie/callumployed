@@ -527,7 +527,10 @@ def list_role_items(
     connection: turso.Connection,
     *,
     company_id: int | None = None,
+    company: str | None = None,
     role_status: RoleStatus | None = None,
+    title: str | None = None,
+    link: str | None = None,
     location: str | None = None,
     query: str | None = None,
 ) -> list[RoleListItem]:
@@ -539,6 +542,15 @@ def list_role_items(
     if role_status is not None:
         clauses.append("roles.role_status = ?")
         values.append(role_status.value)
+    if company:
+        clauses.append("LOWER(companies.name) LIKE ?")
+        values.append(f"%{company.lower()}%")
+    if title:
+        clauses.append("LOWER(roles.title) LIKE ?")
+        values.append(f"%{title.lower()}%")
+    if link:
+        clauses.append("LOWER(roles.role_url) LIKE ?")
+        values.append(f"%{link.lower()}%")
     if location:
         clauses.append("LOWER(roles.location) LIKE ?")
         values.append(f"%{location.lower()}%")
@@ -548,12 +560,14 @@ def list_role_items(
             (
                 LOWER(roles.title) LIKE ?
                 OR LOWER(companies.name) LIKE ?
+                OR LOWER(roles.role_url) LIKE ?
                 OR LOWER(roles.location) LIKE ?
+                OR LOWER(roles.role_status) LIKE ?
             )
             """
         )
         query_like = f"%{query.lower()}%"
-        values.extend([query_like, query_like, query_like])
+        values.extend([query_like, query_like, query_like, query_like, query_like])
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     rows = connection.execute(
