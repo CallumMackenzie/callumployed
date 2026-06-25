@@ -4,7 +4,13 @@ from typing import Annotated
 import typer
 
 from callumployed.data import db
-from callumployed.data.models import Company, CompanyCareerPage, Role, RoleStatus
+from callumployed.data.models import (
+    Company,
+    CompanyCareerPage,
+    Role,
+    RoleDiscoveryAttempt,
+    RoleStatus,
+)
 from callumployed.data.repositories import (
     add_company,
     add_company_career_page,
@@ -444,6 +450,7 @@ def _scan_company(
         typer.echo(f"Scanning URL: {career_page.url}")
     for result in scan["results"]:
         _print_scan_result(result)
+    _print_scan_summary(scan["results"], scan["role_discovery_attempts"])
     return True
 
 
@@ -775,3 +782,35 @@ def _print_scan_result(result: CareersPageScanResult) -> None:
     for link in result.links:
         text = f" - {link.text}" if link.text else ""
         typer.echo(f"- [{link.confidence:.2f}] <{link.url}>{text}")
+
+
+def _print_scan_summary(
+    results: list[CareersPageScanResult],
+    role_discovery_attempts: list[RoleDiscoveryAttempt],
+) -> None:
+    candidates = [candidate for result in results for candidate in result.candidates]
+    skipped_existing_roles = sum(
+        "already in database" in candidate.reasons for candidate in candidates
+    )
+    skipped_previously_rejected = sum(
+        "already rejected as non-role" in candidate.reasons for candidate in candidates
+    )
+    created_role_ids = {
+        attempt.role_id
+        for attempt in role_discovery_attempts
+        if attempt.assessment_is_role is True and attempt.role_id is not None
+    }
+    rejected_after_visit = sum(
+        attempt.assessment_is_role is False for attempt in role_discovery_attempts
+    )
+    visit_failures = sum(attempt.status.value == "failed" for attempt in role_discovery_attempts)
+
+    typer.echo("Scan summary:")
+    typer.echo(f"- Candidates scanned: {sum(result.candidates_scanned for result in results)}")
+    typer.echo(f"- Discovered links selected: {sum(len(result.links) for result in results)}")
+    typer.echo(f"- Skipped existing roles: {skipped_existing_roles}")
+    typer.echo(f"- Skipped previously rejected: {skipped_previously_rejected}")
+    typer.echo(f"- Role pages visited: {len(role_discovery_attempts)}")
+    typer.echo(f"- New roles created: {len(created_role_ids)}")
+    typer.echo(f"- Rejected after visit: {rejected_after_visit}")
+    typer.echo(f"- Visit failures: {visit_failures}")

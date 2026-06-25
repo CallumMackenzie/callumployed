@@ -4,7 +4,13 @@ import pytest
 from typer.testing import CliRunner
 
 from callumployed.cli import app
-from callumployed.data.models import Company, ScanRun, ScanStatus
+from callumployed.data.models import (
+    Company,
+    RoleDiscoveryAttempt,
+    RoleDiscoveryStatus,
+    ScanRun,
+    ScanStatus,
+)
 from callumployed.webscraping.models import (
     CareersPageScanResult,
     DiscoveredJobLink,
@@ -16,11 +22,15 @@ from callumployed.webscraping.models import (
 runner = CliRunner()
 
 
-def _scan_payload(result: CareersPageScanResult) -> dict[str, object]:
+def _scan_payload(
+    result: CareersPageScanResult,
+    role_discovery_attempts: list[RoleDiscoveryAttempt] | None = None,
+) -> dict[str, object]:
     return {
         "scan_run": ScanRun(id=1, company_id=1, scan_status=ScanStatus.SUCCEEDED),
         "results": [result],
         "career_pages": [],
+        "role_discovery_attempts": role_discovery_attempts or [],
         "external_browser_port": None,
     }
 
@@ -554,6 +564,106 @@ def test_scan_company_uses_saved_career_page(
     assert "External browser CDP port: 9222 (company)" in result.output
     assert "Scanning URL: https://example.com/careers" in result.output
     assert "[0.78] <https://example.com/jobs/backend> - Backend Engineer" in result.output
+    assert "Scan summary:" in result.output
+    assert "- Discovered links selected: 1" in result.output
+    assert "- New roles created: 0" in result.output
+
+
+def test_scan_company_prints_scan_summary_metrics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_run_scan_company(
+        company: Company,
+        *,
+        default_external_browser_port: int | None,
+    ) -> dict[str, object]:
+        assert company.name == "Acme"
+        assert default_external_browser_port is None
+        url = "https://example.com/careers"
+        result = CareersPageScanResult(
+            source_url=url,
+            final_url=url,
+            candidates=[
+                ScoredLinkCandidate(
+                    url="https://example.com/jobs/new",
+                    source_url=url,
+                    text="Software Intern",
+                    confidence=0.78,
+                    reasons=["job-like URL path"],
+                ),
+                ScoredLinkCandidate(
+                    url="https://example.com/jobs/existing",
+                    source_url=url,
+                    text="Existing Software Intern",
+                    confidence=0.0,
+                    reasons=["already in database"],
+                ),
+                ScoredLinkCandidate(
+                    url="https://example.com/jobs/rejected",
+                    source_url=url,
+                    text="Rejected Software Intern",
+                    confidence=0.0,
+                    reasons=["already rejected as non-role"],
+                ),
+            ],
+            links=[
+                DiscoveredJobLink(
+                    url="https://example.com/jobs/new",
+                    source_url=url,
+                    text="Software Intern",
+                    confidence=0.78,
+                    discovery_method="heuristic",
+                    reasons=["job-like URL path"],
+                )
+            ],
+            candidates_scanned=3,
+            confidence=ExtractionConfidence.LOW,
+        )
+        attempts = [
+            RoleDiscoveryAttempt(
+                scan_run_id=1,
+                scan_candidate_id=1,
+                company_id=1,
+                role_id=10,
+                url="https://example.com/jobs/new",
+                assessment_is_role=True,
+                status=RoleDiscoveryStatus.SUCCEEDED,
+            ),
+            RoleDiscoveryAttempt(
+                scan_run_id=1,
+                scan_candidate_id=2,
+                company_id=1,
+                url="https://example.com/jobs/false-positive",
+                assessment_is_role=False,
+                status=RoleDiscoveryStatus.SUCCEEDED,
+            ),
+            RoleDiscoveryAttempt(
+                scan_run_id=1,
+                scan_candidate_id=3,
+                company_id=1,
+                url="https://example.com/jobs/error",
+                status=RoleDiscoveryStatus.FAILED,
+            ),
+        ]
+        return _scan_payload(result, attempts)
+
+    database = tmp_path / "scan-company-summary.sqlite3"
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    monkeypatch.setattr("callumployed.cli.run_scan_company", fake_run_scan_company)
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com/careers"], env=env)
+
+    result = runner.invoke(app, ["scan", "company", "1"], env=env)
+
+    assert result.exit_code == 0
+    assert "- Candidates scanned: 3" in result.output
+    assert "- Discovered links selected: 1" in result.output
+    assert "- Skipped existing roles: 1" in result.output
+    assert "- Skipped previously rejected: 1" in result.output
+    assert "- Role pages visited: 3" in result.output
+    assert "- New roles created: 1" in result.output
+    assert "- Rejected after visit: 1" in result.output
+    assert "- Visit failures: 1" in result.output
 
 
 def test_scan_company_rejects_removed_agent_flag(
