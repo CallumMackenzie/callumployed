@@ -27,9 +27,11 @@ from callumployed.data.repositories import (
     set_company_external_browser_port,
     set_default_external_browser_port,
     set_include_graduate_degree_roles,
+    set_include_hardware_roles,
     set_primary_company_career_page_url,
     set_role_status,
     should_include_graduate_degree_roles,
+    should_include_hardware_roles,
     update_role,
 )
 from callumployed.services.scan_workflow import scan_company as run_scan_company
@@ -237,16 +239,36 @@ def exclude_graduate_degree_roles_command() -> None:
     typer.echo("Graduate-degree role tracking disabled.")
 
 
+@config_app.command("include-hardware-roles")
+def include_hardware_roles_command() -> None:
+    """Allow hardware-only roles to be tracked."""
+    with db.connect() as connection:
+        set_include_hardware_roles(connection, True)
+
+    typer.echo("Hardware role tracking enabled.")
+
+
+@config_app.command("exclude-hardware-roles")
+def exclude_hardware_roles_command() -> None:
+    """Filter hardware-only roles from tracked roles."""
+    with db.connect() as connection:
+        set_include_hardware_roles(connection, False)
+
+    typer.echo("Hardware role tracking disabled.")
+
+
 @config_app.command("show")
 def show_config_command() -> None:
     """Show app-wide configuration."""
     with db.connect() as connection:
         values = list_config_values(connection)
         include_graduate_degree_roles = should_include_graduate_degree_roles(connection)
+        include_hardware_roles = should_include_hardware_roles(connection)
 
     if not values:
         typer.echo("No app config set.")
         typer.echo("include_graduate_degree_roles: false (default)")
+        typer.echo("include_hardware_roles: false (default)")
         return
 
     for key, value in values.items():
@@ -255,6 +277,11 @@ def show_config_command() -> None:
         typer.echo(
             "include_graduate_degree_roles: "
             f"{str(include_graduate_degree_roles).lower()} (default)"
+        )
+    if "include_hardware_roles" not in values:
+        typer.echo(
+            "include_hardware_roles: "
+            f"{str(include_hardware_roles).lower()} (default)"
         )
 
 

@@ -20,6 +20,7 @@ from callumployed.data.repositories import (
     list_scan_candidates,
     list_scan_pages,
     set_include_graduate_degree_roles,
+    set_include_hardware_roles,
 )
 from callumployed.services import scan_workflow
 from callumployed.webscraping.models import RenderedPageState
@@ -521,6 +522,152 @@ def test_scan_company_can_include_graduate_degree_roles_when_configured(
     assert len(attempts) == 1
     assert attempts[0].assessment_is_role is True
     assert attempts[0].assessment_rejection_reason is None
+
+
+def test_scan_company_filters_hardware_only_roles_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+        **_render_options: object,
+    ) -> RenderedPageState:
+        if url.endswith("/careers"):
+            return RenderedPageState(
+                url=url,
+                final_url=url,
+                title="Careers",
+                html="""
+                <a href="/jobs/hardware-intern-12345">Hardware Internships</a>
+                <a href="/jobs/hardware-firmware-intern-12346">Hardware Firmware Internships</a>
+                <a href="/jobs/hardware-developer-intern-12347">Hardware Developer Internships</a>
+                """,
+            )
+        title = (
+            "Hardware Developer Internships"
+            if "developer" in url
+            else "Hardware Firmware Internships"
+        )
+        return RenderedPageState(
+            url=url,
+            final_url=url,
+            title=title,
+            html=f"""
+            <script type="application/ld+json">
+            {{
+              "@context": "https://schema.org",
+              "@type": "JobPosting",
+              "title": "{title}",
+              "description": "{title}."
+            }}
+            </script>
+            """,
+            visible_text=f"{title}.",
+        )
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Acme"))
+        if company.id is None:
+            raise AssertionError("company id missing")
+        add_company_career_page(
+            connection,
+            CompanyCareerPage(company_id=company.id, url="https://example.com/careers"),
+        )
+
+    scan = asyncio.run(
+        scan_workflow.scan_company(
+            company,
+            chat_model_factory=lambda _settings: EmptyStructuredModel(),
+        )
+    )
+
+    assert scan is not None
+    assert {link.text for link in scan["results"][0].links} == {
+        "Hardware Firmware Internships",
+        "Hardware Developer Internships",
+    }
+    scan_run = scan["scan_run"]
+    assert scan_run.id is not None
+    with db.connect() as connection:
+        roles = list_roles(connection)
+
+    assert len(roles) == 2
+    assert {role.title for role in roles} == {
+        "Hardware Firmware Internships",
+        "Hardware Developer Internships",
+    }
+
+
+def test_scan_company_can_include_hardware_only_roles_when_configured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+        **_render_options: object,
+    ) -> RenderedPageState:
+        if url.endswith("/careers"):
+            return RenderedPageState(
+                url=url,
+                final_url=url,
+                title="Careers",
+                html='<a href="/jobs/hardware-intern-12345">Hardware Internships</a>',
+            )
+        return RenderedPageState(
+            url=url,
+            final_url=url,
+            title="Hardware Internships",
+            html="""
+            <script type="application/ld+json">
+            {
+              "@context": "https://schema.org",
+              "@type": "JobPosting",
+              "title": "Hardware Internships",
+              "description": "Hardware internship."
+            }
+            </script>
+            """,
+            visible_text="Hardware internship.",
+        )
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    with db.connect() as connection:
+        set_include_hardware_roles(connection, True)
+        company = add_company(connection, Company(name="Acme"))
+        if company.id is None:
+            raise AssertionError("company id missing")
+        add_company_career_page(
+            connection,
+            CompanyCareerPage(company_id=company.id, url="https://example.com/careers"),
+        )
+
+    scan = asyncio.run(
+        scan_workflow.scan_company(
+            company,
+            chat_model_factory=lambda _settings: EmptyStructuredModel(),
+        )
+    )
+
+    assert scan is not None
+    assert {link.text for link in scan["results"][0].links} == {"Hardware Internships"}
+    scan_run = scan["scan_run"]
+    assert scan_run.id is not None
+    with db.connect() as connection:
+        roles = list_roles(connection)
+
+    assert len(roles) == 1
+    assert roles[0].title == "Hardware Internships"
 
 
 def test_scan_company_records_failed_discovered_link_visits(

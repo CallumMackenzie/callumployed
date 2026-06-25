@@ -272,11 +272,14 @@ def test_config_external_browser_port_commands(tmp_path: Path) -> None:
     assert show_result.exit_code == 0
     assert "external_browser_port: 9222" in show_result.output
     assert "include_graduate_degree_roles: false (default)" in show_result.output
+    assert "include_hardware_roles: false (default)" in show_result.output
     assert clear_result.exit_code == 0
     assert "Default external browser CDP port cleared." in clear_result.output
     assert show_after_clear_result.exit_code == 0
     assert show_after_clear_result.output == (
-        "No app config set.\ninclude_graduate_degree_roles: false (default)\n"
+        "No app config set.\n"
+        "include_graduate_degree_roles: false (default)\n"
+        "include_hardware_roles: false (default)\n"
     )
 
 
@@ -300,6 +303,28 @@ def test_config_graduate_degree_role_filter_commands(tmp_path: Path) -> None:
     assert "Graduate-degree role tracking disabled." in exclude_result.output
     assert show_exclude_result.exit_code == 0
     assert "include_graduate_degree_roles: false" in show_exclude_result.output
+
+
+def test_config_hardware_role_filter_commands(tmp_path: Path) -> None:
+    database = tmp_path / "config-hardware-roles.sqlite3"
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+
+    default_result = runner.invoke(app, ["config", "show"], env=env)
+    include_result = runner.invoke(app, ["config", "include-hardware-roles"], env=env)
+    show_include_result = runner.invoke(app, ["config", "show"], env=env)
+    exclude_result = runner.invoke(app, ["config", "exclude-hardware-roles"], env=env)
+    show_exclude_result = runner.invoke(app, ["config", "show"], env=env)
+
+    assert default_result.exit_code == 0
+    assert "include_hardware_roles: false (default)" in default_result.output
+    assert include_result.exit_code == 0
+    assert "Hardware role tracking enabled." in include_result.output
+    assert show_include_result.exit_code == 0
+    assert "include_hardware_roles: true" in show_include_result.output
+    assert exclude_result.exit_code == 0
+    assert "Hardware role tracking disabled." in exclude_result.output
+    assert show_exclude_result.exit_code == 0
+    assert "include_hardware_roles: false" in show_exclude_result.output
 
 
 def test_roles_show_and_update_commands(tmp_path: Path) -> None:
