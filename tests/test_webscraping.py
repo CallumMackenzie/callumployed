@@ -8,6 +8,8 @@ from callumployed.webscraping.browser import (
     CONTENT_SETTLE_TIMEOUT_MS,
     DEFAULT_TIMEOUT_MS,
     PROFILE_DIR_NAME,
+    ROLE_PAGE_CONTENT_SETTLE_MIN_WAIT_MS,
+    ROLE_PAGE_CONTENT_SETTLE_TIMEOUT_MS,
     _render_with_context,
     managed_browser_profile_path,
     navigation_error_message,
@@ -38,6 +40,11 @@ def test_default_browser_timeout_is_at_least_20_seconds() -> None:
 def test_dynamic_content_settle_wait_is_bounded_for_responsive_scans() -> None:
     assert 2_000 <= CONTENT_SETTLE_MIN_WAIT_MS <= 5_000
     assert 5_000 <= CONTENT_SETTLE_TIMEOUT_MS <= 10_000
+
+
+def test_role_page_content_settle_wait_is_shorter_than_career_page_scans() -> None:
+    assert ROLE_PAGE_CONTENT_SETTLE_MIN_WAIT_MS < CONTENT_SETTLE_MIN_WAIT_MS
+    assert ROLE_PAGE_CONTENT_SETTLE_TIMEOUT_MS < CONTENT_SETTLE_TIMEOUT_MS
 
 
 def _fixture_page() -> RenderedPageState:
@@ -492,7 +499,12 @@ def test_render_with_context_closes_page_after_snapshot(
         async def new_page(self) -> FakePage:
             return self.page
 
-    async def fake_wait_for_dynamic_content(page: object, *, timeout_ms: int) -> None:
+    async def fake_wait_for_dynamic_content(
+        page: object,
+        *,
+        timeout_ms: int,
+        **_settle_options: object,
+    ) -> None:
         return None
 
     monkeypatch.setattr(

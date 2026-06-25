@@ -16,6 +16,7 @@ from callumployed.data.repositories import (
     add_scan_candidates,
     add_scan_page,
     clear_default_external_browser_port,
+    clear_roles,
     create_scan_run,
     finish_scan_run,
     get_default_external_browser_port,
@@ -32,8 +33,10 @@ from callumployed.data.repositories import (
     list_scan_runs,
     set_company_external_browser_port,
     set_default_external_browser_port,
+    set_include_graduate_degree_roles,
     set_primary_company_career_page_url,
     set_role_status,
+    should_include_graduate_degree_roles,
     update_role,
 )
 from callumployed.webscraping.models import (
@@ -87,6 +90,21 @@ def test_config_repository_sets_lists_and_clears_default_external_browser_port()
 
     assert get_default_external_browser_port(connection) is None
     assert list_config_values(connection) == {}
+
+
+def test_config_repository_filters_graduate_degree_roles_by_default() -> None:
+    connection = db.connect(":memory:")
+    db.run_migrations(connection)
+
+    assert should_include_graduate_degree_roles(connection) is False
+
+    set_include_graduate_degree_roles(connection, True)
+    assert should_include_graduate_degree_roles(connection) is True
+    assert list_config_values(connection) == {"include_graduate_degree_roles": "true"}
+
+    set_include_graduate_degree_roles(connection, False)
+    assert should_include_graduate_degree_roles(connection) is False
+    assert list_config_values(connection) == {"include_graduate_degree_roles": "false"}
 
 
 def test_company_repository_tracks_multiple_career_pages() -> None:
@@ -406,9 +424,13 @@ def test_role_repository_adds_filters_and_records_status_events() -> None:
             title="Software Engineer",
             role_url="https://example.com/jobs/1",
             location="Vancouver",
+            description="Build backend systems for the product team.",
+            posting_id="REQ-1",
         ),
     )
     assert role.id is not None
+    assert role.description == "Build backend systems for the product team."
+    assert role.posting_id == "REQ-1"
 
     filtered_roles = list_roles(
         connection,
@@ -429,6 +451,26 @@ def test_role_repository_adds_filters_and_records_status_events() -> None:
     assert updated_role.role_status is RoleStatus.INTERESTED
     assert event.old_status is RoleStatus.DISCOVERED
     assert event.new_status is RoleStatus.INTERESTED
+
+
+def test_clear_roles_deletes_roles_and_role_linked_events() -> None:
+    connection = db.connect(":memory:")
+    db.run_migrations(connection)
+    company = add_company(connection, Company(name="Acme"))
+    assert company.id is not None
+    role = add_role(
+        connection,
+        Role(company_id=company.id, title="Backend Engineer", role_url="https://example.com"),
+    )
+    assert role.id is not None
+    set_role_status(connection, role.id, RoleStatus.INTERESTED, summary="Worth tracking.")
+
+    deleted_count = clear_roles(connection)
+
+    assert deleted_count == 1
+    assert list_roles(connection) == []
+    assert list_role_events(connection, role.id) == []
+    assert list_companies(connection) == [company]
 
 
 def test_role_list_items_include_company_and_filter_by_query() -> None:

@@ -69,6 +69,8 @@ class Role(AppModel):
     created_at: datetime | None = None
     updated_at: datetime | None = None
     notes: str | None = None
+    description: str | None = None
+    posting_id: str | None = None
 
 
 class RoleListItem(AppModel):

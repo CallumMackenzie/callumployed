@@ -15,6 +15,10 @@ CONTENT_SETTLE_MIN_WAIT_MS = 3_000
 CONTENT_SETTLE_TIMEOUT_MS = 8_000
 CONTENT_SETTLE_POLL_MS = 1_000
 LAZY_SCROLL_STEP_DELAY_MS = 350
+ROLE_PAGE_CONTENT_SETTLE_MIN_WAIT_MS = 500
+ROLE_PAGE_CONTENT_SETTLE_TIMEOUT_MS = 1_500
+ROLE_PAGE_CONTENT_SETTLE_POLL_MS = 250
+ROLE_PAGE_LAZY_SCROLL_STEP_DELAY_MS = 75
 PROFILE_DIR_NAME = "browser-profile"
 
 
@@ -25,6 +29,10 @@ async def render_careers_page(
     blocked_resource_types: Sequence[str] = (),
     stealth: bool = True,
     external_browser_port: int | None = None,
+    content_settle_min_wait_ms: int = CONTENT_SETTLE_MIN_WAIT_MS,
+    content_settle_timeout_ms: int = CONTENT_SETTLE_TIMEOUT_MS,
+    content_settle_poll_ms: int = CONTENT_SETTLE_POLL_MS,
+    lazy_scroll_step_delay_ms: int = LAZY_SCROLL_STEP_DELAY_MS,
 ) -> RenderedPageState:
     blocked_types = set(blocked_resource_types)
     playwright_context = Stealth().use_async(async_playwright()) if stealth else async_playwright()
@@ -42,6 +50,10 @@ async def render_careers_page(
                         url,
                         timeout_ms=timeout_ms,
                         blocked_types=blocked_types,
+                        content_settle_min_wait_ms=content_settle_min_wait_ms,
+                        content_settle_timeout_ms=content_settle_timeout_ms,
+                        content_settle_poll_ms=content_settle_poll_ms,
+                        lazy_scroll_step_delay_ms=lazy_scroll_step_delay_ms,
                     )
                 context = browser.contexts[0] if browser.contexts else await browser.new_context()
                 return await _render_with_context(
@@ -49,6 +61,10 @@ async def render_careers_page(
                     url,
                     timeout_ms=timeout_ms,
                     blocked_types=blocked_types,
+                    content_settle_min_wait_ms=content_settle_min_wait_ms,
+                    content_settle_timeout_ms=content_settle_timeout_ms,
+                    content_settle_poll_ms=content_settle_poll_ms,
+                    lazy_scroll_step_delay_ms=lazy_scroll_step_delay_ms,
                 )
 
             return await _render_with_managed_browser(
@@ -56,6 +72,10 @@ async def render_careers_page(
                 url,
                 timeout_ms=timeout_ms,
                 blocked_types=blocked_types,
+                content_settle_min_wait_ms=content_settle_min_wait_ms,
+                content_settle_timeout_ms=content_settle_timeout_ms,
+                content_settle_poll_ms=content_settle_poll_ms,
+                lazy_scroll_step_delay_ms=lazy_scroll_step_delay_ms,
             )
     except NavigationError:
         raise
@@ -75,6 +95,10 @@ async def _render_with_managed_browser(
     *,
     timeout_ms: int,
     blocked_types: set[str],
+    content_settle_min_wait_ms: int,
+    content_settle_timeout_ms: int,
+    content_settle_poll_ms: int,
+    lazy_scroll_step_delay_ms: int,
 ) -> RenderedPageState:
     profile_path = managed_browser_profile_path()
     profile_path.mkdir(parents=True, exist_ok=True)
@@ -89,6 +113,10 @@ async def _render_with_managed_browser(
             url,
             timeout_ms=timeout_ms,
             blocked_types=blocked_types,
+            content_settle_min_wait_ms=content_settle_min_wait_ms,
+            content_settle_timeout_ms=content_settle_timeout_ms,
+            content_settle_poll_ms=content_settle_poll_ms,
+            lazy_scroll_step_delay_ms=lazy_scroll_step_delay_ms,
         )
     finally:
         await context.close()
@@ -100,6 +128,10 @@ async def _render_with_context(
     *,
     timeout_ms: int,
     blocked_types: set[str],
+    content_settle_min_wait_ms: int = CONTENT_SETTLE_MIN_WAIT_MS,
+    content_settle_timeout_ms: int = CONTENT_SETTLE_TIMEOUT_MS,
+    content_settle_poll_ms: int = CONTENT_SETTLE_POLL_MS,
+    lazy_scroll_step_delay_ms: int = LAZY_SCROLL_STEP_DELAY_MS,
 ) -> RenderedPageState:
     context.set_default_timeout(timeout_ms)
     context.set_default_navigation_timeout(timeout_ms)
@@ -123,7 +155,14 @@ async def _render_with_context(
             raise NavigationError(navigation_error_message(url, response.status))
 
         await page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 15_000))
-        await _wait_for_dynamic_content(page, timeout_ms=timeout_ms)
+        await _wait_for_dynamic_content(
+            page,
+            timeout_ms=timeout_ms,
+            content_settle_min_wait_ms=content_settle_min_wait_ms,
+            content_settle_timeout_ms=content_settle_timeout_ms,
+            content_settle_poll_ms=content_settle_poll_ms,
+            lazy_scroll_step_delay_ms=lazy_scroll_step_delay_ms,
+        )
         title = await page.title()
         html = await page.content()
         visible_text = await page.locator("body").inner_text(timeout=5_000)
@@ -138,10 +177,18 @@ async def _render_with_context(
         await page.close()
 
 
-async def _wait_for_dynamic_content(page: Page, *, timeout_ms: int) -> None:
-    total_wait_ms = min(timeout_ms, CONTENT_SETTLE_TIMEOUT_MS)
-    initial_wait_ms = min(CONTENT_SETTLE_MIN_WAIT_MS, total_wait_ms)
-    await _trigger_lazy_loading_scroll(page)
+async def _wait_for_dynamic_content(
+    page: Page,
+    *,
+    timeout_ms: int,
+    content_settle_min_wait_ms: int = CONTENT_SETTLE_MIN_WAIT_MS,
+    content_settle_timeout_ms: int = CONTENT_SETTLE_TIMEOUT_MS,
+    content_settle_poll_ms: int = CONTENT_SETTLE_POLL_MS,
+    lazy_scroll_step_delay_ms: int = LAZY_SCROLL_STEP_DELAY_MS,
+) -> None:
+    total_wait_ms = min(timeout_ms, content_settle_timeout_ms)
+    initial_wait_ms = min(content_settle_min_wait_ms, total_wait_ms)
+    await _trigger_lazy_loading_scroll(page, lazy_scroll_step_delay_ms=lazy_scroll_step_delay_ms)
     await page.wait_for_timeout(initial_wait_ms)
 
     elapsed_ms = initial_wait_ms
@@ -170,12 +217,16 @@ async def _wait_for_dynamic_content(page: Page, *, timeout_ms: int) -> None:
             stable_observations = 0
             previous_state = current_state
 
-        wait_ms = min(CONTENT_SETTLE_POLL_MS, total_wait_ms - elapsed_ms)
+        wait_ms = min(content_settle_poll_ms, total_wait_ms - elapsed_ms)
         await page.wait_for_timeout(wait_ms)
         elapsed_ms += wait_ms
 
 
-async def _trigger_lazy_loading_scroll(page: Page) -> None:
+async def _trigger_lazy_loading_scroll(
+    page: Page,
+    *,
+    lazy_scroll_step_delay_ms: int = LAZY_SCROLL_STEP_DELAY_MS,
+) -> None:
     await page.evaluate(
         """
         async (stepDelayMs) => {
@@ -279,7 +330,7 @@ async def _trigger_lazy_loading_scroll(page: Page) -> None:
             appendCollectedLinks();
         }
         """,
-        LAZY_SCROLL_STEP_DELAY_MS,
+        lazy_scroll_step_delay_ms,
     )
 
 

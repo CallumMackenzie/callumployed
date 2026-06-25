@@ -30,6 +30,7 @@ def run_migrations(connection: turso.Connection) -> None:
         connection.executescript(migration.read_text())
     _ensure_app_config_table(connection)
     _ensure_company_external_browser_port_column(connection)
+    _ensure_role_information_columns(connection)
     _ensure_role_discovery_assessment_columns(connection)
     _backfill_legacy_company_career_pages(connection)
     connection.commit()
@@ -53,6 +54,18 @@ def _ensure_company_external_browser_port_column(connection: turso.Connection) -
         return
 
     connection.execute("ALTER TABLE companies ADD COLUMN external_browser_port INTEGER")
+
+
+def _ensure_role_information_columns(connection: turso.Connection) -> None:
+    role_columns = connection.execute("PRAGMA table_info(roles)").fetchall()
+    existing_columns = {row["name"] for row in role_columns}
+    columns = {
+        "description": "TEXT",
+        "posting_id": "TEXT",
+    }
+    for column_name, definition in columns.items():
+        if column_name not in existing_columns:
+            connection.execute(f"ALTER TABLE roles ADD COLUMN {column_name} {definition}")
 
 
 def _ensure_role_discovery_assessment_columns(connection: turso.Connection) -> None:

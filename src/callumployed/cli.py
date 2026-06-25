@@ -10,6 +10,7 @@ from callumployed.data.repositories import (
     add_company_career_page,
     add_role,
     clear_default_external_browser_port,
+    clear_roles,
     get_company,
     get_default_external_browser_port,
     get_role,
@@ -25,8 +26,10 @@ from callumployed.data.repositories import (
     list_scan_runs,
     set_company_external_browser_port,
     set_default_external_browser_port,
+    set_include_graduate_degree_roles,
     set_primary_company_career_page_url,
     set_role_status,
+    should_include_graduate_degree_roles,
     update_role,
 )
 from callumployed.services.scan_workflow import scan_company as run_scan_company
@@ -216,18 +219,43 @@ def clear_default_external_browser_port_command() -> None:
     typer.echo("Default external browser CDP port cleared.")
 
 
+@config_app.command("include-graduate-degree-roles")
+def include_graduate_degree_roles_command() -> None:
+    """Allow Master's and PhD roles to be tracked."""
+    with db.connect() as connection:
+        set_include_graduate_degree_roles(connection, True)
+
+    typer.echo("Graduate-degree role tracking enabled.")
+
+
+@config_app.command("exclude-graduate-degree-roles")
+def exclude_graduate_degree_roles_command() -> None:
+    """Filter Master's and PhD roles from tracked roles."""
+    with db.connect() as connection:
+        set_include_graduate_degree_roles(connection, False)
+
+    typer.echo("Graduate-degree role tracking disabled.")
+
+
 @config_app.command("show")
 def show_config_command() -> None:
     """Show app-wide configuration."""
     with db.connect() as connection:
         values = list_config_values(connection)
+        include_graduate_degree_roles = should_include_graduate_degree_roles(connection)
 
     if not values:
         typer.echo("No app config set.")
+        typer.echo("include_graduate_degree_roles: false (default)")
         return
 
     for key, value in values.items():
         typer.echo(f"{key}: {value}")
+    if "include_graduate_degree_roles" not in values:
+        typer.echo(
+            "include_graduate_degree_roles: "
+            f"{str(include_graduate_degree_roles).lower()} (default)"
+        )
 
 
 @scan_app.command("url")
@@ -552,6 +580,10 @@ def show_role_command(
     if role.location:
         typer.echo(f"Location: {role.location}")
     typer.echo(f"URL: {role.role_url}")
+    if role.posting_id:
+        typer.echo(f"Posting ID: {role.posting_id}")
+    if role.description:
+        typer.echo(f"Description: {role.description[:1000]}")
     if role.notes:
         typer.echo(f"Notes: {role.notes}")
     if role.first_seen_at:
@@ -570,6 +602,23 @@ def show_role_command(
                 new_status = event.new_status.value if event.new_status is not None else "none"
                 transition = f" ({old_status} -> {new_status})"
             typer.echo(f"- {event.event_type}{transition}: {event.summary}")
+
+
+@roles_app.command("clear")
+def clear_roles_command() -> None:
+    """Delete all tracked roles after two confirmations."""
+    typer.confirm(
+        "This will delete every tracked role and role-linked event. Continue?",
+        abort=True,
+    )
+    confirmation = typer.prompt('Type "clear roles" to confirm')
+    if confirmation != "clear roles":
+        raise typer.Abort()
+
+    with db.connect() as connection:
+        deleted_count = clear_roles(connection)
+
+    typer.echo(f"Deleted {deleted_count} role{'s' if deleted_count != 1 else ''}.")
 
 
 @roles_app.command("update")

@@ -48,6 +48,9 @@ def test_initial_schema_creates_minimal_tracking_tables() -> None:
         "assessment_reasons_json",
     }.issubset(role_discovery_columns)
 
+    role_columns = {row[1] for row in connection.execute("PRAGMA table_info(roles)").fetchall()}
+    assert {"description", "posting_id"}.issubset(role_columns)
+
 
 def test_initial_schema_rejects_invalid_role_status() -> None:
     connection = sqlite3.connect(":memory:")

@@ -57,6 +57,8 @@ CREATE TABLE IF NOT EXISTS roles (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     notes TEXT,
+    description TEXT,
+    posting_id TEXT,
     FOREIGN KEY (company_id) REFERENCES companies (id) ON DELETE CASCADE
 );
 

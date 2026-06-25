@@ -271,10 +271,35 @@ def test_config_external_browser_port_commands(tmp_path: Path) -> None:
     assert "Default external browser CDP port: 9222" in set_result.output
     assert show_result.exit_code == 0
     assert "external_browser_port: 9222" in show_result.output
+    assert "include_graduate_degree_roles: false (default)" in show_result.output
     assert clear_result.exit_code == 0
     assert "Default external browser CDP port cleared." in clear_result.output
     assert show_after_clear_result.exit_code == 0
-    assert show_after_clear_result.output == "No app config set.\n"
+    assert show_after_clear_result.output == (
+        "No app config set.\ninclude_graduate_degree_roles: false (default)\n"
+    )
+
+
+def test_config_graduate_degree_role_filter_commands(tmp_path: Path) -> None:
+    database = tmp_path / "config-graduate-roles.sqlite3"
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+
+    default_result = runner.invoke(app, ["config", "show"], env=env)
+    include_result = runner.invoke(app, ["config", "include-graduate-degree-roles"], env=env)
+    show_include_result = runner.invoke(app, ["config", "show"], env=env)
+    exclude_result = runner.invoke(app, ["config", "exclude-graduate-degree-roles"], env=env)
+    show_exclude_result = runner.invoke(app, ["config", "show"], env=env)
+
+    assert default_result.exit_code == 0
+    assert "include_graduate_degree_roles: false (default)" in default_result.output
+    assert include_result.exit_code == 0
+    assert "Graduate-degree role tracking enabled." in include_result.output
+    assert show_include_result.exit_code == 0
+    assert "include_graduate_degree_roles: true" in show_include_result.output
+    assert exclude_result.exit_code == 0
+    assert "Graduate-degree role tracking disabled." in exclude_result.output
+    assert show_exclude_result.exit_code == 0
+    assert "include_graduate_degree_roles: false" in show_exclude_result.output
 
 
 def test_roles_show_and_update_commands(tmp_path: Path) -> None:
@@ -347,6 +372,30 @@ def test_roles_set_status_reports_missing_role(tmp_path: Path) -> None:
 
     assert result.exit_code != 0
     assert "role not found: 999" in result.output
+
+
+def test_roles_clear_requires_two_confirmations(tmp_path: Path) -> None:
+    database = tmp_path / "roles-clear.sqlite3"
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Backend Engineer", "https://example.com/jobs/backend"],
+        env=env,
+    )
+    aborted_result = runner.invoke(app, ["roles", "clear"], input="y\nnope\n", env=env)
+    list_after_abort_result = runner.invoke(app, ["roles", "list"], env=env)
+    clear_result = runner.invoke(app, ["roles", "clear"], input="y\nclear roles\n", env=env)
+    list_after_clear_result = runner.invoke(app, ["roles", "list"], env=env)
+    companies_result = runner.invoke(app, ["companies", "list"], env=env)
+
+    assert aborted_result.exit_code != 0
+    assert "Backend Engineer" in list_after_abort_result.output
+    assert clear_result.exit_code == 0
+    assert "Deleted 1 role." in clear_result.output
+    assert list_after_clear_result.output == "No roles found.\n"
+    assert "1: Acme" in companies_result.output
 
 
 def test_scan_url_command_prints_discovered_links(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -619,6 +668,7 @@ def test_scan_history_and_show_optionally_includes_link_candidates(
         url: str,
         *,
         external_browser_port: int | None = None,
+        **_render_options: object,
     ) -> RenderedPageState:
         assert external_browser_port is None
         if not url.endswith("/careers"):
@@ -633,6 +683,7 @@ def test_scan_history_and_show_optionally_includes_link_candidates(
                   "@type": "JobPosting",
                   "title": "Software Engineering Intern",
                   "description": "Software Engineering Intern Vancouver Apply now",
+                  "identifier": {"value": "REQ-123"},
                   "jobLocation": {
                     "@type": "Place",
                     "address": {
@@ -675,6 +726,7 @@ def test_scan_history_and_show_optionally_includes_link_candidates(
         ["scan", "show", "1", "--candidates", "1"],
         env=env,
     )
+    show_role_result = runner.invoke(app, ["roles", "show", "1"], env=env)
 
     assert scan_result.exit_code == 0
     assert history_result.exit_code == 0
@@ -690,6 +742,7 @@ def test_scan_history_and_show_optionally_includes_link_candidates(
     )
     assert "- [0.00] URL: <https://example.com/about>" not in show_result.output
     assert show_candidates_result.exit_code == 0
+    assert show_role_result.exit_code == 0
     assert "Candidates taken: 1" in show_candidates_result.output
     assert "Link candidates:" in show_candidates_result.output
     assert "* [" in show_candidates_result.output
@@ -711,6 +764,9 @@ def test_scan_history_and_show_optionally_includes_link_candidates(
     )
     assert "Page title: Software Engineering Intern" in show_candidates_result.output
     assert "- [0.00] URL: <https://example.com/about>" not in show_candidates_result.output
+    assert "Location: Vancouver, BC, CA" in show_role_result.output
+    assert "Posting ID: REQ-123" in show_role_result.output
+    assert "Description: Software Engineering Intern Vancouver Apply now" in show_role_result.output
 
 
 def test_company_career_page_commands_and_scan_multiple_pages(
@@ -723,6 +779,7 @@ def test_company_career_page_commands_and_scan_multiple_pages(
         url: str,
         *,
         external_browser_port: int | None = None,
+        **_render_options: object,
     ) -> RenderedPageState:
         assert external_browser_port is None
         scanned_urls.append(url)

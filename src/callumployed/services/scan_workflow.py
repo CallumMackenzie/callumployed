@@ -1,3 +1,4 @@
+import re
 from typing import Any, Literal, TypedDict, cast
 
 from langgraph.graph import END, StateGraph
@@ -32,8 +33,15 @@ from callumployed.data.repositories import (
     list_company_career_pages,
     list_role_discovery_attempts,
     list_roles,
+    should_include_graduate_degree_roles,
 )
-from callumployed.webscraping.browser import render_careers_page
+from callumployed.webscraping.browser import (
+    ROLE_PAGE_CONTENT_SETTLE_MIN_WAIT_MS,
+    ROLE_PAGE_CONTENT_SETTLE_POLL_MS,
+    ROLE_PAGE_CONTENT_SETTLE_TIMEOUT_MS,
+    ROLE_PAGE_LAZY_SCROLL_STEP_DELAY_MS,
+    render_careers_page,
+)
 from callumployed.webscraping.classifier import (
     merge_discovered_links,
     prepare_candidates,
@@ -53,6 +61,10 @@ from callumployed.webscraping.models import (
 from callumployed.webscraping.role_page_classifier import assess_role_page
 
 MIN_ROLE_CREATION_CONFIDENCE = 0.6
+GRADUATE_DEGREE_ROLE_PATTERN = re.compile(
+    r"\b(?:ph\.?\s*d\.?|phd|doctorate|doctoral|master'?s|masters|m\.?\s*sc\.?)\b",
+    re.I,
+)
 
 
 class ScanWorkflowState(TypedDict, total=False):
@@ -61,6 +73,7 @@ class ScanWorkflowState(TypedDict, total=False):
     career_page: CompanyCareerPage | None
     scan_run_id: int | None
     external_browser_port: int | None
+    include_graduate_degree_roles: bool
     existing_posting_urls: set[str]
     llm_settings: LlmSettings | None
     chat_model_factory: ChatModelFactory | None
@@ -85,6 +98,7 @@ class CompanyScanResult(TypedDict):
     results: list[CareersPageScanResult]
     role_discovery_attempts: list[RoleDiscoveryAttempt]
     external_browser_port: int | None
+    include_graduate_degree_roles: bool
 
 
 async def render_page_node(state: ScanWorkflowState) -> dict[str, RenderedPageState]:
@@ -190,13 +204,34 @@ async def visit_discovered_links_node(state: ScanWorkflowState) -> dict[str, obj
             page = await render_careers_page(
                 candidate.url,
                 external_browser_port=state.get("external_browser_port"),
+                content_settle_min_wait_ms=ROLE_PAGE_CONTENT_SETTLE_MIN_WAIT_MS,
+                content_settle_timeout_ms=ROLE_PAGE_CONTENT_SETTLE_TIMEOUT_MS,
+                content_settle_poll_ms=ROLE_PAGE_CONTENT_SETTLE_POLL_MS,
+                lazy_scroll_step_delay_ms=ROLE_PAGE_LAZY_SCROLL_STEP_DELAY_MS,
             )
             assessment = assess_role_page(page)
+            if (
+                not state.get("include_graduate_degree_roles", False)
+                and _is_graduate_degree_role(assessment.title, assessment.description)
+            ):
+                assessment = assessment.model_copy(
+                    update={
+                        "is_role": False,
+                        "confidence": max(assessment.confidence, 0.8),
+                        "rejection_reason": "graduate-degree role filtered by app config",
+                        "reasons": [
+                            *assessment.reasons,
+                            "graduate-degree role filter",
+                        ],
+                    }
+                )
             role = _create_or_get_assessed_role(
                 company_id=company.id,
                 role_url=candidate.url,
                 title=assessment.title or page.title,
                 location=assessment.location,
+                description=assessment.description,
+                posting_id=assessment.posting_id,
                 is_role=assessment.is_role,
                 confidence=assessment.confidence,
             )
@@ -244,6 +279,8 @@ def _create_or_get_assessed_role(
     role_url: str,
     title: str | None,
     location: str | None,
+    description: str | None,
+    posting_id: str | None,
     is_role: bool,
     confidence: float,
 ) -> Role | None:
@@ -261,9 +298,16 @@ def _create_or_get_assessed_role(
                 title=title,
                 role_url=role_url,
                 location=location,
+                description=description,
+                posting_id=posting_id,
             ),
         )
     return role
+
+
+def _is_graduate_degree_role(title: str | None, description: str | None) -> bool:
+    text = " ".join(part for part in (title, description) if part)
+    return bool(GRADUATE_DEGREE_ROLE_PATTERN.search(text))
 
 
 def should_classify(state: ScanWorkflowState) -> Literal["classify", "skip"]:
@@ -333,6 +377,7 @@ async def scan_career_page(
     *,
     scan_run_id: int | None = None,
     external_browser_port: int | None = None,
+    include_graduate_degree_roles: bool = False,
     existing_posting_urls: set[str] | None = None,
     llm_settings: LlmSettings | None = None,
     chat_model_factory: ChatModelFactory | None = None,
@@ -347,6 +392,7 @@ async def scan_career_page(
                 "career_page": career_page,
                 "scan_run_id": scan_run_id,
                 "external_browser_port": external_browser_port,
+                "include_graduate_degree_roles": include_graduate_degree_roles,
                 "existing_posting_urls": existing_posting_urls or set(),
                 "llm_settings": llm_settings,
                 "chat_model_factory": chat_model_factory,
@@ -372,6 +418,7 @@ async def scan_company(
     with db.connect() as connection:
         career_pages = list_company_career_pages(connection, company.id)
         existing_posting_urls = {role.role_url for role in list_roles(connection)}
+        include_graduate_degree_roles = should_include_graduate_degree_roles(connection)
 
     if not career_pages:
         return None
@@ -392,6 +439,7 @@ async def scan_company(
                 career_page,
                 scan_run_id=scan_run.id,
                 external_browser_port=external_browser_port,
+                include_graduate_degree_roles=include_graduate_degree_roles,
                 existing_posting_urls=existing_posting_urls,
                 llm_settings=llm_settings,
                 chat_model_factory=chat_model_factory,
@@ -416,6 +464,7 @@ async def scan_company(
         "results": results,
         "role_discovery_attempts": role_discovery_attempts,
         "external_browser_port": external_browser_port,
+        "include_graduate_degree_roles": include_graduate_degree_roles,
     }
 
 

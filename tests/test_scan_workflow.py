@@ -19,6 +19,7 @@ from callumployed.data.repositories import (
     list_roles,
     list_scan_candidates,
     list_scan_pages,
+    set_include_graduate_degree_roles,
 )
 from callumployed.services import scan_workflow
 from callumployed.webscraping.models import RenderedPageState
@@ -56,6 +57,7 @@ def test_render_page_node_passes_external_browser_port(monkeypatch: pytest.Monke
         url: str,
         *,
         external_browser_port: int | None = None,
+        **_render_options: object,
     ) -> RenderedPageState:
         rendered_ports.append(external_browser_port)
         return _page(url)
@@ -79,6 +81,7 @@ def test_graph_calls_llm_for_ambiguous_candidates_by_default(
         url: str,
         *,
         external_browser_port: int | None = None,
+        **_render_options: object,
     ) -> RenderedPageState:
         return _page(url)
 
@@ -115,6 +118,7 @@ def test_graph_calls_llm_only_with_ambiguous_candidates(
         url: str,
         *,
         external_browser_port: int | None = None,
+        **_render_options: object,
     ) -> RenderedPageState:
         return _page(url)
 
@@ -159,6 +163,7 @@ def test_scan_company_persists_page_and_candidates(
         url: str,
         *,
         external_browser_port: int | None = None,
+        **_render_options: object,
     ) -> RenderedPageState:
         return _page(url)
 
@@ -217,8 +222,18 @@ def test_scan_company_visits_selected_discovered_links(
         url: str,
         *,
         external_browser_port: int | None = None,
+        **render_options: object,
     ) -> RenderedPageState:
         rendered_urls.append(url)
+        if url.endswith("/careers"):
+            assert render_options == {}
+        else:
+            assert render_options == {
+                "content_settle_min_wait_ms": scan_workflow.ROLE_PAGE_CONTENT_SETTLE_MIN_WAIT_MS,
+                "content_settle_timeout_ms": scan_workflow.ROLE_PAGE_CONTENT_SETTLE_TIMEOUT_MS,
+                "content_settle_poll_ms": scan_workflow.ROLE_PAGE_CONTENT_SETTLE_POLL_MS,
+                "lazy_scroll_step_delay_ms": scan_workflow.ROLE_PAGE_LAZY_SCROLL_STEP_DELAY_MS,
+            }
         if url.endswith("/careers"):
             return _page(url)
         return RenderedPageState(
@@ -231,7 +246,17 @@ def test_scan_company_visits_selected_discovered_links(
               "@context": "https://schema.org",
               "@type": "JobPosting",
               "title": "Software Engineering Intern",
-              "description": "Software Engineering Intern Vancouver Apply now"
+              "description": "Software Engineering Intern Vancouver Apply now",
+              "identifier": {"value": "REQ-123"},
+              "jobLocation": {
+                "@type": "Place",
+                "address": {
+                  "@type": "PostalAddress",
+                  "addressLocality": "Vancouver",
+                  "addressRegion": "BC",
+                  "addressCountry": "CA"
+                }
+              }
             }
             </script>
             <h1>Careers</h1>
@@ -285,12 +310,17 @@ def test_scan_company_visits_selected_discovered_links(
     assert attempts[0].assessment_description == (
         "Software Engineering Intern Vancouver Apply now"
     )
+    assert attempts[0].assessment_location == "Vancouver, BC, CA"
+    assert attempts[0].assessment_posting_id == "REQ-123"
     assert attempts[0].assessment_extraction_method == "jobposting_structured_data"
     assert attempts[0].assessment_reasons == ["schema.org JobPosting structured data"]
     assert len(roles) == 1
     assert attempts[0].role_id == roles[0].id
     assert roles[0].title == "Software Engineering Intern"
     assert roles[0].role_url == "https://example.com/jobs/software-engineering-intern-12345"
+    assert roles[0].location == "Vancouver, BC, CA"
+    assert roles[0].description == "Software Engineering Intern Vancouver Apply now"
+    assert roles[0].posting_id == "REQ-123"
     assert roles[0].role_status is RoleStatus.DISCOVERED
 
 
@@ -304,6 +334,7 @@ def test_scan_company_creates_discovered_role_for_closed_application_page(
         url: str,
         *,
         external_browser_port: int | None = None,
+        **_render_options: object,
     ) -> RenderedPageState:
         if url.endswith("/careers"):
             return _page(url)
@@ -353,6 +384,145 @@ def test_scan_company_creates_discovered_role_for_closed_application_page(
     assert attempts[0].assessment_is_closed is True
 
 
+def test_scan_company_filters_graduate_degree_roles_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+        **_render_options: object,
+    ) -> RenderedPageState:
+        if url.endswith("/careers"):
+            return RenderedPageState(
+                url=url,
+                final_url=url,
+                title="Careers",
+                html='<a href="/jobs/phd-research-intern-12345">PhD Research Intern</a>',
+            )
+        return RenderedPageState(
+            url=url,
+            final_url=url,
+            title="PhD Research Intern",
+            html="""
+            <script type="application/ld+json">
+            {
+              "@context": "https://schema.org",
+              "@type": "JobPosting",
+              "title": "PhD Research Intern",
+              "description": "PhD Research Intern. Must be pursuing a PhD or Master's degree."
+            }
+            </script>
+            """,
+            visible_text="PhD Research Intern. Must be pursuing a PhD or Master's degree.",
+        )
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Acme"))
+        if company.id is None:
+            raise AssertionError("company id missing")
+        add_company_career_page(
+            connection,
+            CompanyCareerPage(company_id=company.id, url="https://example.com/careers"),
+        )
+
+    scan = asyncio.run(
+        scan_workflow.scan_company(
+            company,
+            chat_model_factory=lambda _settings: EmptyStructuredModel(),
+        )
+    )
+
+    assert scan is not None
+    scan_run = scan["scan_run"]
+    assert scan_run.id is not None
+    with db.connect() as connection:
+        attempts = list_role_discovery_attempts(connection, scan_run_id=scan_run.id)
+        roles = list_roles(connection)
+
+    assert roles == []
+    assert len(attempts) == 1
+    assert attempts[0].assessment_is_role is False
+    assert attempts[0].assessment_rejection_reason == (
+        "graduate-degree role filtered by app config"
+    )
+    assert "graduate-degree role filter" in attempts[0].assessment_reasons
+
+
+def test_scan_company_can_include_graduate_degree_roles_when_configured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+        **_render_options: object,
+    ) -> RenderedPageState:
+        if url.endswith("/careers"):
+            return RenderedPageState(
+                url=url,
+                final_url=url,
+                title="Careers",
+                html='<a href="/jobs/phd-research-intern-12345">PhD Research Intern</a>',
+            )
+        return RenderedPageState(
+            url=url,
+            final_url=url,
+            title="PhD Research Intern",
+            html="""
+            <script type="application/ld+json">
+            {
+              "@context": "https://schema.org",
+              "@type": "JobPosting",
+              "title": "PhD Research Intern",
+              "description": "PhD Research Intern. Must be pursuing a PhD or Master's degree."
+            }
+            </script>
+            """,
+            visible_text="PhD Research Intern. Must be pursuing a PhD or Master's degree.",
+        )
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    with db.connect() as connection:
+        set_include_graduate_degree_roles(connection, True)
+        company = add_company(connection, Company(name="Acme"))
+        if company.id is None:
+            raise AssertionError("company id missing")
+        add_company_career_page(
+            connection,
+            CompanyCareerPage(company_id=company.id, url="https://example.com/careers"),
+        )
+
+    scan = asyncio.run(
+        scan_workflow.scan_company(
+            company,
+            chat_model_factory=lambda _settings: EmptyStructuredModel(),
+        )
+    )
+
+    assert scan is not None
+    scan_run = scan["scan_run"]
+    assert scan_run.id is not None
+    with db.connect() as connection:
+        attempts = list_role_discovery_attempts(connection, scan_run_id=scan_run.id)
+        roles = list_roles(connection)
+
+    assert len(roles) == 1
+    assert roles[0].title == "PhD Research Intern"
+    assert len(attempts) == 1
+    assert attempts[0].assessment_is_role is True
+    assert attempts[0].assessment_rejection_reason is None
+
+
 def test_scan_company_records_failed_discovered_link_visits(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -363,6 +533,7 @@ def test_scan_company_records_failed_discovered_link_visits(
         url: str,
         *,
         external_browser_port: int | None = None,
+        **_render_options: object,
     ) -> RenderedPageState:
         if url.endswith("/careers"):
             return _page(url)

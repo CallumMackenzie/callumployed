@@ -20,6 +20,7 @@ from callumployed.data.models import (
 from callumployed.webscraping.models import CareersPageScanResult, ScoredLinkCandidate
 
 EXTERNAL_BROWSER_PORT_CONFIG_KEY = "external_browser_port"
+INCLUDE_GRADUATE_DEGREE_ROLES_CONFIG_KEY = "include_graduate_degree_roles"
 
 
 def _lastrowid(cursor: turso.Cursor) -> int:
@@ -143,6 +144,21 @@ def get_default_external_browser_port(connection: turso.Connection) -> int | Non
 
 def clear_default_external_browser_port(connection: turso.Connection) -> None:
     delete_config_value(connection, EXTERNAL_BROWSER_PORT_CONFIG_KEY)
+
+
+def set_include_graduate_degree_roles(connection: turso.Connection, enabled: bool) -> None:
+    set_config_value(
+        connection,
+        INCLUDE_GRADUATE_DEGREE_ROLES_CONFIG_KEY,
+        "true" if enabled else "false",
+    )
+
+
+def should_include_graduate_degree_roles(connection: turso.Connection) -> bool:
+    value = get_config_value(connection, INCLUDE_GRADUATE_DEGREE_ROLES_CONFIG_KEY)
+    if value is None:
+        return False
+    return value.lower() in {"1", "true", "yes", "on"}
 
 
 def get_company(connection: turso.Connection, company_id: int) -> Company:
@@ -290,8 +306,17 @@ def _career_page_from_row(row: turso.Row) -> CompanyCareerPage:
 def add_role(connection: turso.Connection, role: Role) -> Role:
     cursor = connection.execute(
         """
-        INSERT INTO roles (company_id, title, role_url, location, role_status, notes)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO roles (
+            company_id,
+            title,
+            role_url,
+            location,
+            role_status,
+            notes,
+            description,
+            posting_id
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             role.company_id,
@@ -300,6 +325,8 @@ def add_role(connection: turso.Connection, role: Role) -> Role:
             role.location,
             role.role_status.value,
             role.notes,
+            role.description,
+            role.posting_id,
         ),
     )
     connection.commit()
@@ -320,7 +347,9 @@ def get_role(connection: turso.Connection, role_id: int) -> Role:
             last_seen_at,
             created_at,
             updated_at,
-            notes
+            notes,
+            description,
+            posting_id
         FROM roles
         WHERE id = ?
         """,
@@ -349,7 +378,9 @@ def get_role_by_company_url(
             last_seen_at,
             created_at,
             updated_at,
-            notes
+            notes,
+            description,
+            posting_id
         FROM roles
         WHERE company_id = ?
             AND role_url = ?
@@ -359,6 +390,16 @@ def get_role_by_company_url(
     if row is None:
         return None
     return Role.model_validate(dict(row))
+
+
+def clear_roles(connection: turso.Connection) -> int:
+    row = connection.execute("SELECT COUNT(*) AS count FROM roles").fetchone()
+    role_count = int(row["count"]) if row is not None else 0
+    connection.execute("DELETE FROM events WHERE role_id IS NOT NULL")
+    connection.execute("UPDATE role_discovery_attempts SET role_id = NULL")
+    connection.execute("DELETE FROM roles")
+    connection.commit()
+    return role_count
 
 
 def update_role(
@@ -437,7 +478,9 @@ def list_roles(
             last_seen_at,
             created_at,
             updated_at,
-            notes
+            notes,
+            description,
+            posting_id
         FROM roles
         {where}
         ORDER BY updated_at DESC, id DESC
