@@ -45,7 +45,6 @@ class Company(AppModel):
     updated_at: datetime | None = None
     notes: str | None = None
     prestige_tier: str | None = None
-    external_browser_port: int | None = None
 
 
 class CompanyCareerPage(AppModel):

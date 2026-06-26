@@ -79,10 +79,9 @@ def test_initial_schema_supports_company_role_scan_and_event() -> None:
             id,
             name,
             notes,
-            prestige_tier,
-            external_browser_port
+            prestige_tier
         )
-        VALUES (1, 'Acme', 'Interesting infra team.', 'A', 9222)
+        VALUES (1, 'Acme', 'Interesting infra team.', 'A')
         """
     )
     connection.execute(
@@ -130,7 +129,6 @@ def test_initial_schema_supports_company_role_scan_and_event() -> None:
         """
         SELECT
             companies.name,
-            companies.external_browser_port,
             company_career_pages.url,
             roles.title,
             roles.role_status,
@@ -144,7 +142,6 @@ def test_initial_schema_supports_company_role_scan_and_event() -> None:
 
     assert row == (
         "Acme",
-        9222,
         "https://example.com/careers",
         "Software Engineer",
         "discovered",

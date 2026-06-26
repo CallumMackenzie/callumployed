@@ -18,6 +18,7 @@ from callumployed.webscraping.models import (
     RenderedPageState,
     ScoredLinkCandidate,
 )
+from callumployed.webscraping.profile_manager import BrowserProfileManager
 
 runner = CliRunner()
 
@@ -31,7 +32,6 @@ def _scan_payload(
         "results": [result],
         "career_pages": [],
         "role_discovery_attempts": role_discovery_attempts or [],
-        "external_browser_port": None,
     }
 
 
@@ -46,8 +46,6 @@ def test_company_and_role_commands_share_database_file(tmp_path: Path) -> None:
             "add",
             "Acme",
             "https://example.com/careers",
-            "--external-browser-port",
-            "9222",
         ],
         env=env,
     )
@@ -178,8 +176,6 @@ def test_companies_update_command_sets_scan_options(tmp_path: Path) -> None:
             "companies",
             "update",
             "1",
-            "--external-browser-port",
-            "9222",
             "--career-page",
             "https://example.com/jobs",
         ],
@@ -190,7 +186,6 @@ def test_companies_update_command_sets_scan_options(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert "Updated company #1: Acme" in result.output
     assert show_result.exit_code == 0
-    assert "External browser CDP port: 9222" in show_result.output
     assert "- 1: https://example.com/jobs (Main)" in show_result.output
 
 
@@ -206,7 +201,7 @@ def test_companies_update_requires_at_least_one_flag(tmp_path: Path) -> None:
     )
 
     assert result.exit_code != 0
-    assert "provide at least one of --external-browser-port" in result.output
+    assert "provide at least one of --career-page or --add-career-page" in result.output
     assert "--career-page" in result.output
     assert "--add-career-page" in result.output
 
@@ -241,8 +236,6 @@ def test_companies_show_command_prints_saved_company_info(tmp_path: Path) -> Non
             "High-priority target.",
             "--prestige-tier",
             "A",
-            "--external-browser-port",
-            "9222",
         ],
         env=env,
     )
@@ -266,7 +259,6 @@ def test_companies_show_command_prints_saved_company_info(tmp_path: Path) -> Non
     assert "Company #1: Acme" in result.output
     assert "Prestige tier: A" in result.output
     assert "Notes: High-priority target." in result.output
-    assert "External browser CDP port: 9222" in result.output
     assert "Created:" in result.output
     assert "Updated:" in result.output
     assert "Career pages:" in result.output
@@ -287,31 +279,54 @@ def test_companies_show_reports_missing_company(tmp_path: Path) -> None:
     assert "company not found: 999" in result.output
 
 
-def test_config_external_browser_port_commands(tmp_path: Path) -> None:
+def test_config_show_prints_defaults(tmp_path: Path) -> None:
     database = tmp_path / "config.sqlite3"
     env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
 
-    set_result = runner.invoke(app, ["config", "set-external-browser-port", "9222"], env=env)
     show_result = runner.invoke(app, ["config", "show"], env=env)
-    clear_result = runner.invoke(app, ["config", "clear-external-browser-port"], env=env)
-    show_after_clear_result = runner.invoke(app, ["config", "show"], env=env)
 
-    assert set_result.exit_code == 0
-    assert "Default external browser CDP port: 9222" in set_result.output
     assert show_result.exit_code == 0
-    assert "external_browser_port: 9222" in show_result.output
-    assert "include_graduate_degree_roles: false (default)" in show_result.output
-    assert "include_hardware_roles: false (default)" in show_result.output
-    assert "require_software_keywords: true (default)" in show_result.output
-    assert clear_result.exit_code == 0
-    assert "Default external browser CDP port cleared." in clear_result.output
-    assert show_after_clear_result.exit_code == 0
-    assert show_after_clear_result.output == (
+    assert show_result.output == (
         "No app config set.\n"
         "include_graduate_degree_roles: false (default)\n"
         "include_hardware_roles: false (default)\n"
         "require_software_keywords: true (default)\n"
     )
+
+
+def test_browser_pool_commands_create_and_list_profiles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    template = tmp_path / "template"
+    template.mkdir()
+    manager_root = tmp_path / "manager"
+    monkeypatch.setattr(
+        "callumployed.cli.BrowserProfileManager",
+        lambda: BrowserProfileManager(root=manager_root),
+    )
+
+    create_result = runner.invoke(
+        app,
+        [
+            "browser",
+            "pool-create",
+            "tesla",
+            "--template",
+            str(template),
+            "--size",
+            "2",
+            "--browser-executable",
+            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+        ],
+    )
+    list_result = runner.invoke(app, ["browser", "pool-list"])
+
+    assert create_result.exit_code == 0
+    assert "Browser profile pool 'tesla' ready with 2 profile(s)." in create_result.output
+    assert list_result.exit_code == 0
+    assert "tesla/tesla-001: available" in list_result.output
+    assert "tesla/tesla-002: available" in list_result.output
 
 
 def test_config_graduate_degree_role_filter_commands(tmp_path: Path) -> None:
@@ -516,11 +531,7 @@ def test_scan_company_uses_saved_career_page(
 ) -> None:
     async def fake_run_scan_company(
         company: Company,
-        *,
-        default_external_browser_port: int | None,
     ) -> dict[str, object]:
-        assert default_external_browser_port is None
-        assert company.external_browser_port == 9222
         url = "https://example.com/careers"
         result = CareersPageScanResult(
             source_url=url,
@@ -569,8 +580,6 @@ def test_scan_company_uses_saved_career_page(
             "add",
             "Acme",
             "https://example.com/careers",
-            "--external-browser-port",
-            "9222",
         ],
         env=env,
     )
@@ -580,7 +589,6 @@ def test_scan_company_uses_saved_career_page(
     assert result.exit_code == 0
     assert "Scanning Acme: 1 careers page(s)" in result.output
     assert "Scan run #1" in result.output
-    assert "External browser CDP port: 9222 (company)" in result.output
     assert "Scanning URL: https://example.com/careers" in result.output
     assert "[0.78] <https://example.com/jobs/backend> - Backend Engineer" in result.output
     assert "Scan summary:" in result.output
@@ -594,11 +602,8 @@ def test_scan_company_prints_scan_summary_metrics(
 ) -> None:
     async def fake_run_scan_company(
         company: Company,
-        *,
-        default_external_browser_port: int | None,
     ) -> dict[str, object]:
         assert company.name == "Acme"
-        assert default_external_browser_port is None
         url = "https://example.com/careers"
         result = CareersPageScanResult(
             source_url=url,
@@ -691,11 +696,8 @@ def test_scan_company_rejects_removed_agent_flag(
 ) -> None:
     async def fake_run_scan_company(
         company: Company,
-        *,
-        default_external_browser_port: int | None,
     ) -> dict[str, object]:
         assert company.name == "Acme"
-        assert default_external_browser_port is None
         result = CareersPageScanResult(
             source_url="https://example.com/careers",
             final_url="https://example.com/careers",
@@ -723,10 +725,7 @@ def test_scan_company_calls_service_with_company_context(
 
     async def fake_run_scan_company(
         company: Company,
-        *,
-        default_external_browser_port: int | None,
     ) -> dict[str, object]:
-        assert default_external_browser_port is None
         company_names.append(company.name)
         result = CareersPageScanResult(
             source_url="https://example.com/careers",
@@ -756,11 +755,9 @@ def test_scan_company_can_retry_rejected_roles(
     async def fake_run_scan_company(
         company: Company,
         *,
-        default_external_browser_port: int | None,
         retry_rejected_roles: bool = False,
     ) -> dict[str, object]:
         assert company.name == "Acme"
-        assert default_external_browser_port is None
         retry_values.append(retry_rejected_roles)
         result = CareersPageScanResult(
             source_url="https://example.com/careers",
@@ -781,58 +778,60 @@ def test_scan_company_can_retry_rejected_roles(
     assert retry_values == [True]
 
 
-def test_scan_company_uses_default_external_browser_port(
+def test_scan_company_passes_browser_profile_pool(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    scanned_external_browser_ports: list[int | None] = []
+    scanned_pools: list[str | None] = []
 
     async def fake_run_scan_company(
         company: Company,
         *,
-        default_external_browser_port: int | None,
+        browser_profile_manager: object,
+        browser_profile_pool: str,
     ) -> dict[str, object]:
-        assert company.name == "Acme"
-        scanned_external_browser_ports.append(default_external_browser_port)
+        assert company.name == "Tesla"
+        assert browser_profile_manager is not None
+        scanned_pools.append(browser_profile_pool)
         result = CareersPageScanResult(
-            source_url="https://example.com/careers",
-            final_url="https://example.com/careers",
+            source_url="https://www.tesla.com/careers/search",
+            final_url="https://www.tesla.com/careers/search",
             candidates_scanned=0,
             confidence=ExtractionConfidence.LOW,
         )
         return _scan_payload(result)
 
-    database = tmp_path / "scan-company-default-browser.sqlite3"
+    database = tmp_path / "scan-company-browser-pool.sqlite3"
     env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
     monkeypatch.setattr("callumployed.cli.run_scan_company", fake_run_scan_company)
+    runner.invoke(
+        app,
+        ["companies", "add", "Tesla", "https://www.tesla.com/careers/search"],
+        env=env,
+    )
 
-    runner.invoke(app, ["config", "set-external-browser-port", "9222"], env=env)
-    runner.invoke(app, ["companies", "add", "Acme", "https://example.com/careers"], env=env)
-    result = runner.invoke(app, ["scan", "company", "1"], env=env)
+    result = runner.invoke(app, ["scan", "company", "1", "--browser-pool", "tesla"], env=env)
 
     assert result.exit_code == 0
-    assert scanned_external_browser_ports == [9222]
-    assert "External browser CDP port: 9222 (app default)" in result.output
+    assert scanned_pools == ["tesla"]
+    assert "Browser profile pool: tesla" in result.output
 
 
 def test_scan_all_scans_saved_companies_sequentially(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    scanned: list[tuple[str, int | None]] = []
+    scanned: list[str] = []
 
     async def fake_run_scan_company(
         company: Company,
-        *,
-        default_external_browser_port: int | None,
     ) -> dict[str, object]:
-        external_browser_port = company.external_browser_port or default_external_browser_port
         url = (
             "https://example.com/careers"
             if company.name == "Acme"
             else "https://beta.example.com/careers"
         )
-        scanned.append((url, external_browser_port))
+        scanned.append(url)
         result = CareersPageScanResult(
             source_url=url,
             final_url=url,
@@ -845,7 +844,6 @@ def test_scan_all_scans_saved_companies_sequentially(
     env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
     monkeypatch.setattr("callumployed.cli.run_scan_company", fake_run_scan_company)
 
-    runner.invoke(app, ["config", "set-external-browser-port", "9222"], env=env)
     runner.invoke(app, ["companies", "add", "Beta", "https://beta.example.com/careers"], env=env)
     runner.invoke(
         app,
@@ -854,8 +852,6 @@ def test_scan_all_scans_saved_companies_sequentially(
             "add",
             "Acme",
             "https://example.com/careers",
-            "--external-browser-port",
-            "9333",
         ],
         env=env,
     )
@@ -863,8 +859,8 @@ def test_scan_all_scans_saved_companies_sequentially(
 
     assert result.exit_code == 0
     assert scanned == [
-        ("https://example.com/careers", 9333),
-        ("https://beta.example.com/careers", 9222),
+        "https://example.com/careers",
+        "https://beta.example.com/careers",
     ]
     assert "Scanning all companies: 2 total" in result.output
     assert "--- Acme (#2) ---" in result.output

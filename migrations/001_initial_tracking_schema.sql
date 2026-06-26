@@ -6,8 +6,7 @@ CREATE TABLE IF NOT EXISTS companies (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     notes TEXT,
-    prestige_tier TEXT,
-    external_browser_port INTEGER
+    prestige_tier TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_name ON companies (name);

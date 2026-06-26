@@ -15,11 +15,9 @@ from callumployed.data.repositories import (
     add_role_discovery_attempt,
     add_scan_candidates,
     add_scan_page,
-    clear_default_external_browser_port,
     clear_roles,
     create_scan_run,
     finish_scan_run,
-    get_default_external_browser_port,
     get_event,
     list_companies,
     list_company_career_pages,
@@ -31,8 +29,6 @@ from callumployed.data.repositories import (
     list_scan_candidates,
     list_scan_pages,
     list_scan_runs,
-    set_company_external_browser_port,
-    set_default_external_browser_port,
     set_include_graduate_degree_roles,
     set_include_hardware_roles,
     set_primary_company_career_page_url,
@@ -60,40 +56,11 @@ def test_company_repository_adds_and_lists_companies() -> None:
         Company(
             name="Acme",
             prestige_tier="A",
-            external_browser_port=9222,
         ),
     )
 
     assert company.id == 1
-    assert company.external_browser_port == 9222
     assert list_companies(connection) == [company]
-
-
-def test_company_repository_sets_external_browser_port() -> None:
-    connection = db.connect(":memory:")
-    db.run_migrations(connection)
-
-    company = add_company(connection, Company(name="Acme"))
-    assert company.id is not None
-
-    updated_company = set_company_external_browser_port(connection, company.id, 9222)
-
-    assert updated_company.external_browser_port == 9222
-
-
-def test_config_repository_sets_lists_and_clears_default_external_browser_port() -> None:
-    connection = db.connect(":memory:")
-    db.run_migrations(connection)
-
-    set_default_external_browser_port(connection, 9222)
-
-    assert get_default_external_browser_port(connection) == 9222
-    assert list_config_values(connection) == {"external_browser_port": "9222"}
-
-    clear_default_external_browser_port(connection)
-
-    assert get_default_external_browser_port(connection) is None
-    assert list_config_values(connection) == {}
 
 
 def test_config_repository_filters_graduate_degree_roles_by_default() -> None:

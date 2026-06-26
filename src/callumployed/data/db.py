@@ -29,7 +29,6 @@ def run_migrations(connection: turso.Connection) -> None:
     for migration in sorted(MIGRATIONS_DIR.glob("*.sql")):
         connection.executescript(migration.read_text())
     _ensure_app_config_table(connection)
-    _ensure_company_external_browser_port_column(connection)
     _ensure_role_information_columns(connection)
     _ensure_role_discovery_assessment_columns(connection)
     _backfill_legacy_company_career_pages(connection)
@@ -46,14 +45,6 @@ def _ensure_app_config_table(connection: turso.Connection) -> None:
         )
         """
     )
-
-
-def _ensure_company_external_browser_port_column(connection: turso.Connection) -> None:
-    company_columns = connection.execute("PRAGMA table_info(companies)").fetchall()
-    if any(row["name"] == "external_browser_port" for row in company_columns):
-        return
-
-    connection.execute("ALTER TABLE companies ADD COLUMN external_browser_port INTEGER")
 
 
 def _ensure_role_information_columns(connection: turso.Connection) -> None:

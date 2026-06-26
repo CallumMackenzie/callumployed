@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -25,6 +26,7 @@ from callumployed.data.repositories import (
 )
 from callumployed.services import scan_workflow
 from callumployed.webscraping.models import RenderedPageState
+from callumployed.webscraping.profile_manager import BrowserProfileManager
 
 
 def _use_database(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -52,27 +54,51 @@ class EmptyStructuredModel:
         return {"decisions": []}
 
 
-def test_render_page_node_passes_external_browser_port(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_render_page_node_uses_browser_profile_manager(monkeypatch: pytest.MonkeyPatch) -> None:
     rendered_ports: list[int | None] = []
+    manager_calls: list[tuple[str, str]] = []
 
     async def fake_render_careers_page(
         url: str,
         *,
         external_browser_port: int | None = None,
+        fallback_to_managed_browser: bool = True,
         **_render_options: object,
     ) -> RenderedPageState:
+        assert fallback_to_managed_browser is False
         rendered_ports.append(external_browser_port)
         return _page(url)
+
+    class FakeProfileManager:
+        async def render_with_pool(
+            self,
+            pool_name: str,
+            render: object,
+            url: str,
+            *,
+            render_options: object | None = None,
+        ) -> RenderedPageState:
+            manager_calls.append((pool_name, url))
+            return await fake_render_careers_page(
+                url,
+                external_browser_port=9440,
+                fallback_to_managed_browser=False,
+            )
 
     monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
 
     state = asyncio.run(
         scan_workflow.render_page_node(
-            {"url": "https://example.com/careers", "external_browser_port": 9222}
+            {
+                "url": "https://example.com/careers",
+                "browser_profile_manager": cast(BrowserProfileManager, FakeProfileManager()),
+                "browser_profile_pool": "tesla",
+            }
         )
     )
 
-    assert rendered_ports == [9222]
+    assert manager_calls == [("tesla", "https://example.com/careers")]
+    assert rendered_ports == [9440]
     assert state["page"].final_url == "https://example.com/careers"
 
 

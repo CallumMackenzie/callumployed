@@ -28,7 +28,6 @@ from callumployed.data.repositories import (
     create_scan_run,
     finish_scan_run,
     get_company,
-    get_default_external_browser_port,
     get_role_by_company_url,
     list_company_career_pages,
     list_rejected_role_urls,
@@ -38,13 +37,7 @@ from callumployed.data.repositories import (
     should_include_hardware_roles,
     should_require_software_keywords,
 )
-from callumployed.webscraping.browser import (
-    ROLE_PAGE_CONTENT_SETTLE_MIN_WAIT_MS,
-    ROLE_PAGE_CONTENT_SETTLE_POLL_MS,
-    ROLE_PAGE_CONTENT_SETTLE_TIMEOUT_MS,
-    ROLE_PAGE_LAZY_SCROLL_STEP_DELAY_MS,
-    render_careers_page,
-)
+from callumployed.webscraping import browser
 from callumployed.webscraping.classifier import (
     merge_discovered_links,
     prepare_candidates,
@@ -61,9 +54,15 @@ from callumployed.webscraping.models import (
     RenderedPageState,
     ScoredLinkCandidate,
 )
+from callumployed.webscraping.profile_manager import BrowserProfileManager
 from callumployed.webscraping.role_page_classifier import assess_role_page
 
 MIN_ROLE_CREATION_CONFIDENCE = 0.6
+ROLE_PAGE_CONTENT_SETTLE_MIN_WAIT_MS = browser.ROLE_PAGE_CONTENT_SETTLE_MIN_WAIT_MS
+ROLE_PAGE_CONTENT_SETTLE_TIMEOUT_MS = browser.ROLE_PAGE_CONTENT_SETTLE_TIMEOUT_MS
+ROLE_PAGE_CONTENT_SETTLE_POLL_MS = browser.ROLE_PAGE_CONTENT_SETTLE_POLL_MS
+ROLE_PAGE_LAZY_SCROLL_STEP_DELAY_MS = browser.ROLE_PAGE_LAZY_SCROLL_STEP_DELAY_MS
+render_careers_page = browser.render_careers_page
 GRADUATE_DEGREE_ROLE_PATTERN = re.compile(
     r"\b(?:ph\.?\s*d\.?|phd|doctorate|doctoral|master'?s|masters|m\.?\s*sc\.?)\b",
     re.I,
@@ -90,7 +89,8 @@ class ScanWorkflowState(TypedDict, total=False):
     company: Company | None
     career_page: CompanyCareerPage | None
     scan_run_id: int | None
-    external_browser_port: int | None
+    browser_profile_manager: BrowserProfileManager | None
+    browser_profile_pool: str | None
     include_graduate_degree_roles: bool
     include_hardware_roles: bool
     require_software_keywords: bool
@@ -119,16 +119,15 @@ class CompanyScanResult(TypedDict):
     career_pages: list[CompanyCareerPage]
     results: list[CareersPageScanResult]
     role_discovery_attempts: list[RoleDiscoveryAttempt]
-    external_browser_port: int | None
     include_graduate_degree_roles: bool
     include_hardware_roles: bool
     require_software_keywords: bool
 
 
 async def render_page_node(state: ScanWorkflowState) -> dict[str, RenderedPageState]:
-    page = await render_careers_page(
+    page = await _render_with_browser_profile_manager(
         state["url"],
-        external_browser_port=state.get("external_browser_port"),
+        state=state,
     )
     return {"page": page}
 
@@ -240,9 +239,9 @@ async def visit_discovered_links_node(state: ScanWorkflowState) -> dict[str, obj
         if not candidate.selected or candidate.id is None:
             continue
         try:
-            page = await render_careers_page(
+            page = await _render_with_browser_profile_manager(
                 candidate.url,
-                external_browser_port=state.get("external_browser_port"),
+                state=state,
                 content_settle_min_wait_ms=ROLE_PAGE_CONTENT_SETTLE_MIN_WAIT_MS,
                 content_settle_timeout_ms=ROLE_PAGE_CONTENT_SETTLE_TIMEOUT_MS,
                 content_settle_poll_ms=ROLE_PAGE_CONTENT_SETTLE_POLL_MS,
@@ -345,6 +344,27 @@ async def visit_discovered_links_node(state: ScanWorkflowState) -> dict[str, obj
     return {"role_discovery_attempts": attempts}
 
 
+async def _render_with_browser_profile_manager(
+    url: str,
+    *,
+    state: ScanWorkflowState,
+    **render_options: Any,
+) -> RenderedPageState:
+    profile_manager = state.get("browser_profile_manager")
+    profile_pool = state.get("browser_profile_pool")
+    if profile_manager is not None and profile_pool is not None:
+        return await profile_manager.render_with_pool(
+            profile_pool,
+            render_careers_page,
+            url,
+            render_options=render_options,
+        )
+    return await render_careers_page(
+        url,
+        **render_options,
+    )
+
+
 def _create_or_get_assessed_role(
     *,
     company_id: int,
@@ -432,7 +452,8 @@ def build_scan_graph() -> Any:
 async def scan_url(
     url: str,
     *,
-    external_browser_port: int | None = None,
+    browser_profile_manager: BrowserProfileManager | None = None,
+    browser_profile_pool: str | None = None,
     existing_posting_urls: set[str] | None = None,
     llm_settings: LlmSettings | None = None,
     chat_model_factory: ChatModelFactory | None = None,
@@ -443,7 +464,8 @@ async def scan_url(
         await graph.ainvoke(
             {
                 "url": url,
-                "external_browser_port": external_browser_port,
+                "browser_profile_manager": browser_profile_manager,
+                "browser_profile_pool": browser_profile_pool,
                 "existing_posting_urls": existing_posting_urls or set(),
                 "rejected_role_urls": set(),
                 "retry_rejected_roles": False,
@@ -463,7 +485,8 @@ async def scan_career_page(
     career_page: CompanyCareerPage,
     *,
     scan_run_id: int | None = None,
-    external_browser_port: int | None = None,
+    browser_profile_manager: BrowserProfileManager | None = None,
+    browser_profile_pool: str | None = None,
     include_graduate_degree_roles: bool = False,
     include_hardware_roles: bool = False,
     require_software_keywords: bool = True,
@@ -482,7 +505,8 @@ async def scan_career_page(
                 "company": company,
                 "career_page": career_page,
                 "scan_run_id": scan_run_id,
-                "external_browser_port": external_browser_port,
+                "browser_profile_manager": browser_profile_manager,
+                "browser_profile_pool": browser_profile_pool,
                 "include_graduate_degree_roles": include_graduate_degree_roles,
                 "include_hardware_roles": include_hardware_roles,
                 "require_software_keywords": require_software_keywords,
@@ -505,7 +529,8 @@ async def scan_career_page(
 async def scan_company(
     company: Company,
     *,
-    default_external_browser_port: int | None = None,
+    browser_profile_manager: BrowserProfileManager | None = None,
+    browser_profile_pool: str | None = None,
     retry_rejected_roles: bool = False,
     llm_settings: LlmSettings | None = None,
     chat_model_factory: ChatModelFactory | None = None,
@@ -526,8 +551,6 @@ async def scan_company(
     if not career_pages:
         return None
 
-    external_browser_port = company.external_browser_port or default_external_browser_port
-
     with db.connect() as connection:
         scan_run = create_scan_run(connection, company.id)
     if scan_run.id is None:
@@ -541,7 +564,8 @@ async def scan_company(
                 company,
                 career_page,
                 scan_run_id=scan_run.id,
-                external_browser_port=external_browser_port,
+                browser_profile_manager=browser_profile_manager,
+                browser_profile_pool=browser_profile_pool,
                 include_graduate_degree_roles=include_graduate_degree_roles,
                 include_hardware_roles=include_hardware_roles,
                 require_software_keywords=require_software_keywords,
@@ -570,7 +594,6 @@ async def scan_company(
         "career_pages": career_pages,
         "results": results,
         "role_discovery_attempts": role_discovery_attempts,
-        "external_browser_port": external_browser_port,
         "include_graduate_degree_roles": include_graduate_degree_roles,
         "include_hardware_roles": include_hardware_roles,
         "require_software_keywords": require_software_keywords,
@@ -585,10 +608,8 @@ async def scan_company_by_id(
 ) -> CompanyScanResult | None:
     with db.connect() as connection:
         company = get_company(connection, company_id)
-        default_external_browser_port = get_default_external_browser_port(connection)
     return await scan_company(
         company,
-        default_external_browser_port=default_external_browser_port,
         retry_rejected_roles=False,
         llm_settings=llm_settings,
         chat_model_factory=chat_model_factory,

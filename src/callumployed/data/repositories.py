@@ -20,7 +20,6 @@ from callumployed.data.models import (
 )
 from callumployed.webscraping.models import CareersPageScanResult, ScoredLinkCandidate
 
-EXTERNAL_BROWSER_PORT_CONFIG_KEY = "external_browser_port"
 INCLUDE_GRADUATE_DEGREE_ROLES_CONFIG_KEY = "include_graduate_degree_roles"
 INCLUDE_HARDWARE_ROLES_CONFIG_KEY = "include_hardware_roles"
 REQUIRE_SOFTWARE_KEYWORDS_CONFIG_KEY = "require_software_keywords"
@@ -40,17 +39,15 @@ def add_company(connection: turso.Connection, company: Company) -> Company:
                 name,
                 careers_url,
                 notes,
-                prestige_tier,
-                external_browser_port
+                prestige_tier
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?)
             """,
             (
                 company.name,
                 "",
                 company.notes,
                 company.prestige_tier,
-                company.external_browser_port,
             ),
         )
         connection.commit()
@@ -58,14 +55,13 @@ def add_company(connection: turso.Connection, company: Company) -> Company:
 
     cursor = connection.execute(
         """
-        INSERT INTO companies (name, notes, prestige_tier, external_browser_port)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO companies (name, notes, prestige_tier)
+        VALUES (?, ?, ?)
         """,
         (
             company.name,
             company.notes,
             company.prestige_tier,
-            company.external_browser_port,
         ),
     )
     connection.commit()
@@ -127,28 +123,6 @@ def delete_config_value(connection: turso.Connection, key: str) -> None:
     connection.commit()
 
 
-def set_default_external_browser_port(
-    connection: turso.Connection,
-    external_browser_port: int,
-) -> None:
-    set_config_value(
-        connection,
-        EXTERNAL_BROWSER_PORT_CONFIG_KEY,
-        str(external_browser_port),
-    )
-
-
-def get_default_external_browser_port(connection: turso.Connection) -> int | None:
-    value = get_config_value(connection, EXTERNAL_BROWSER_PORT_CONFIG_KEY)
-    if value is None:
-        return None
-    return int(value)
-
-
-def clear_default_external_browser_port(connection: turso.Connection) -> None:
-    delete_config_value(connection, EXTERNAL_BROWSER_PORT_CONFIG_KEY)
-
-
 def set_include_graduate_degree_roles(connection: turso.Connection, enabled: bool) -> None:
     set_config_value(
         connection,
@@ -203,8 +177,7 @@ def get_company(connection: turso.Connection, company_id: int) -> Company:
             created_at,
             updated_at,
             notes,
-            prestige_tier,
-            external_browser_port
+            prestige_tier
         FROM companies
         WHERE id = ?
         """,
@@ -224,30 +197,12 @@ def list_companies(connection: turso.Connection) -> list[Company]:
             created_at,
             updated_at,
             notes,
-            prestige_tier,
-            external_browser_port
+            prestige_tier
         FROM companies
         ORDER BY name
         """
     ).fetchall()
     return [Company.model_validate(dict(row)) for row in rows]
-
-
-def set_company_external_browser_port(
-    connection: turso.Connection,
-    company_id: int,
-    external_browser_port: int | None,
-) -> Company:
-    connection.execute(
-        """
-        UPDATE companies
-        SET external_browser_port = ?, updated_at = datetime('now')
-        WHERE id = ?
-        """,
-        (external_browser_port, company_id),
-    )
-    connection.commit()
-    return get_company(connection, company_id)
 
 
 def add_company_career_page(

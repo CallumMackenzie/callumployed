@@ -7,7 +7,7 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright_stealth import Stealth  # type: ignore[import-untyped]
 
-from callumployed.webscraping.errors import NavigationError
+from callumployed.webscraping.errors import BlockedNavigationError, NavigationError
 from callumployed.webscraping.models import RenderedPageState
 
 DEFAULT_TIMEOUT_MS = 30_000
@@ -29,6 +29,7 @@ async def render_careers_page(
     blocked_resource_types: Sequence[str] = (),
     stealth: bool = True,
     external_browser_port: int | None = None,
+    fallback_to_managed_browser: bool = True,
     content_settle_min_wait_ms: int = CONTENT_SETTLE_MIN_WAIT_MS,
     content_settle_timeout_ms: int = CONTENT_SETTLE_TIMEOUT_MS,
     content_settle_poll_ms: int = CONTENT_SETTLE_POLL_MS,
@@ -44,7 +45,12 @@ async def render_careers_page(
                     browser = await playwright.chromium.connect_over_cdp(
                         f"http://127.0.0.1:{external_browser_port}"
                     )
-                except PlaywrightError:
+                except PlaywrightError as exc:
+                    if not fallback_to_managed_browser:
+                        raise NavigationError(
+                            "Could not connect to external browser CDP port "
+                            f"{external_browser_port}"
+                        ) from exc
                     return await _render_with_managed_browser(
                         playwright,
                         url,
@@ -149,8 +155,11 @@ async def _render_with_context(
         response = await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
         if response is None:
             raise NavigationError(f"No response while navigating to {url}")
-        if response.status == 403:
-            raise NavigationError(navigation_error_message(url, response.status))
+        if is_blocked_status(response.status):
+            raise BlockedNavigationError(
+                navigation_error_message(url, response.status),
+                status_code=response.status,
+            )
         if response.status >= 400:
             raise NavigationError(navigation_error_message(url, response.status))
 
@@ -336,9 +345,13 @@ async def _trigger_lazy_loading_scroll(
 
 def navigation_error_message(url: str, status: int) -> str:
     message = f"Navigation to {url} returned HTTP {status}"
-    if status == 403:
+    if is_blocked_status(status):
         message += (
-            ". This site may require an external browser session; try setting one with "
-            "`callumployed companies update COMPANY_ID --external-browser-port PORT`."
+            ". This site may require a fresh browser profile; try scanning with a "
+            "browser profile pool."
         )
     return message
+
+
+def is_blocked_status(status: int) -> bool:
+    return status in {401, 403, 407, 429}

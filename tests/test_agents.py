@@ -76,7 +76,6 @@ def test_posting_link_classification_batch_payload_uses_database_context_without
             prestige_tier="A",
             created_at=datetime(2026, 1, 1),
             updated_at=datetime(2026, 1, 2),
-            external_browser_port=9222,
         ),
         items=[_classification_item()],
     )
@@ -101,7 +100,6 @@ def test_posting_link_classification_batch_payload_uses_database_context_without
     assert item["candidate"]["reasons"] == ["job-like URL path", "job-like text: backend"]
     assert "created_at" not in str(payload)
     assert "updated_at" not in str(payload)
-    assert "external_browser_port" not in str(payload)
 
 
 def test_posting_link_classification_batch_rejects_cross_company_items() -> None:
