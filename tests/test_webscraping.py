@@ -565,4 +565,4 @@ def test_managed_browser_profile_path_uses_app_data_dir() -> None:
 def test_navigation_error_message_for_403_recommends_external_browser() -> None:
     message = navigation_error_message("https://example.com", 403)
 
-    assert "browser profile pool" in message
+    assert "managed browser profile" in message

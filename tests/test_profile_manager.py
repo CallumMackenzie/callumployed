@@ -7,7 +7,11 @@ import pytest
 
 from callumployed.webscraping.errors import BlockedNavigationError, NavigationError
 from callumployed.webscraping.models import RenderedPageState
-from callumployed.webscraping.profile_manager import BrowserProfileManager
+from callumployed.webscraping.profile_manager import (
+    BrowserProfileManager,
+    find_default_brave_browser_executable,
+    find_default_brave_user_data_dir,
+)
 
 
 class FakeProcess:
@@ -41,6 +45,30 @@ def _template(tmp_path: Path) -> Path:
     return template
 
 
+def test_find_default_brave_user_data_dir_uses_current_user_home(tmp_path: Path) -> None:
+    brave_dir = tmp_path / "Library/Application Support/BraveSoftware/Brave-Browser"
+    brave_dir.mkdir(parents=True)
+
+    assert find_default_brave_user_data_dir(home=tmp_path) == brave_dir
+
+
+def test_find_default_brave_user_data_dir_reports_checked_paths(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="could not find Brave user data directory") as error:
+        find_default_brave_user_data_dir(home=tmp_path)
+
+    assert str(tmp_path / ".config/BraveSoftware/Brave-Browser") in str(error.value)
+
+
+def test_find_default_brave_browser_executable_prefers_current_user_home(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    assert find_default_brave_browser_executable(home=tmp_path) == str(executable)
+
+
 def test_profile_manager_clones_template_and_builds_brave_command(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -57,26 +85,39 @@ def test_profile_manager_clones_template_and_builds_brave_command(
     )
     manager._wait_for_cdp = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
     monkeypatch.setattr("callumployed.webscraping.profile_manager._find_free_port", lambda: 9330)
+    template_path = _template(tmp_path)
     manager.create_pool(
         "tesla",
-        template_path=_template(tmp_path),
+        template_path=template_path,
         size=2,
         browser_executable="/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
     )
 
     lease = manager.acquire("tesla")
     lease.close()
+    assert (lease.record.path / "Cookies").read_text(encoding="utf-8") == "warm-session"
+    assert not (lease.record.path / "SingletonLock").exists()
+    (template_path / "Cookies").write_text("refreshed-session", encoding="utf-8")
+    refreshed_lease = manager.acquire("tesla")
+    refreshed_lease.close()
 
     assert lease.port == 9330
     assert lease.record.path.name == "tesla-001"
-    assert (lease.record.path / "Cookies").read_text(encoding="utf-8") == "warm-session"
-    assert not (lease.record.path / "SingletonLock").exists()
+    assert refreshed_lease.record.path == lease.record.path
+    assert (refreshed_lease.record.path / "Cookies").read_text(
+        encoding="utf-8"
+    ) == "refreshed-session"
     assert commands == [
         [
             "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
             "--remote-debugging-port=9330",
             f"--user-data-dir={lease.record.path}",
-        ]
+        ],
+        [
+            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+            "--remote-debugging-port=9330",
+            f"--user-data-dir={lease.record.path}",
+        ],
     ]
 
 

@@ -16,6 +16,7 @@ from callumployed.webscraping.errors import BlockedNavigationError
 from callumployed.webscraping.models import RenderedPageState
 
 DEFAULT_BROWSER_EXECUTABLE = "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
+DEFAULT_POOL_NAME = "default"
 DEFAULT_POOL_SIZE = 3
 PROFILE_MANAGER_DIR_NAME = "browser-profile-manager"
 REGISTRY_FILENAME = "registry.json"
@@ -53,7 +54,7 @@ class BrowserProfileLease:
 
 
 class BrowserProfileManager:
-    """Template-backed browser profile pool for external CDP browser scans."""
+    """Brave-backed browser profile pool for external CDP browser scans."""
 
     def __init__(
         self,
@@ -69,6 +70,20 @@ class BrowserProfileManager:
     @property
     def registry_path(self) -> Path:
         return self.root / REGISTRY_FILENAME
+
+    def ensure_default_pool(
+        self,
+        *,
+        size: int = DEFAULT_POOL_SIZE,
+        template_path: Path | None = None,
+        browser_executable: str | None = None,
+    ) -> None:
+        self.create_pool(
+            DEFAULT_POOL_NAME,
+            template_path=template_path or find_default_brave_user_data_dir(),
+            size=size,
+            browser_executable=browser_executable or find_default_brave_browser_executable(),
+        )
 
     def create_pool(
         self,
@@ -102,6 +117,9 @@ class BrowserProfileManager:
 
     def list_profiles(self, pool_name: str | None = None) -> list[BrowserProfileRecord]:
         registry = self._load_registry()
+        if pool_name is None and DEFAULT_POOL_NAME not in registry["pools"]:
+            self.ensure_default_pool()
+            registry = self._load_registry()
         records: list[BrowserProfileRecord] = []
         for name, pool in registry["pools"].items():
             if pool_name is not None and name != pool_name:
@@ -112,14 +130,17 @@ class BrowserProfileManager:
             )
         return sorted(records, key=lambda record: (record.pool, record.name))
 
-    def acquire(self, pool_name: str) -> BrowserProfileLease:
+    def acquire(self, pool_name: str = DEFAULT_POOL_NAME) -> BrowserProfileLease:
         registry = self._load_registry()
+        if pool_name == DEFAULT_POOL_NAME and DEFAULT_POOL_NAME not in registry["pools"]:
+            self.ensure_default_pool()
+            registry = self._load_registry()
         pool = self._pool(registry, pool_name)
         for profile_name, profile in pool["profiles"].items():
             if profile.get("status") == "blocked":
                 continue
             record = self._record_from_registry(pool_name, profile_name, profile)
-            self._ensure_profile_copy(pool_name, profile_name, Path(pool["template_path"]))
+            self._refresh_profile_copy(pool_name, profile_name, Path(pool["template_path"]))
             port = _find_free_port()
             process = self.launcher(
                 [
@@ -130,7 +151,23 @@ class BrowserProfileManager:
             )
             self._wait_for_cdp(port, process)
             return BrowserProfileLease(record=record, process=process, port=port)
+        if pool_name == DEFAULT_POOL_NAME:
+            raise RuntimeError("no available managed browser profiles")
         raise RuntimeError(f"no available browser profiles in pool: {pool_name}")
+
+    async def render(
+        self,
+        render: RenderFunction,
+        url: str,
+        *,
+        render_options: Mapping[str, Any] | None = None,
+    ) -> RenderedPageState:
+        return await self.render_with_pool(
+            DEFAULT_POOL_NAME,
+            render,
+            url,
+            render_options=render_options,
+        )
 
     async def render_with_pool(
         self,
@@ -162,6 +199,8 @@ class BrowserProfileManager:
                 lease.close()
         if last_blocked_error is not None:
             raise last_blocked_error
+        if pool_name == DEFAULT_POOL_NAME:
+            raise RuntimeError("no available managed browser profiles")
         raise RuntimeError(f"no available browser profiles in pool: {pool_name}")
 
     def mark_blocked(
@@ -214,10 +253,10 @@ class BrowserProfileManager:
             }
         return records
 
-    def _ensure_profile_copy(self, pool_name: str, profile_name: str, template_path: Path) -> None:
+    def _refresh_profile_copy(self, pool_name: str, profile_name: str, template_path: Path) -> None:
         profile_path = self._profile_path(pool_name, profile_name)
         if profile_path.exists():
-            return
+            shutil.rmtree(profile_path)
         profile_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(template_path, profile_path, ignore=_browser_profile_copy_ignore)
 
@@ -307,6 +346,52 @@ def _browser_profile_copy_ignore(_directory: str, names: list[str]) -> set[str]:
         for name in names
         if name in volatile_names or name.endswith(".lock") or name.startswith("Crashpad")
     }
+
+
+def find_default_brave_user_data_dir(*, home: Path | None = None) -> Path:
+    candidates = _brave_user_data_dir_candidates(home or Path.home())
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    checked = ", ".join(str(candidate) for candidate in candidates)
+    raise ValueError(f"could not find Brave user data directory. Checked: {checked}")
+
+
+def find_default_brave_browser_executable(*, home: Path | None = None) -> str:
+    candidates = _brave_browser_executable_candidates(home or Path.home())
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    for executable_name in ("brave-browser", "brave", "brave-browser-stable"):
+        executable = shutil.which(executable_name)
+        if executable is not None:
+            return executable
+    checked = ", ".join(str(candidate) for candidate in candidates)
+    raise ValueError(f"could not find Brave browser executable. Checked: {checked}")
+
+
+def _brave_user_data_dir_candidates(home: Path) -> list[Path]:
+    return [
+        home / "Library/Application Support/BraveSoftware/Brave-Browser",
+        home / "Library/Application Support/BraveSoftware/Brave-Browser-Beta",
+        home / "Library/Application Support/BraveSoftware/Brave-Browser-Dev",
+        home / ".config/BraveSoftware/Brave-Browser",
+        home / ".config/brave-browser",
+        home / "AppData/Local/BraveSoftware/Brave-Browser/User Data",
+    ]
+
+
+def _brave_browser_executable_candidates(home: Path) -> list[Path]:
+    return [
+        home / "Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+        Path("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
+        Path("/usr/bin/brave-browser"),
+        Path("/usr/local/bin/brave-browser"),
+        Path("/opt/brave.com/brave/brave-browser"),
+        home / "AppData/Local/BraveSoftware/Brave-Browser/Application/brave.exe",
+        Path("C:/Program Files/BraveSoftware/Brave-Browser/Application/brave.exe"),
+        Path("C:/Program Files (x86)/BraveSoftware/Brave-Browser/Application/brave.exe"),
+    ]
 
 
 def _find_free_port() -> int:

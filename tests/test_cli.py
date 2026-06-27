@@ -35,6 +35,17 @@ def _scan_payload(
     }
 
 
+class PassthroughProfileManager:
+    async def render(
+        self,
+        render: object,
+        url: str,
+        *,
+        render_options: object | None = None,
+    ) -> RenderedPageState:
+        return await render(url, **(render_options or {}))  # type: ignore[misc, operator]
+
+
 def test_company_and_role_commands_share_database_file(tmp_path: Path) -> None:
     database = tmp_path / "callumployed.sqlite3"
     env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
@@ -294,7 +305,7 @@ def test_config_show_prints_defaults(tmp_path: Path) -> None:
     )
 
 
-def test_browser_pool_commands_create_and_list_profiles(
+def test_browser_profiles_command_lists_internal_profiles(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -306,27 +317,18 @@ def test_browser_pool_commands_create_and_list_profiles(
         lambda: BrowserProfileManager(root=manager_root),
     )
 
-    create_result = runner.invoke(
-        app,
-        [
-            "browser",
-            "pool-create",
-            "tesla",
-            "--template",
-            str(template),
-            "--size",
-            "2",
-            "--browser-executable",
-            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-        ],
+    manager = BrowserProfileManager(root=manager_root)
+    manager.ensure_default_pool(
+        template_path=template,
+        size=2,
+        browser_executable="/tmp/brave",
     )
-    list_result = runner.invoke(app, ["browser", "pool-list"])
 
-    assert create_result.exit_code == 0
-    assert "Browser profile pool 'tesla' ready with 2 profile(s)." in create_result.output
+    list_result = runner.invoke(app, ["browser", "profiles"])
+
     assert list_result.exit_code == 0
-    assert "tesla/tesla-001: available" in list_result.output
-    assert "tesla/tesla-002: available" in list_result.output
+    assert "default-001: available" in list_result.output
+    assert "default-002: available" in list_result.output
 
 
 def test_config_graduate_degree_role_filter_commands(tmp_path: Path) -> None:
@@ -494,6 +496,8 @@ def test_roles_clear_requires_two_confirmations(tmp_path: Path) -> None:
 def test_scan_url_command_prints_discovered_links(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_scan_url(
         url: str,
+        *,
+        browser_profile_manager: object,
     ) -> CareersPageScanResult:
         return CareersPageScanResult(
             source_url=url,
@@ -531,6 +535,8 @@ def test_scan_company_uses_saved_career_page(
 ) -> None:
     async def fake_run_scan_company(
         company: Company,
+        *,
+        browser_profile_manager: object,
     ) -> dict[str, object]:
         url = "https://example.com/careers"
         result = CareersPageScanResult(
@@ -602,6 +608,8 @@ def test_scan_company_prints_scan_summary_metrics(
 ) -> None:
     async def fake_run_scan_company(
         company: Company,
+        *,
+        browser_profile_manager: object,
     ) -> dict[str, object]:
         assert company.name == "Acme"
         url = "https://example.com/careers"
@@ -696,6 +704,8 @@ def test_scan_company_rejects_removed_agent_flag(
 ) -> None:
     async def fake_run_scan_company(
         company: Company,
+        *,
+        browser_profile_manager: object,
     ) -> dict[str, object]:
         assert company.name == "Acme"
         result = CareersPageScanResult(
@@ -725,6 +735,8 @@ def test_scan_company_calls_service_with_company_context(
 
     async def fake_run_scan_company(
         company: Company,
+        *,
+        browser_profile_manager: object,
     ) -> dict[str, object]:
         company_names.append(company.name)
         result = CareersPageScanResult(
@@ -755,6 +767,7 @@ def test_scan_company_can_retry_rejected_roles(
     async def fake_run_scan_company(
         company: Company,
         *,
+        browser_profile_manager: object,
         retry_rejected_roles: bool = False,
     ) -> dict[str, object]:
         assert company.name == "Acme"
@@ -778,21 +791,20 @@ def test_scan_company_can_retry_rejected_roles(
     assert retry_values == [True]
 
 
-def test_scan_company_passes_browser_profile_pool(
+def test_scan_company_uses_managed_browser_profiles(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    scanned_pools: list[str | None] = []
+    scanned_profile_managers: list[object] = []
 
     async def fake_run_scan_company(
         company: Company,
         *,
         browser_profile_manager: object,
-        browser_profile_pool: str,
     ) -> dict[str, object]:
         assert company.name == "Tesla"
         assert browser_profile_manager is not None
-        scanned_pools.append(browser_profile_pool)
+        scanned_profile_managers.append(browser_profile_manager)
         result = CareersPageScanResult(
             source_url="https://www.tesla.com/careers/search",
             final_url="https://www.tesla.com/careers/search",
@@ -801,7 +813,7 @@ def test_scan_company_passes_browser_profile_pool(
         )
         return _scan_payload(result)
 
-    database = tmp_path / "scan-company-browser-pool.sqlite3"
+    database = tmp_path / "scan-company-browser-profiles.sqlite3"
     env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
     monkeypatch.setattr("callumployed.cli.run_scan_company", fake_run_scan_company)
     runner.invoke(
@@ -810,11 +822,10 @@ def test_scan_company_passes_browser_profile_pool(
         env=env,
     )
 
-    result = runner.invoke(app, ["scan", "company", "1", "--browser-pool", "tesla"], env=env)
+    result = runner.invoke(app, ["scan", "company", "1"], env=env)
 
     assert result.exit_code == 0
-    assert scanned_pools == ["tesla"]
-    assert "Browser profile pool: tesla" in result.output
+    assert len(scanned_profile_managers) == 1
 
 
 def test_scan_all_scans_saved_companies_sequentially(
@@ -825,6 +836,8 @@ def test_scan_all_scans_saved_companies_sequentially(
 
     async def fake_run_scan_company(
         company: Company,
+        *,
+        browser_profile_manager: object,
     ) -> dict[str, object]:
         url = (
             "https://example.com/careers"
@@ -924,6 +937,10 @@ def test_scan_history_and_show_optionally_includes_link_candidates(
         "callumployed.services.scan_workflow.render_careers_page",
         fake_render_careers_page,
     )
+    monkeypatch.setattr(
+        "callumployed.cli.BrowserProfileManager",
+        lambda: PassthroughProfileManager(),
+    )
 
     runner.invoke(app, ["companies", "add", "Acme", "https://example.com/careers"], env=env)
     scan_result = runner.invoke(app, ["scan", "company", "1"], env=env)
@@ -1002,6 +1019,10 @@ def test_company_career_page_commands_and_scan_multiple_pages(
     monkeypatch.setattr(
         "callumployed.services.scan_workflow.render_careers_page",
         fake_render_careers_page,
+    )
+    monkeypatch.setattr(
+        "callumployed.cli.BrowserProfileManager",
+        lambda: PassthroughProfileManager(),
     )
 
     runner.invoke(app, ["companies", "add", "Acme", "https://example.com/main"], env=env)

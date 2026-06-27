@@ -1,5 +1,4 @@
 import asyncio
-from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -43,18 +42,14 @@ from callumployed.services.scan_workflow import scan_company as run_scan_company
 from callumployed.services.scan_workflow import scan_url as run_scan_url
 from callumployed.webscraping.errors import ScrapingError
 from callumployed.webscraping.models import CareersPageScanResult
-from callumployed.webscraping.profile_manager import (
-    DEFAULT_BROWSER_EXECUTABLE,
-    DEFAULT_POOL_SIZE,
-    BrowserProfileManager,
-)
+from callumployed.webscraping.profile_manager import BrowserProfileManager
 
 app = typer.Typer(help="Local-first job-search automation CLI.")
 companies_app = typer.Typer(help="Manage target companies.")
 roles_app = typer.Typer(help="Manage job roles.")
 scan_app = typer.Typer(help="Scan careers pages.")
 config_app = typer.Typer(help="Manage app-wide configuration.")
-browser_app = typer.Typer(help="Manage browser profile pools.")
+browser_app = typer.Typer(help="Inspect managed browser profiles.")
 
 app.add_typer(companies_app, name="companies")
 app.add_typer(roles_app, name="roles")
@@ -278,83 +273,35 @@ def show_config_command() -> None:
         )
 
 
-@browser_app.command("pool-create")
-def browser_pool_create_command(
-    name: Annotated[str, typer.Argument(help="Browser profile pool name.")],
-    template_path: Annotated[
-        Path,
-        typer.Option(
-            "--template",
-            exists=True,
-            file_okay=False,
-            dir_okay=True,
-            resolve_path=True,
-            help="Template browser user-data directory to copy profiles from.",
-        ),
-    ],
-    size: Annotated[
-        int,
-        typer.Option("--size", min=1, help="Number of profiles in the pool."),
-    ] = DEFAULT_POOL_SIZE,
-    browser_executable: Annotated[
-        str,
-        typer.Option("--browser-executable", help="Browser executable to launch."),
-    ] = DEFAULT_BROWSER_EXECUTABLE,
-) -> None:
-    """Create or update a template-backed browser profile pool."""
-    manager = BrowserProfileManager()
+@browser_app.command("profiles")
+def browser_profiles_command() -> None:
+    """List managed browser profile records."""
     try:
-        manager.create_pool(
-            name,
-            template_path=template_path,
-            size=size,
-            browser_executable=browser_executable,
-        )
+        profiles = BrowserProfileManager().list_profiles()
     except ValueError as error:
         raise typer.BadParameter(str(error)) from error
-    typer.echo(f"Browser profile pool '{name}' ready with {size} profile(s).")
-
-
-@browser_app.command("pool-list")
-def browser_pool_list_command(
-    pool: Annotated[
-        str | None,
-        typer.Option("--pool", help="Only list profiles for this pool."),
-    ] = None,
-) -> None:
-    """List browser profile pool records."""
-    profiles = BrowserProfileManager().list_profiles(pool)
     if not profiles:
-        typer.echo("No browser profile pools found.")
+        typer.echo("No managed browser profiles found.")
         return
     for profile in profiles:
         reason = f" - {profile.blocked_reason}" if profile.blocked_reason else ""
         typer.echo(
-            f"{profile.pool}/{profile.name}: {profile.status} "
-            f"path=<{profile.path}>{reason}"
+            f"{profile.name}: {profile.status} path=<{profile.path}>{reason}"
         )
 
 
 @scan_app.command("url")
 def scan_url_command(
     url: Annotated[str, typer.Argument(help="Careers page URL.")],
-    browser_pool: Annotated[
-        str | None,
-        typer.Option("--browser-pool", help="Browser profile pool to use for rendering."),
-    ] = None,
 ) -> None:
     """Scan a careers page URL and print discovered job links."""
     try:
-        if browser_pool is None:
-            result = asyncio.run(run_scan_url(url))
-        else:
-            result = asyncio.run(
-                run_scan_url(
-                    url,
-                    browser_profile_manager=BrowserProfileManager(),
-                    browser_profile_pool=browser_pool,
-                )
+        result = asyncio.run(
+            run_scan_url(
+                url,
+                browser_profile_manager=BrowserProfileManager(),
             )
+        )
     except ScrapingError as error:
         raise typer.BadParameter(str(error)) from error
     except (LookupError, RuntimeError) as error:
@@ -366,10 +313,6 @@ def scan_url_command(
 @scan_app.command("company")
 def scan_company_command(
     company_id: Annotated[int, typer.Argument(help="Company ID.")],
-    browser_pool: Annotated[
-        str | None,
-        typer.Option("--browser-pool", help="Browser profile pool to use for rendering."),
-    ] = None,
     retry_rejected_roles: Annotated[
         bool,
         typer.Option(
@@ -388,7 +331,6 @@ def scan_company_command(
     try:
         _scan_company(
             company,
-            browser_profile_pool=browser_pool,
             retry_rejected_roles=retry_rejected_roles,
         )
     except ScrapingError as error:
@@ -399,10 +341,6 @@ def scan_company_command(
 
 @scan_app.command("all")
 def scan_all_command(
-    browser_pool: Annotated[
-        str | None,
-        typer.Option("--browser-pool", help="Browser profile pool to use for rendering."),
-    ] = None,
     retry_rejected_roles: Annotated[
         bool,
         typer.Option(
@@ -428,7 +366,6 @@ def scan_all_command(
         try:
             scanned = _scan_company(
                 company,
-                browser_profile_pool=browser_pool,
                 retry_rejected_roles=retry_rejected_roles,
             )
         except ScrapingError as error:
@@ -447,7 +384,6 @@ def scan_all_command(
 def _scan_company(
     company: Company,
     *,
-    browser_profile_pool: str | None = None,
     retry_rejected_roles: bool = False,
 ) -> bool:
     if company.id is None:
@@ -462,40 +398,21 @@ def _scan_company(
         return False
 
     typer.echo(f"Scanning {company.name}: {len(urls)} careers page(s)")
-    if browser_profile_pool is not None:
-        typer.echo(f"Browser profile pool: {browser_profile_pool}")
     if retry_rejected_roles:
-        if browser_profile_pool is None:
-            scan = asyncio.run(
-                run_scan_company(
-                    company,
-                    retry_rejected_roles=True,
-                )
+        scan = asyncio.run(
+            run_scan_company(
+                company,
+                browser_profile_manager=BrowserProfileManager(),
+                retry_rejected_roles=True,
             )
-        else:
-            scan = asyncio.run(
-                run_scan_company(
-                    company,
-                    browser_profile_manager=BrowserProfileManager(),
-                    browser_profile_pool=browser_profile_pool,
-                    retry_rejected_roles=True,
-                )
-            )
+        )
     else:
-        if browser_profile_pool is None:
-            scan = asyncio.run(
-                run_scan_company(
-                    company,
-                )
+        scan = asyncio.run(
+            run_scan_company(
+                company,
+                browser_profile_manager=BrowserProfileManager(),
             )
-        else:
-            scan = asyncio.run(
-                run_scan_company(
-                    company,
-                    browser_profile_manager=BrowserProfileManager(),
-                    browser_profile_pool=browser_profile_pool,
-                )
-            )
+        )
     if scan is None:
         typer.echo(f"No career pages found for {company.name}.")
         return False

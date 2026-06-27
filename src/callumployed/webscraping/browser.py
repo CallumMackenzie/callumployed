@@ -348,7 +348,7 @@ def navigation_error_message(url: str, status: int) -> str:
     if is_blocked_status(status):
         message += (
             ". This site may require a fresh browser profile; try scanning with a "
-            "browser profile pool."
+            "managed browser profile."
         )
     return message
 

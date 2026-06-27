@@ -90,7 +90,6 @@ class ScanWorkflowState(TypedDict, total=False):
     career_page: CompanyCareerPage | None
     scan_run_id: int | None
     browser_profile_manager: BrowserProfileManager | None
-    browser_profile_pool: str | None
     include_graduate_degree_roles: bool
     include_hardware_roles: bool
     require_software_keywords: bool
@@ -351,10 +350,8 @@ async def _render_with_browser_profile_manager(
     **render_options: Any,
 ) -> RenderedPageState:
     profile_manager = state.get("browser_profile_manager")
-    profile_pool = state.get("browser_profile_pool")
-    if profile_manager is not None and profile_pool is not None:
-        return await profile_manager.render_with_pool(
-            profile_pool,
+    if profile_manager is not None:
+        return await profile_manager.render(
             render_careers_page,
             url,
             render_options=render_options,
@@ -453,7 +450,6 @@ async def scan_url(
     url: str,
     *,
     browser_profile_manager: BrowserProfileManager | None = None,
-    browser_profile_pool: str | None = None,
     existing_posting_urls: set[str] | None = None,
     llm_settings: LlmSettings | None = None,
     chat_model_factory: ChatModelFactory | None = None,
@@ -465,7 +461,6 @@ async def scan_url(
             {
                 "url": url,
                 "browser_profile_manager": browser_profile_manager,
-                "browser_profile_pool": browser_profile_pool,
                 "existing_posting_urls": existing_posting_urls or set(),
                 "rejected_role_urls": set(),
                 "retry_rejected_roles": False,
@@ -486,7 +481,6 @@ async def scan_career_page(
     *,
     scan_run_id: int | None = None,
     browser_profile_manager: BrowserProfileManager | None = None,
-    browser_profile_pool: str | None = None,
     include_graduate_degree_roles: bool = False,
     include_hardware_roles: bool = False,
     require_software_keywords: bool = True,
@@ -506,7 +500,6 @@ async def scan_career_page(
                 "career_page": career_page,
                 "scan_run_id": scan_run_id,
                 "browser_profile_manager": browser_profile_manager,
-                "browser_profile_pool": browser_profile_pool,
                 "include_graduate_degree_roles": include_graduate_degree_roles,
                 "include_hardware_roles": include_hardware_roles,
                 "require_software_keywords": require_software_keywords,
@@ -530,7 +523,6 @@ async def scan_company(
     company: Company,
     *,
     browser_profile_manager: BrowserProfileManager | None = None,
-    browser_profile_pool: str | None = None,
     retry_rejected_roles: bool = False,
     llm_settings: LlmSettings | None = None,
     chat_model_factory: ChatModelFactory | None = None,
@@ -565,7 +557,6 @@ async def scan_company(
                 career_page,
                 scan_run_id=scan_run.id,
                 browser_profile_manager=browser_profile_manager,
-                browser_profile_pool=browser_profile_pool,
                 include_graduate_degree_roles=include_graduate_degree_roles,
                 include_hardware_roles=include_hardware_roles,
                 require_software_keywords=require_software_keywords,

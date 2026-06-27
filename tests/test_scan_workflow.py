@@ -56,7 +56,7 @@ class EmptyStructuredModel:
 
 def test_render_page_node_uses_browser_profile_manager(monkeypatch: pytest.MonkeyPatch) -> None:
     rendered_ports: list[int | None] = []
-    manager_calls: list[tuple[str, str]] = []
+    manager_calls: list[str] = []
 
     async def fake_render_careers_page(
         url: str,
@@ -70,15 +70,14 @@ def test_render_page_node_uses_browser_profile_manager(monkeypatch: pytest.Monke
         return _page(url)
 
     class FakeProfileManager:
-        async def render_with_pool(
+        async def render(
             self,
-            pool_name: str,
             render: object,
             url: str,
             *,
             render_options: object | None = None,
         ) -> RenderedPageState:
-            manager_calls.append((pool_name, url))
+            manager_calls.append(url)
             return await fake_render_careers_page(
                 url,
                 external_browser_port=9440,
@@ -92,12 +91,11 @@ def test_render_page_node_uses_browser_profile_manager(monkeypatch: pytest.Monke
             {
                 "url": "https://example.com/careers",
                 "browser_profile_manager": cast(BrowserProfileManager, FakeProfileManager()),
-                "browser_profile_pool": "tesla",
             }
         )
     )
 
-    assert manager_calls == [("tesla", "https://example.com/careers")]
+    assert manager_calls == ["https://example.com/careers"]
     assert rendered_ports == [9440]
     assert state["page"].final_url == "https://example.com/careers"
 
