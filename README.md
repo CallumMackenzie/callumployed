@@ -6,11 +6,12 @@ The app will track target companies, scan career pages, manage roles and applica
 lifecycles, prepare tailored application materials, and update application statuses
 from mailbox signals.
 
-## Planned stack
+## Stack
 
 - Python 3.12+
 - SQLite/Turso-compatible local database
 - Typer CLI
+- FastMCP server for agent/tool access
 - Playwright browser scanning
 - LangGraph scan workflow orchestration
 - BeautifulSoup link extraction
@@ -18,7 +19,6 @@ from mailbox signals.
 - `trafilatura` main-text extraction for rendered role pages
 - pytest
 - LangChain provider adapters for optional LLM classification
-- MCP server exposing the CLI command surface
 
 ## Install dependencies
 
@@ -29,7 +29,7 @@ cd ~/Downloads/callumployed
 python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -e ".[dev,agents]"
+python -m pip install -e ".[dev,agents,mcp]"
 python -m playwright install chromium
 ```
 
@@ -37,7 +37,7 @@ With `uv`:
 
 ```bash
 cd ~/Downloads/callumployed
-uv sync --extra dev --extra agents
+uv sync --extra dev --extra agents --extra mcp
 uv run playwright install chromium
 ```
 
@@ -63,6 +63,26 @@ Or run it without relying on the installed console script:
 ```bash
 PYTHONPATH=src python -m callumployed.cli --help
 ```
+
+## Run the MCP server
+
+Install the `mcp` optional dependency, then run the stdio MCP server:
+
+```bash
+source .venv/bin/activate
+callumployed-mcp
+```
+
+The MCP server is implemented explicitly in `src/callumployed/mcp_server.py` with
+`FastMCP`. It calls the same repository and service functions as the Typer CLI and
+returns structured data instead of parsed CLI text.
+
+Available MCP tools cover:
+
+- companies: add, update career pages, list, show
+- roles: add, list, show, update, set status
+- config: show and update scan filters
+- scans: scan a URL, scan a company, list scan runs, show a scan run
 
 ### Optional LLM classifier
 
@@ -111,7 +131,9 @@ The assessment returns:
 - evidence reasons
 
 Current persistence stores the rendered role attempt with final URL, assessed title,
-description excerpt, status, and error. The full assessment payload is not yet stored.
+description excerpt, assessment fields, status, and error. For persisted company scans,
+high-confidence role assessments create or reuse a `roles` row and link the discovery
+attempt to that role.
 
 ## Test
 
@@ -120,6 +142,8 @@ After installing the `dev` dependencies:
 ```bash
 source .venv/bin/activate
 python -m pytest
+ruff check .
+mypy src tests
 ```
 
 Quick import check without installing dependencies:
@@ -230,7 +254,8 @@ do not have a scan run id.
 
 1. Render the selected candidate URL.
 2. Run `assess_role_page()` on the rendered page.
-3. Save a `role_discovery_attempts` row.
+3. Create or reuse a `roles` row for high-confidence role pages.
+4. Save a `role_discovery_attempts` row linked to the role when one was created or found.
 
 If rendering or assessment fails, the attempt is saved with `failed` status and the
 error text.
@@ -247,8 +272,9 @@ error text.
 4. `trafilatura` extracts clean main text for descriptions and downstream use.
 5. Closed-role phrases set `is_closed`.
 
-The assessment currently improves the saved attempt title and text excerpt. It does
-not yet create or update a `roles` row automatically.
+The assessment improves the saved attempt title and text excerpt. For persisted company
+scans, accepted role pages create or reuse a `roles` row when confidence is high enough
+and a title is available.
 
 ### 10. Finish company scan
 
