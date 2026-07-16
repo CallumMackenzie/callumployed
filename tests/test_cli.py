@@ -1,3 +1,4 @@
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 
 import pytest
@@ -38,12 +39,12 @@ def _scan_payload(
 class PassthroughProfileManager:
     async def render(
         self,
-        render: object,
+        render: Callable[..., Awaitable[RenderedPageState]],
         url: str,
         *,
-        render_options: object | None = None,
+        render_options: Mapping[str, object] | None = None,
     ) -> RenderedPageState:
-        return await render(url, **(render_options or {}))  # type: ignore[misc, operator]
+        return await render(url, **(render_options or {}))
 
 
 def test_company_and_role_commands_share_database_file(tmp_path: Path) -> None:

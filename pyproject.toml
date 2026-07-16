@@ -41,11 +41,12 @@ agents = [
   "langgraph",
 ]
 mcp = [
-  "mcp",
+  "mcp>=1.27,<2",
 ]
 
 [project.scripts]
 callumployed = "callumployed.cli:app"
+callumployed-mcp = "callumployed.mcp_server:main"
 
 [build-system]
 requires = ["hatchling"]
