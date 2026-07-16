@@ -177,6 +177,35 @@ def test_roles_list_filters_by_status_and_search_query(tmp_path: Path) -> None:
     assert empty_result.output == "No roles found.\n"
 
 
+def test_stats_command_counts_companies_jobs_and_applications(tmp_path: Path) -> None:
+    database = tmp_path / "stats.sqlite3"
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(app, ["companies", "add", "Beta", "https://beta.example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Backend Engineer", "https://example.com/jobs/backend"],
+        env=env,
+    )
+    runner.invoke(
+        app,
+        ["roles", "add", "2", "Product Designer", "https://beta.example.com/jobs/designer"],
+        env=env,
+    )
+    runner.invoke(app, ["roles", "set-status", "1", "applied"], env=env)
+
+    result = runner.invoke(app, ["stats"], env=env)
+
+    assert result.exit_code == 0
+    assert "Companies: 2" in result.output
+    assert "Jobs: 2" in result.output
+    assert "Applications: 1" in result.output
+    assert "- discovered: 1" in result.output
+    assert "- applied: 1" in result.output
+    assert "- interview: 0" in result.output
+
+
 def test_companies_update_command_sets_scan_options(tmp_path: Path) -> None:
     database = tmp_path / "company-update.sqlite3"
     env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}

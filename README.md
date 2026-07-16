@@ -81,6 +81,7 @@ Available MCP tools cover:
 
 - companies: add, update career pages, list, show
 - roles: add, list, show, update, set status
+- stats: application and job counts by lifecycle status
 - config: show and update scan filters
 - scans: scan a URL, scan a company, list scan runs, show a scan run
 
@@ -100,6 +101,7 @@ OPENAI_API_KEY=...
 Examples:
 
 ```bash
+callumployed stats
 callumployed scan url https://example.com/careers
 callumployed scan company 1
 callumployed scan all

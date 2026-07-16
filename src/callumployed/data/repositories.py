@@ -23,6 +23,13 @@ from callumployed.webscraping.models import CareersPageScanResult, ScoredLinkCan
 INCLUDE_GRADUATE_DEGREE_ROLES_CONFIG_KEY = "include_graduate_degree_roles"
 INCLUDE_HARDWARE_ROLES_CONFIG_KEY = "include_hardware_roles"
 REQUIRE_SOFTWARE_KEYWORDS_CONFIG_KEY = "require_software_keywords"
+APPLICATION_STATUSES = (
+    RoleStatus.APPLIED,
+    RoleStatus.OA,
+    RoleStatus.INTERVIEW,
+    RoleStatus.REJECTED,
+    RoleStatus.OFFER,
+)
 
 
 def _lastrowid(cursor: turso.Cursor) -> int:
@@ -545,6 +552,37 @@ def list_role_items(
         values,
     ).fetchall()
     return [RoleListItem.model_validate(dict(row)) for row in rows]
+
+
+def get_tracking_stats(connection: turso.Connection) -> dict[str, object]:
+    company_row = connection.execute("SELECT COUNT(*) AS count FROM companies").fetchone()
+    company_count = int(company_row["count"]) if company_row is not None else 0
+
+    role_rows = connection.execute(
+        """
+        SELECT role_status, COUNT(*) AS count
+        FROM roles
+        GROUP BY role_status
+        """
+    ).fetchall()
+    jobs_by_status = {status.value: 0 for status in RoleStatus}
+    for row in role_rows:
+        jobs_by_status[str(row["role_status"])] = int(row["count"])
+
+    application_status_values = {status.value for status in APPLICATION_STATUSES}
+    applications_by_status = {
+        status: count
+        for status, count in jobs_by_status.items()
+        if status in application_status_values
+    }
+
+    return {
+        "companies_total": company_count,
+        "jobs_total": sum(jobs_by_status.values()),
+        "applications_total": sum(applications_by_status.values()),
+        "jobs_by_status": jobs_by_status,
+        "applications_by_status": applications_by_status,
+    }
 
 
 def set_role_status(

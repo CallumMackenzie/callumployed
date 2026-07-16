@@ -12,6 +12,7 @@ from callumployed.data.models import (
     RoleStatus,
 )
 from callumployed.data.repositories import (
+    APPLICATION_STATUSES,
     add_company,
     add_company_career_page,
     add_role,
@@ -19,6 +20,7 @@ from callumployed.data.repositories import (
     get_company,
     get_role,
     get_scan_run,
+    get_tracking_stats,
     list_companies,
     list_company_career_pages,
     list_config_values,
@@ -63,6 +65,15 @@ def main(ctx: typer.Context) -> None:
     """Manage target companies, roles, applications, and job-search artifacts."""
     if ctx.invoked_subcommand is not None:
         db.ensure_initialized()
+
+
+@app.command("stats")
+def stats_command() -> None:
+    """Show application and job tracking stats."""
+    with db.connect() as connection:
+        stats = get_tracking_stats(connection)
+
+    _print_stats(stats)
 
 
 @companies_app.command("add")
@@ -752,6 +763,26 @@ def _set_role_state(role_id: int, state: RoleStatus, *, summary: str) -> None:
         except LookupError as error:
             raise typer.BadParameter(str(error)) from error
     typer.echo(f"Updated role #{role.id}: {role.role_status.value}")
+
+
+def _print_stats(stats: dict[str, object]) -> None:
+    typer.echo(f"Companies: {stats['companies_total']}")
+    typer.echo(f"Jobs: {stats['jobs_total']}")
+    typer.echo(f"Applications: {stats['applications_total']}")
+
+    jobs_by_status = stats["jobs_by_status"]
+    if not isinstance(jobs_by_status, dict):
+        raise TypeError("jobs_by_status must be a dict")
+    typer.echo("Jobs by status:")
+    for status in RoleStatus:
+        typer.echo(f"- {status.value}: {jobs_by_status.get(status.value, 0)}")
+
+    applications_by_status = stats["applications_by_status"]
+    if not isinstance(applications_by_status, dict):
+        raise TypeError("applications_by_status must be a dict")
+    typer.echo("Applications by status:")
+    for status in APPLICATION_STATUSES:
+        typer.echo(f"- {status.value}: {applications_by_status.get(status.value, 0)}")
 
 
 def _print_scan_result(result: CareersPageScanResult) -> None:

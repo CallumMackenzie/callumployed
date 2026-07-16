@@ -284,6 +284,15 @@ def set_role_status(
 
 
 @mcp.tool()
+def get_stats() -> dict[str, Any]:
+    """Show application and job tracking stats."""
+    _ensure_initialized()
+    with db.connect() as connection:
+        stats = repo.get_tracking_stats(connection)
+    return _to_json_object(stats)
+
+
+@mcp.tool()
 def show_config() -> dict[str, Any]:
     """Show app-wide configuration, including defaulted values."""
     return _config_payload()

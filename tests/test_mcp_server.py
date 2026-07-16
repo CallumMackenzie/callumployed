@@ -57,6 +57,28 @@ def test_mcp_company_and_role_tools_return_structured_data(
     assert shown_role["events"][0]["event_type"] == "status_changed"
 
 
+def test_mcp_stats_tool_returns_application_and_job_counts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(tmp_path / "stats.sqlite3"))
+
+    mcp_server.add_company("Acme", "https://example.com/careers")
+    mcp_server.add_company("Beta", "https://beta.example.com/careers")
+    mcp_server.add_role(1, "Backend Engineer", "https://example.com/jobs/backend")
+    mcp_server.add_role(2, "Product Designer", "https://beta.example.com/jobs/designer")
+    mcp_server.set_role_status(1, "applied")
+
+    stats = mcp_server.get_stats()
+
+    assert stats["companies_total"] == 2
+    assert stats["jobs_total"] == 2
+    assert stats["applications_total"] == 1
+    assert stats["jobs_by_status"]["discovered"] == 1
+    assert stats["jobs_by_status"]["applied"] == 1
+    assert stats["applications_by_status"]["applied"] == 1
+
+
 def test_mcp_config_tools_return_defaults_and_updates(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
