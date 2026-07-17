@@ -23,7 +23,8 @@ dependencies = [
   "pyturso>=0.6.1",
   "python-dotenv>=1.0",
   "rich>=13.7",
-  "trafilatura>=1.12",
+  "geograpy3>=0.3",
+  "trafilatura>=1.12,<2",
   "typer>=0.12",
 ]
 

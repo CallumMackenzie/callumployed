@@ -13,6 +13,24 @@ from callumployed.web.server import LocalThreadingHTTPServer, build_tracker_payl
 runner = CliRunner()
 
 
+def test_static_svg_assets_are_served_with_svg_content_type() -> None:
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        url = f"http://127.0.0.1:{port}/assets/camackenzie-logo.svg"
+
+        with urlopen(url, timeout=5) as response:
+            assert response.status == 200
+            assert response.headers["Content-Type"] == "image/svg+xml; charset=utf-8"
+            assert response.read().startswith(b'<?xml version="1.0" encoding="UTF-8"?>')
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_tracker_payload_groups_roles_by_status(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -32,6 +50,8 @@ def test_tracker_payload_groups_roles_by_status(
             "https://example.com/jobs/backend",
             "--location",
             "Vancouver",
+            "--notes",
+            "Remote-friendly team.",
         ],
         env=env,
     )
@@ -46,6 +66,10 @@ def test_tracker_payload_groups_roles_by_status(
     assert applied["count"] == 1
     assert applied["jobs"][0]["company_name"] == "Acme"
     assert applied["jobs"][0]["title"] == "Backend Engineer"
+    assert applied["jobs"][0]["location"] == "Vancouver"
+    assert applied["jobs"][0]["notes"] == "Remote-friendly team."
+    assert applied["jobs"][0]["first_seen_at"] is not None
+    assert applied["jobs"][0]["created_at"] is not None
 
 
 def test_tracker_status_endpoint_moves_role(

@@ -3,12 +3,19 @@ const statusListEl = document.querySelector("#status-list");
 const statusTabsEl = document.querySelector("#status-tabs");
 const searchForm = document.querySelector("#search-form");
 const searchInput = document.querySelector("#search-input");
+const reviewDiscoveredButton = document.querySelector("#review-discovered");
+const reviewView = document.querySelector("#review-view");
+const reviewHeading = document.querySelector("#review-heading");
+const reviewProgress = document.querySelector("#review-progress");
+const reviewCard = document.querySelector("#review-card");
+const closeReviewButton = document.querySelector("#close-review");
 const expandAllButton = document.querySelector("#expand-all");
 const collapseAllButton = document.querySelector("#collapse-all");
 const collapseEmptyButton = document.querySelector("#collapse-empty");
 
 let hideEmpty = true;
 let trackerData = null;
+let reviewQueue = [];
 
 function formatDate(value) {
   if (!value) return "";
@@ -158,6 +165,7 @@ function render(data) {
   renderStats(data.stats);
   renderTabs(data.statuses);
   renderStatuses(data.statuses);
+  updateReviewButton(data.statuses);
 }
 
 async function loadTracker(query = "") {
@@ -227,6 +235,144 @@ async function updateRoleStatus(button) {
         : status.charAt(0).toUpperCase() + status.slice(1);
   }
 }
+
+function updateReviewButton(statuses) {
+  const discovered = getDiscoveredJobs(statuses);
+  reviewDiscoveredButton.disabled = discovered.length === 0;
+  reviewDiscoveredButton.textContent =
+    discovered.length === 0 ? "Review discovered" : `Review discovered (${discovered.length})`;
+}
+
+function getDiscoveredJobs(statuses = trackerData?.statuses ?? []) {
+  return statuses.find((status) => status.key === "discovered")?.jobs ?? [];
+}
+
+function openReviewView() {
+  reviewQueue = [...getDiscoveredJobs()];
+  reviewView.hidden = false;
+  document.body.classList.add("review-open");
+  renderReviewRole();
+}
+
+function closeReviewView() {
+  reviewView.hidden = true;
+  document.body.classList.remove("review-open");
+  reviewQueue = [];
+}
+
+function renderReviewRole(message = "") {
+  const current = reviewQueue[0];
+  const total = reviewQueue.length;
+  reviewHeading.textContent = total > 0 ? "Review queue" : "Review complete";
+  reviewProgress.textContent =
+    total > 0 ? `${total} discovered ${total === 1 ? "role" : "roles"} in queue` : "";
+
+  reviewView.querySelectorAll(".review-action").forEach((button) => {
+    button.disabled = total === 0;
+  });
+
+  if (!current) {
+    reviewCard.innerHTML = `
+      <div class="review-empty">
+        <h3>No discovered jobs left.</h3>
+        <p>Everything in this queue has been handled or moved out of discovered.</p>
+      </div>
+    `;
+    return;
+  }
+
+  reviewCard.innerHTML = `
+    ${message ? `<p class="review-message">${escapeHtml(message)}</p>` : ""}
+    <div class="review-title-row">
+      <p class="review-company">${escapeHtml(current.company_name)}</p>
+      <a class="review-role-title" href="${escapeHtml(current.role_url)}" target="_blank" rel="noreferrer">${escapeHtml(current.title)}</a>
+    </div>
+    <dl class="review-details">
+      ${renderReviewDetail("Role ID", current.id)}
+      ${renderReviewDetail("Company ID", current.company_id)}
+      ${renderReviewDetail("Location", current.location)}
+      ${renderReviewDetail("Status", current.role_status)}
+      ${renderReviewDetail("Posting ID", current.posting_id)}
+      ${renderReviewDetail("First seen", formatDate(current.first_seen_at))}
+      ${renderReviewDetail("Last seen", formatDate(current.last_seen_at))}
+      ${renderReviewDetail("Created", formatDate(current.created_at))}
+      ${renderReviewDetail("Updated", formatDate(current.updated_at))}
+      ${renderReviewDetail("URL", current.role_url, true)}
+      ${renderReviewDetail("Notes", current.notes)}
+      ${renderReviewDetail("Description", current.description)}
+    </dl>
+  `;
+}
+
+function renderReviewDetail(label, value, isLink = false) {
+  if (!value) return "";
+  const content = isLink
+    ? `<a href="${escapeHtml(value)}" target="_blank" rel="noreferrer">${escapeHtml(value)}</a>`
+    : escapeHtml(value);
+  return `
+    <div class="review-detail">
+      <dt>${escapeHtml(label)}</dt>
+      <dd>${content}</dd>
+    </div>
+  `;
+}
+
+async function handleReviewAction(action) {
+  const current = reviewQueue[0];
+  if (!current) return;
+
+  if (action === "later") {
+    if (reviewQueue.length > 1) {
+      reviewQueue.push(reviewQueue.shift());
+      renderReviewRole("Moved to the back of the queue.");
+    } else {
+      renderReviewRole("Only one role is in the queue.");
+    }
+    return;
+  }
+
+  if (!["interested", "disinterested"].includes(action)) return;
+
+  const buttons = reviewView.querySelectorAll(".review-action");
+  buttons.forEach((button) => {
+    button.disabled = true;
+  });
+
+  try {
+    await updateRoleStatusById(current.id, action);
+    reviewQueue.shift();
+    renderReviewRole(action === "interested" ? "Marked interested." : "Marked disinterested.");
+    await loadTracker(searchInput.value.trim());
+  } catch {
+    buttons.forEach((button) => {
+      button.disabled = false;
+    });
+    renderReviewRole("Could not update that role. Try again.");
+  }
+}
+
+async function updateRoleStatusById(roleId, status) {
+  const response = await fetch(`/api/roles/${encodeURIComponent(roleId)}/status`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status }),
+  });
+  if (!response.ok) throw new Error("Status update failed");
+}
+
+reviewDiscoveredButton.addEventListener("click", openReviewView);
+
+closeReviewButton.addEventListener("click", closeReviewView);
+
+reviewView.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-review-action]");
+  if (!button) return;
+  handleReviewAction(button.dataset.reviewAction);
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !reviewView.hidden) closeReviewView();
+});
 
 expandAllButton.addEventListener("click", () => {
   document.querySelectorAll(".pane-toggle").forEach((toggle) => {

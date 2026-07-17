@@ -553,8 +553,13 @@ def list_role_items(
             roles.role_url,
             roles.location,
             roles.role_status,
+            roles.first_seen_at,
             roles.last_seen_at,
-            roles.updated_at
+            roles.created_at,
+            roles.updated_at,
+            roles.notes,
+            roles.description,
+            roles.posting_id
         FROM roles
         JOIN companies ON companies.id = roles.company_id
         {where}

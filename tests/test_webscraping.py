@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -27,6 +28,7 @@ from callumployed.webscraping.classifier import (
 )
 from callumployed.webscraping.errors import NavigationError
 from callumployed.webscraping.extraction import extract_link_candidates
+from callumployed.webscraping.location_parser import parse_job_location
 from callumployed.webscraping.models import (
     DiscoveredJobLink,
     ExtractionConfidence,
@@ -454,7 +456,7 @@ def test_assess_role_page_prefers_schema_org_jobposting() -> None:
     assert assessment.confidence == 0.95
     assert assessment.extraction_method == "jobposting_structured_data"
     assert assessment.title == "Backend Engineering Intern"
-    assert assessment.location == "Vancouver, BC, CA"
+    assert assessment.location == "Vancouver, BC, Canada"
     assert assessment.posting_id == "REQ-123"
 
 
@@ -477,6 +479,79 @@ def test_assess_role_page_accepts_ats_role_without_structured_data() -> None:
     assert assessment.title == "Backend Intern"
     assert assessment.location == "Toronto, ON"
     assert assessment.confidence >= 0.8
+
+
+def test_parse_job_location_normalizes_geograpy_places(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_geograpy_context(text: str) -> SimpleNamespace:
+        if "San Mateo" in text:
+            return SimpleNamespace(
+                cities=["San Mateo"],
+                regions=[],
+                countries=["United States of America", "Canada"],
+                places=["San Mateo", "CA", "United States of America"],
+            )
+        if "Fremont" in text:
+            return SimpleNamespace(
+                cities=["Fremont"],
+                regions=[],
+                countries=["United States of America"],
+                places=["Fremont", "California"],
+            )
+        return SimpleNamespace(
+            cities=["Canada", "Location"],
+            regions=[],
+            countries=["Canada", "United States of America"],
+            places=["Location", "BC", "Canada"],
+        )
+
+    monkeypatch.setattr(
+        "callumployed.webscraping.location_parser._geograpy_context",
+        fake_geograpy_context,
+    )
+
+    assert parse_job_location("Location: Vancouver, BC, CA") == "Vancouver, BC, Canada"
+    assert parse_job_location("Remote - Canada") == "Remote; Canada"
+    assert (
+        parse_job_location("San Mateo, CA, United States")
+        == "San Mateo, CA, United States"
+    )
+    assert (
+        parse_job_location("Fremont, California Req. ID 271209 Job Type Intern")
+        == "Fremont, CA"
+    )
+
+
+def test_assess_role_page_extracts_location_from_job_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "callumployed.webscraping.location_parser._geograpy_context",
+        lambda text: SimpleNamespace(
+            cities=["Toronto", "Waterloo", "Ontario"],
+            regions=[],
+            countries=["Canada", "United States of America"],
+            places=["Toronto", "Waterloo", "Ontario"],
+        ),
+    )
+    page = RenderedPageState(
+        url="https://jobs.lever.co/acme/backend-intern",
+        final_url="https://jobs.lever.co/acme/backend-intern",
+        title="Backend Intern",
+        html="""
+        <h1>Backend Intern</h1>
+        <section>
+          This role is based in Toronto, ON or Waterloo, Ontario.
+          Job description. Responsibilities. Requirements. Apply now.
+        </section>
+        """,
+    )
+
+    assessment = assess_role_page(page)
+
+    assert assessment.is_role is True
+    assert assessment.location == "Toronto, ON; Waterloo, ON"
 
 
 def test_assess_role_page_accepts_common_job_section_signals() -> None:

@@ -7,6 +7,7 @@ import extruct  # type: ignore[import-untyped]
 import trafilatura
 from bs4 import BeautifulSoup
 
+from callumployed.webscraping.location_parser import parse_job_location
 from callumployed.webscraping.models import RenderedPageState, RolePageAssessment
 
 ATS_DOMAINS = (
@@ -153,7 +154,10 @@ def assess_role_page(
             is_closed=_is_closed_page(page, description),
             confidence=0.95,
             title=title or page.title,
-            location=_extract_job_location(structured_posting),
+            location=parse_job_location(
+                _extract_job_location(structured_posting),
+                context_text=_location_context(page, description),
+            ),
             description=description or _extract_main_text(page),
             posting_id=_extract_posting_id(structured_posting, page),
             extraction_method="jobposting_structured_data",
@@ -181,7 +185,10 @@ def assess_role_page(
             is_closed=is_closed,
             confidence=0.82 if not is_closed else 0.72,
             title=title,
-            location=_extract_dom_location(soup, visible_text),
+            location=parse_job_location(
+                _extract_dom_location(soup, visible_text),
+                context_text=visible_text,
+            ),
             description=description,
             posting_id=_extract_posting_id({}, page),
             extraction_method="ats_heuristic",
@@ -211,7 +218,10 @@ def assess_role_page(
             is_closed=is_closed,
             confidence=0.66 if not is_closed else 0.58,
             title=title,
-            location=_extract_dom_location(soup, visible_text),
+            location=parse_job_location(
+                _extract_dom_location(soup, visible_text),
+                context_text=visible_text,
+            ),
             description=description,
             posting_id=_extract_posting_id({}, page),
             extraction_method="html_heuristic",
@@ -274,6 +284,10 @@ def _extract_main_text(page: RenderedPageState) -> str | None:
         return _clean_text(page.visible_text)
     soup = BeautifulSoup(page.html, "lxml")
     return _clean_text(soup.get_text(" ", strip=True))
+
+
+def _location_context(page: RenderedPageState, description: str | None) -> str | None:
+    return _clean_text(" ".join(part for part in (page.visible_text, description) if part))
 
 
 def _select_role_title(
@@ -421,7 +435,7 @@ def _extract_dom_location(soup: BeautifulSoup, visible_text: str | None) -> str 
         element = soup.select_one(selector)
         if element is not None:
             text = _clean_text(element.get_text(" ", strip=True))
-            if text:
+            if text and len(text) <= 180:
                 return text
     if not visible_text:
         return None

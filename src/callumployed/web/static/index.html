@@ -9,9 +9,12 @@
   <body>
     <main class="shell">
       <header class="topbar">
-        <div>
-          <p class="eyebrow">callumployed</p>
-          <h1>Job tracker</h1>
+        <div class="brand-lockup">
+          <img class="brand-logo" src="/assets/camackenzie-logo.svg" alt="Callum Mackenzie" />
+          <div>
+            <p class="eyebrow">callumployed</p>
+            <h1>Job tracker</h1>
+          </div>
         </div>
         <form class="search" id="search-form">
           <label class="sr-only" for="search-input">Search jobs</label>
@@ -21,6 +24,10 @@
       </header>
 
       <section class="stats-grid" id="stats" aria-label="Overall stats"></section>
+
+      <section class="review-entry" aria-label="Discovered review">
+        <button type="button" id="review-discovered">Review discovered</button>
+      </section>
 
       <section class="status-toolbar" aria-label="Status navigation">
         <div class="status-tabs" id="status-tabs"></div>
@@ -33,6 +40,25 @@
 
       <section class="status-list" id="status-list" aria-live="polite"></section>
     </main>
+
+    <section class="review-view" id="review-view" aria-label="Discovered job review" hidden>
+      <div class="review-shell">
+        <header class="review-header">
+          <div>
+            <p class="eyebrow">discovered review</p>
+            <h2 id="review-heading">Review queue</h2>
+          </div>
+          <button type="button" id="close-review">Close</button>
+        </header>
+        <div class="review-progress" id="review-progress"></div>
+        <article class="review-card" id="review-card"></article>
+      </div>
+      <div class="review-actions" aria-label="Review actions">
+        <button class="review-action danger" type="button" data-review-action="disinterested">Disinterested</button>
+        <button class="review-action" type="button" data-review-action="later">Look later</button>
+        <button class="review-action success" type="button" data-review-action="interested">Interested</button>
+      </div>
+    </section>
 
     <script src="/assets/app.js" type="module"></script>
   </body>

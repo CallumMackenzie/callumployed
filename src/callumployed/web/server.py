@@ -201,4 +201,6 @@ def _content_type_for(filename: str) -> str:
         return "text/css; charset=utf-8"
     if filename.endswith(".js"):
         return "text/javascript; charset=utf-8"
+    if filename.endswith(".svg"):
+        return "image/svg+xml; charset=utf-8"
     return "application/octet-stream"

@@ -80,8 +80,13 @@ class RoleListItem(AppModel):
     role_url: str
     location: str | None = None
     role_status: RoleStatus
+    first_seen_at: datetime | None = None
     last_seen_at: datetime | None = None
+    created_at: datetime | None = None
     updated_at: datetime | None = None
+    notes: str | None = None
+    description: str | None = None
+    posting_id: str | None = None
 
 
 class ScanRun(AppModel):

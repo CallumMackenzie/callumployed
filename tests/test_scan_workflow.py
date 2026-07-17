@@ -59,6 +59,7 @@ class EmptyStructuredModel:
 def test_render_page_node_uses_browser_profile_manager(monkeypatch: pytest.MonkeyPatch) -> None:
     rendered_ports: list[int | None] = []
     manager_calls: list[str] = []
+    monkeypatch.setenv("CALLUMPLOYED_BROWSER_BACKEND", "local")
 
     async def fake_render_careers_page(
         url: str,
@@ -462,7 +463,7 @@ def test_scan_company_visits_selected_discovered_links(
     assert attempts[0].assessment_description == (
         "Software Engineering Intern Vancouver Apply now"
     )
-    assert attempts[0].assessment_location == "Vancouver, BC, CA"
+    assert attempts[0].assessment_location == "Vancouver, BC, Canada"
     assert attempts[0].assessment_posting_id == "REQ-123"
     assert attempts[0].assessment_extraction_method == "jobposting_structured_data"
     assert attempts[0].assessment_reasons == ["schema.org JobPosting structured data"]
@@ -470,7 +471,7 @@ def test_scan_company_visits_selected_discovered_links(
     assert attempts[0].role_id == roles[0].id
     assert roles[0].title == "Software Engineering Intern"
     assert roles[0].role_url == "https://example.com/jobs/software-engineering-intern-12345"
-    assert roles[0].location == "Vancouver, BC, CA"
+    assert roles[0].location == "Vancouver, BC, Canada"
     assert roles[0].description == "Software Engineering Intern Vancouver Apply now"
     assert roles[0].posting_id == "REQ-123"
     assert roles[0].role_status is RoleStatus.DISCOVERED
@@ -543,7 +544,7 @@ def test_rescan_role_refreshes_existing_role_fields(
 
     assert result["assessment"].is_role is True
     assert result["role"].title == "Software Engineering Intern, Platform"
-    assert result["role"].location == "Vancouver, BC, CA"
+    assert result["role"].location == "Vancouver, BC, Canada"
     assert result["role"].description == "Build software systems for production services."
     assert result["role"].posting_id == "REQ-123"
     with db.connect() as connection:
