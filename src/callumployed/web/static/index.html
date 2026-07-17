@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>callumployed</title>
+    <link rel="stylesheet" href="/assets/app.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">callumployed</p>
+          <h1>Job tracker</h1>
+        </div>
+        <form class="search" id="search-form">
+          <label class="sr-only" for="search-input">Search jobs</label>
+          <input id="search-input" name="q" type="search" placeholder="Search company, title, status" />
+          <button type="submit">Search</button>
+        </form>
+      </header>
+
+      <section class="stats-grid" id="stats" aria-label="Overall stats"></section>
+
+      <section class="status-toolbar" aria-label="Status navigation">
+        <div class="status-tabs" id="status-tabs"></div>
+        <div class="view-actions">
+          <button type="button" id="expand-all">Expand</button>
+          <button type="button" id="collapse-empty">Hide empty</button>
+        </div>
+      </section>
+
+      <section class="status-list" id="status-list" aria-live="polite"></section>
+    </main>
+
+    <script src="/assets/app.js" type="module"></script>
+  </body>
+</html>

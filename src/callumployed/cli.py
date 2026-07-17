@@ -3,6 +3,7 @@ from typing import Annotated
 
 import typer
 
+from callumployed.config import BrowserSettings
 from callumployed.data import db
 from callumployed.data.models import (
     Company,
@@ -40,8 +41,11 @@ from callumployed.data.repositories import (
     should_require_software_keywords,
     update_role,
 )
+from callumployed.services.scan_workflow import rescan_role as run_rescan_role
 from callumployed.services.scan_workflow import scan_company as run_scan_company
 from callumployed.services.scan_workflow import scan_url as run_scan_url
+from callumployed.web.server import run_server
+from callumployed.webscraping.browser import render_careers_page
 from callumployed.webscraping.errors import ScrapingError
 from callumployed.webscraping.models import CareersPageScanResult
 from callumployed.webscraping.profile_manager import BrowserProfileManager
@@ -74,6 +78,16 @@ def stats_command() -> None:
         stats = get_tracking_stats(connection)
 
     _print_stats(stats)
+
+
+@app.command("serve")
+def serve_command(
+    host: Annotated[str, typer.Option("--host", help="Host interface to bind.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port", help="Port to bind.")] = 8765,
+) -> None:
+    """Serve the local web tracker."""
+    typer.echo(f"Serving callumployed at http://{host}:{port}")
+    run_server(host=host, port=port)
 
 
 @companies_app.command("add")
@@ -299,6 +313,34 @@ def browser_profiles_command() -> None:
         typer.echo(
             f"{profile.name}: {profile.status} path=<{profile.path}>{reason}"
         )
+
+
+@browser_app.command("config")
+def browser_config_command() -> None:
+    """Show browser backend configuration without printing secrets."""
+    settings = BrowserSettings()
+    typer.echo(f"backend: {settings.backend}")
+    typer.echo(f"headless: {str(settings.headless).lower()}")
+    typer.echo(f"timeout_ms: {settings.timeout_ms}")
+    typer.echo(
+        "browserbase_api_key: "
+        f"{'configured' if settings.browserbase_api_key is not None else 'missing'}"
+    )
+
+
+@browser_app.command("smoke")
+def browser_smoke_command(
+    url: Annotated[str, typer.Argument(help="URL to render.")] = "https://example.com",
+) -> None:
+    """Render a single page through the configured browser backend."""
+    try:
+        page = asyncio.run(render_careers_page(url, stealth=False))
+    except ScrapingError as error:
+        raise typer.BadParameter(str(error)) from error
+
+    typer.echo(f"Rendered: {page.final_url}")
+    typer.echo(f"Title: {page.title or '(none)'}")
+    typer.echo(f"HTML bytes: {len(page.html.encode('utf-8'))}")
 
 
 @scan_app.command("url")
@@ -741,6 +783,54 @@ def update_role_command(
             raise typer.BadParameter(str(error)) from error
 
     typer.echo(f"Updated role #{role.id}: {role.title}")
+
+
+@roles_app.command("rescan")
+def rescan_role_command(
+    role_id: Annotated[int, typer.Argument(help="Role ID.")],
+    update_status: Annotated[
+        bool,
+        typer.Option(
+            "--update-status",
+            help="Mark the role closed when the rescan finds a closed posting.",
+        ),
+    ] = False,
+) -> None:
+    """Revisit an existing role URL and refresh extracted role fields."""
+    try:
+        result = asyncio.run(
+            run_rescan_role(
+                role_id,
+                browser_profile_manager=BrowserProfileManager(),
+                update_status=update_status,
+            )
+        )
+    except ScrapingError as error:
+        raise typer.BadParameter(str(error)) from error
+    except (LookupError, RuntimeError) as error:
+        raise typer.BadParameter(str(error)) from error
+
+    previous_role = result["previous_role"]
+    role = result["role"]
+    assessment = result["assessment"]
+    typer.echo(f"Rescanned role #{role.id}: {role.title}")
+    typer.echo(f"Final URL: {result['final_url']}")
+    typer.echo(f"Is role: {assessment.is_role}")
+    typer.echo(f"Is closed: {assessment.is_closed}")
+    typer.echo(f"Confidence: {assessment.confidence:.2f}")
+    typer.echo(f"Extraction method: {assessment.extraction_method}")
+    if previous_role.title != role.title:
+        typer.echo(f"Title: {previous_role.title} -> {role.title}")
+    if previous_role.location != role.location:
+        typer.echo(f"Location: {previous_role.location or 'none'} -> {role.location or 'none'}")
+    if previous_role.posting_id != role.posting_id:
+        typer.echo(
+            f"Posting ID: {previous_role.posting_id or 'none'} -> {role.posting_id or 'none'}"
+        )
+    if previous_role.role_status != role.role_status:
+        typer.echo(f"Status: {previous_role.role_status.value} -> {role.role_status.value}")
+    if assessment.rejection_reason:
+        typer.echo(f"Rejection: {assessment.rejection_reason}")
 
 
 @roles_app.command("set-status")

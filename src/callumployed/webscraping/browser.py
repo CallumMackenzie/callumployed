@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any, Literal
 
 from platformdirs import user_data_path
 from playwright.async_api import BrowserContext, Page, Playwright, async_playwright
@@ -7,6 +8,7 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright_stealth import Stealth  # type: ignore[import-untyped]
 
+from callumployed.config import BrowserSettings
 from callumployed.webscraping.errors import BlockedNavigationError, NavigationError
 from callumployed.webscraping.models import RenderedPageState
 
@@ -20,6 +22,11 @@ ROLE_PAGE_CONTENT_SETTLE_TIMEOUT_MS = 1_500
 ROLE_PAGE_CONTENT_SETTLE_POLL_MS = 250
 ROLE_PAGE_LAZY_SCROLL_STEP_DELAY_MS = 75
 PROFILE_DIR_NAME = "browser-profile"
+BrowserBackend = Literal["local", "browserbase"]
+
+
+def browser_backend(settings: BrowserSettings | None = None) -> BrowserBackend:
+    return (settings or BrowserSettings()).backend
 
 
 async def render_careers_page(
@@ -34,48 +41,22 @@ async def render_careers_page(
     content_settle_timeout_ms: int = CONTENT_SETTLE_TIMEOUT_MS,
     content_settle_poll_ms: int = CONTENT_SETTLE_POLL_MS,
     lazy_scroll_step_delay_ms: int = LAZY_SCROLL_STEP_DELAY_MS,
+    backend: BrowserBackend | None = None,
 ) -> RenderedPageState:
     blocked_types = set(blocked_resource_types)
+    browser_settings = BrowserSettings()
+    selected_backend = backend or browser_settings.backend
     playwright_context = Stealth().use_async(async_playwright()) if stealth else async_playwright()
 
     try:
         async with playwright_context as playwright:
-            if external_browser_port is not None:
-                try:
-                    browser = await playwright.chromium.connect_over_cdp(
-                        f"http://127.0.0.1:{external_browser_port}"
-                    )
-                except PlaywrightError as exc:
-                    if not fallback_to_managed_browser:
-                        raise NavigationError(
-                            "Could not connect to external browser CDP port "
-                            f"{external_browser_port}"
-                        ) from exc
-                    return await _render_with_managed_browser(
-                        playwright,
-                        url,
-                        timeout_ms=timeout_ms,
-                        blocked_types=blocked_types,
-                        content_settle_min_wait_ms=content_settle_min_wait_ms,
-                        content_settle_timeout_ms=content_settle_timeout_ms,
-                        content_settle_poll_ms=content_settle_poll_ms,
-                        lazy_scroll_step_delay_ms=lazy_scroll_step_delay_ms,
-                    )
-                context = browser.contexts[0] if browser.contexts else await browser.new_context()
-                return await _render_with_context(
-                    context,
-                    url,
-                    timeout_ms=timeout_ms,
-                    blocked_types=blocked_types,
-                    content_settle_min_wait_ms=content_settle_min_wait_ms,
-                    content_settle_timeout_ms=content_settle_timeout_ms,
-                    content_settle_poll_ms=content_settle_poll_ms,
-                    lazy_scroll_step_delay_ms=lazy_scroll_step_delay_ms,
-                )
-
-            return await _render_with_managed_browser(
+            return await _render_with_playwright(
                 playwright,
                 url,
+                settings=browser_settings,
+                selected_backend=selected_backend,
+                external_browser_port=external_browser_port,
+                fallback_to_managed_browser=fallback_to_managed_browser,
                 timeout_ms=timeout_ms,
                 blocked_types=blocked_types,
                 content_settle_min_wait_ms=content_settle_min_wait_ms,
@@ -93,6 +74,151 @@ async def render_careers_page(
 
 def managed_browser_profile_path() -> Path:
     return user_data_path("callumployed", appauthor=False) / PROFILE_DIR_NAME
+
+
+async def _render_with_playwright(
+    playwright: Playwright,
+    url: str,
+    *,
+    settings: BrowserSettings,
+    selected_backend: BrowserBackend,
+    external_browser_port: int | None,
+    fallback_to_managed_browser: bool,
+    timeout_ms: int,
+    blocked_types: set[str],
+    content_settle_min_wait_ms: int,
+    content_settle_timeout_ms: int,
+    content_settle_poll_ms: int,
+    lazy_scroll_step_delay_ms: int,
+) -> RenderedPageState:
+    if selected_backend == "browserbase" and external_browser_port is None:
+        try:
+            return await _render_with_browserbase(
+                playwright,
+                url,
+                settings=settings,
+                timeout_ms=timeout_ms,
+                blocked_types=blocked_types,
+                content_settle_min_wait_ms=content_settle_min_wait_ms,
+                content_settle_timeout_ms=content_settle_timeout_ms,
+                content_settle_poll_ms=content_settle_poll_ms,
+                lazy_scroll_step_delay_ms=lazy_scroll_step_delay_ms,
+            )
+        except NavigationError:
+            return await _render_with_managed_browser(
+                playwright,
+                url,
+                timeout_ms=timeout_ms,
+                blocked_types=blocked_types,
+                content_settle_min_wait_ms=content_settle_min_wait_ms,
+                content_settle_timeout_ms=content_settle_timeout_ms,
+                content_settle_poll_ms=content_settle_poll_ms,
+                lazy_scroll_step_delay_ms=lazy_scroll_step_delay_ms,
+            )
+
+    if external_browser_port is not None:
+        try:
+            browser = await playwright.chromium.connect_over_cdp(
+                f"http://127.0.0.1:{external_browser_port}"
+            )
+        except PlaywrightError as exc:
+            if not fallback_to_managed_browser:
+                raise NavigationError(
+                    "Could not connect to external browser CDP port "
+                    f"{external_browser_port}"
+                ) from exc
+            return await _render_with_managed_browser(
+                playwright,
+                url,
+                timeout_ms=timeout_ms,
+                blocked_types=blocked_types,
+                content_settle_min_wait_ms=content_settle_min_wait_ms,
+                content_settle_timeout_ms=content_settle_timeout_ms,
+                content_settle_poll_ms=content_settle_poll_ms,
+                lazy_scroll_step_delay_ms=lazy_scroll_step_delay_ms,
+            )
+        context = browser.contexts[0] if browser.contexts else await browser.new_context()
+        return await _render_with_context(
+            context,
+            url,
+            timeout_ms=timeout_ms,
+            blocked_types=blocked_types,
+            content_settle_min_wait_ms=content_settle_min_wait_ms,
+            content_settle_timeout_ms=content_settle_timeout_ms,
+            content_settle_poll_ms=content_settle_poll_ms,
+            lazy_scroll_step_delay_ms=lazy_scroll_step_delay_ms,
+        )
+
+    return await _render_with_managed_browser(
+        playwright,
+        url,
+        timeout_ms=timeout_ms,
+        blocked_types=blocked_types,
+        content_settle_min_wait_ms=content_settle_min_wait_ms,
+        content_settle_timeout_ms=content_settle_timeout_ms,
+        content_settle_poll_ms=content_settle_poll_ms,
+        lazy_scroll_step_delay_ms=lazy_scroll_step_delay_ms,
+    )
+
+
+async def _render_with_browserbase(
+    playwright: Playwright,
+    url: str,
+    *,
+    settings: BrowserSettings,
+    timeout_ms: int,
+    blocked_types: set[str],
+    content_settle_min_wait_ms: int,
+    content_settle_timeout_ms: int,
+    content_settle_poll_ms: int,
+    lazy_scroll_step_delay_ms: int,
+) -> RenderedPageState:
+    api_key = settings.browserbase_api_key
+    if api_key is None:
+        raise NavigationError(
+            "Browserbase backend is enabled, but BROWSERBASE_API_KEY is not configured."
+        )
+
+    try:
+        from browserbase import Browserbase
+    except ImportError as exc:
+        raise NavigationError(
+            "Browserbase backend is enabled, but the browserbase package is not installed."
+        ) from exc
+
+    try:
+        browserbase_client = Browserbase(api_key=api_key.get_secret_value())
+        session = browserbase_client.sessions.create()
+        connect_url = _browserbase_session_connect_url(session)
+        browser = await playwright.chromium.connect_over_cdp(connect_url)
+    except Exception as exc:
+        raise NavigationError(f"Failed to start Browserbase session: {exc}") from exc
+
+    try:
+        context = browser.contexts[0] if browser.contexts else await browser.new_context()
+        return await _render_with_context(
+            context,
+            url,
+            timeout_ms=timeout_ms,
+            blocked_types=blocked_types,
+            content_settle_min_wait_ms=content_settle_min_wait_ms,
+            content_settle_timeout_ms=content_settle_timeout_ms,
+            content_settle_poll_ms=content_settle_poll_ms,
+            lazy_scroll_step_delay_ms=lazy_scroll_step_delay_ms,
+        )
+    finally:
+        await browser.close()
+
+
+def _browserbase_session_connect_url(session: Any) -> str:
+    connect_url = getattr(session, "connect_url", None) or getattr(session, "connectUrl", None)
+    if isinstance(connect_url, str) and connect_url:
+        return connect_url
+    if isinstance(session, dict):
+        value = session.get("connect_url") or session.get("connectUrl")
+        if isinstance(value, str) and value:
+            return value
+    raise NavigationError("Browserbase session did not include a connect URL.")
 
 
 async def _render_with_managed_browser(
@@ -175,6 +301,11 @@ async def _render_with_context(
         title = await page.title()
         html = await page.content()
         visible_text = await page.locator("body").inner_text(timeout=5_000)
+        if _looks_like_blocked_page(title, visible_text):
+            raise BlockedNavigationError(
+                f"Navigation to {url} returned a blocked page",
+                status_code=response.status,
+            )
         return RenderedPageState(
             url=url,
             final_url=page.url,
@@ -355,3 +486,18 @@ def navigation_error_message(url: str, status: int) -> str:
 
 def is_blocked_status(status: int) -> bool:
     return status in {401, 403, 407, 429}
+
+
+def _looks_like_blocked_page(title: str | None, visible_text: str | None) -> bool:
+    text = " ".join(part for part in (title, visible_text) if part).lower()
+    if not text:
+        return False
+    blocked_markers = (
+        "access denied",
+        "you don't have permission to access",
+        "you do not have permission to access",
+        "request blocked",
+        "temporarily blocked",
+        "unusual traffic",
+    )
+    return any(marker in text for marker in blocked_markers)

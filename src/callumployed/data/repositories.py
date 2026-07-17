@@ -405,8 +405,11 @@ def update_role(
     role_url: str | None = None,
     location: str | None = None,
     notes: str | None = None,
+    description: str | None = None,
+    posting_id: str | None = None,
     clear_location: bool = False,
     clear_notes: bool = False,
+    touch_last_seen: bool = False,
 ) -> Role:
     assignments = []
     values: list[object] = []
@@ -426,6 +429,14 @@ def update_role(
     elif notes is not None:
         assignments.append("notes = ?")
         values.append(notes)
+    if description is not None:
+        assignments.append("description = ?")
+        values.append(description)
+    if posting_id is not None:
+        assignments.append("posting_id = ?")
+        values.append(posting_id)
+    if touch_last_seen:
+        assignments.append("last_seen_at = datetime('now')")
 
     if not assignments:
         return get_role(connection, role_id)

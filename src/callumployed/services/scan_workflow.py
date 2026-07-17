@@ -12,15 +12,19 @@ from callumployed.data import db
 from callumployed.data.models import (
     Company,
     CompanyCareerPage,
+    Event,
+    EventSource,
     Role,
     RoleDiscoveryAttempt,
     RoleDiscoveryStatus,
+    RoleStatus,
     ScanCandidate,
     ScanPage,
     ScanRun,
     ScanStatus,
 )
 from callumployed.data.repositories import (
+    add_event,
     add_role,
     add_role_discovery_attempt,
     add_scan_candidates,
@@ -28,14 +32,17 @@ from callumployed.data.repositories import (
     create_scan_run,
     finish_scan_run,
     get_company,
+    get_role,
     get_role_by_company_url,
     list_company_career_pages,
     list_rejected_role_urls,
     list_role_discovery_attempts,
     list_roles,
+    set_role_status,
     should_include_graduate_degree_roles,
     should_include_hardware_roles,
     should_require_software_keywords,
+    update_role,
 )
 from callumployed.webscraping import browser
 from callumployed.webscraping.classifier import (
@@ -45,6 +52,7 @@ from callumployed.webscraping.classifier import (
     select_ambiguous_candidates,
     select_heuristic_links,
 )
+from callumployed.webscraping.errors import NavigationError
 from callumployed.webscraping.extraction import extract_link_candidates
 from callumployed.webscraping.models import (
     CareersPageScanResult,
@@ -52,6 +60,7 @@ from callumployed.webscraping.models import (
     ExtractionConfidence,
     LinkCandidate,
     RenderedPageState,
+    RolePageAssessment,
     ScoredLinkCandidate,
 )
 from callumployed.webscraping.profile_manager import BrowserProfileManager
@@ -121,6 +130,13 @@ class CompanyScanResult(TypedDict):
     include_graduate_degree_roles: bool
     include_hardware_roles: bool
     require_software_keywords: bool
+
+
+class RoleRescanResult(TypedDict):
+    previous_role: Role
+    role: Role
+    assessment: RolePageAssessment
+    final_url: str
 
 
 async def render_page_node(state: ScanWorkflowState) -> dict[str, RenderedPageState]:
@@ -246,7 +262,15 @@ async def visit_discovered_links_node(state: ScanWorkflowState) -> dict[str, obj
                 content_settle_poll_ms=ROLE_PAGE_CONTENT_SETTLE_POLL_MS,
                 lazy_scroll_step_delay_ms=ROLE_PAGE_LAZY_SCROLL_STEP_DELAY_MS,
             )
-            assessment = assess_role_page(page)
+            assessment = assess_role_page(
+                page,
+                title_hints=(
+                    candidate.text,
+                    candidate.title,
+                    candidate.aria_label,
+                    candidate.surrounding_text,
+                ),
+            )
             if (
                 assessment.is_role
                 and not state.get("include_graduate_degree_roles", False)
@@ -343,6 +367,87 @@ async def visit_discovered_links_node(state: ScanWorkflowState) -> dict[str, obj
     return {"role_discovery_attempts": attempts}
 
 
+async def rescan_role(
+    role_id: int,
+    *,
+    browser_profile_manager: BrowserProfileManager | None = None,
+    update_status: bool = False,
+) -> RoleRescanResult:
+    with db.connect() as connection:
+        role = get_role(connection, role_id)
+        include_graduate_degree_roles = should_include_graduate_degree_roles(connection)
+        include_hardware_roles = should_include_hardware_roles(connection)
+        require_software_keywords = should_require_software_keywords(connection)
+
+    page = await _render_with_browser_profile_manager(
+        role.role_url,
+        state={"browser_profile_manager": browser_profile_manager},
+        content_settle_min_wait_ms=ROLE_PAGE_CONTENT_SETTLE_MIN_WAIT_MS,
+        content_settle_timeout_ms=ROLE_PAGE_CONTENT_SETTLE_TIMEOUT_MS,
+        content_settle_poll_ms=ROLE_PAGE_CONTENT_SETTLE_POLL_MS,
+        lazy_scroll_step_delay_ms=ROLE_PAGE_LAZY_SCROLL_STEP_DELAY_MS,
+    )
+    assessment = assess_role_page(page, title_hints=(role.title,))
+    assessment = _apply_role_filters(
+        assessment,
+        include_graduate_degree_roles=include_graduate_degree_roles,
+        include_hardware_roles=include_hardware_roles,
+        require_software_keywords=require_software_keywords,
+    )
+
+    with db.connect() as connection:
+        updated_role = role
+        if assessment.is_role:
+            updated_role = update_role(
+                connection,
+                role_id,
+                title=assessment.title or role.title,
+                location=assessment.location,
+                description=assessment.description,
+                posting_id=assessment.posting_id,
+                touch_last_seen=True,
+            )
+        elif assessment.is_closed:
+            updated_role = update_role(connection, role_id, touch_last_seen=True)
+
+        if update_status and assessment.is_closed and role.role_status is not RoleStatus.CLOSED:
+            updated_role = set_role_status(
+                connection,
+                role_id,
+                RoleStatus.CLOSED,
+                summary="Role marked closed after rescan.",
+                source=EventSource.SCAN,
+            )
+
+        event_summary = _role_rescan_event_summary(assessment, updated_role)
+        add_event(
+            connection,
+            Event(
+                company_id=role.company_id,
+                role_id=role_id,
+                event_type="role_rescanned",
+                source=EventSource.SCAN,
+                summary=event_summary,
+            ),
+        )
+
+    return {
+        "previous_role": role,
+        "role": updated_role,
+        "assessment": assessment,
+        "final_url": page.final_url,
+    }
+
+
+def _role_rescan_event_summary(assessment: RolePageAssessment, role: Role) -> str:
+    if assessment.is_role:
+        return f"Role rescan refreshed extracted fields for {role.title}."
+    if assessment.is_closed:
+        return "Role rescan found a closed or unavailable posting page."
+    reason = assessment.rejection_reason or "weak role-page evidence"
+    return f"Role rescan did not update extracted fields: {reason}."
+
+
 async def _render_with_browser_profile_manager(
     url: str,
     *,
@@ -350,12 +455,30 @@ async def _render_with_browser_profile_manager(
     **render_options: Any,
 ) -> RenderedPageState:
     profile_manager = state.get("browser_profile_manager")
+    if browser.browser_backend() == "browserbase":
+        try:
+            return await render_careers_page(
+                url,
+                **render_options,
+            )
+        except NavigationError:
+            if profile_manager is None:
+                raise
+            return await profile_manager.render(
+                render_careers_page,
+                url,
+                render_options=render_options,
+            )
     if profile_manager is not None:
-        return await profile_manager.render(
-            render_careers_page,
-            url,
-            render_options=render_options,
-        )
+        try:
+            return await profile_manager.render(
+                render_careers_page,
+                url,
+                render_options=render_options,
+            )
+        except RuntimeError as error:
+            if "no available managed browser profiles" not in str(error):
+                raise
     return await render_careers_page(
         url,
         **render_options,
@@ -392,6 +515,64 @@ def _create_or_get_assessed_role(
             ),
         )
     return role
+
+
+def _apply_role_filters(
+    assessment: RolePageAssessment,
+    *,
+    include_graduate_degree_roles: bool,
+    include_hardware_roles: bool,
+    require_software_keywords: bool,
+) -> RolePageAssessment:
+    if (
+        assessment.is_role
+        and not include_graduate_degree_roles
+        and _is_graduate_degree_role(assessment.title, assessment.description)
+    ):
+        return assessment.model_copy(
+            update={
+                "is_role": False,
+                "confidence": max(assessment.confidence, 0.8),
+                "rejection_reason": "graduate-degree role filtered by app config",
+                "reasons": [
+                    *assessment.reasons,
+                    "graduate-degree role filter",
+                ],
+            }
+        )
+    if (
+        assessment.is_role
+        and not include_hardware_roles
+        and _is_hardware_only_role(assessment.title)
+    ):
+        return assessment.model_copy(
+            update={
+                "is_role": False,
+                "confidence": max(assessment.confidence, 0.8),
+                "rejection_reason": "hardware-only role filtered by app config",
+                "reasons": [
+                    *assessment.reasons,
+                    "hardware-only role filter",
+                ],
+            }
+        )
+    if (
+        assessment.is_role
+        and require_software_keywords
+        and not _has_software_keyword(assessment.title, assessment.description)
+    ):
+        return assessment.model_copy(
+            update={
+                "is_role": False,
+                "confidence": max(assessment.confidence, 0.8),
+                "rejection_reason": "software keyword requirement filtered by app config",
+                "reasons": [
+                    *assessment.reasons,
+                    "software keyword requirement",
+                ],
+            }
+        )
+    return assessment
 
 
 def _is_graduate_degree_role(title: str | None, description: str | None) -> bool:

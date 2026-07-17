@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from callumployed.config import BrowserSettings
 from callumployed.webscraping.browser import (
     CONTENT_SETTLE_MIN_WAIT_MS,
     CONTENT_SETTLE_TIMEOUT_MS,
@@ -10,7 +11,11 @@ from callumployed.webscraping.browser import (
     PROFILE_DIR_NAME,
     ROLE_PAGE_CONTENT_SETTLE_MIN_WAIT_MS,
     ROLE_PAGE_CONTENT_SETTLE_TIMEOUT_MS,
+    _browserbase_session_connect_url,
+    _looks_like_blocked_page,
     _render_with_context,
+    _render_with_playwright,
+    browser_backend,
     managed_browser_profile_path,
     navigation_error_message,
 )
@@ -20,6 +25,7 @@ from callumployed.webscraping.classifier import (
     score_candidates,
     select_heuristic_links,
 )
+from callumployed.webscraping.errors import NavigationError
 from callumployed.webscraping.extraction import extract_link_candidates
 from callumployed.webscraping.models import (
     DiscoveredJobLink,
@@ -45,6 +51,139 @@ def test_dynamic_content_settle_wait_is_bounded_for_responsive_scans() -> None:
 def test_role_page_content_settle_wait_is_shorter_than_career_page_scans() -> None:
     assert ROLE_PAGE_CONTENT_SETTLE_MIN_WAIT_MS < CONTENT_SETTLE_MIN_WAIT_MS
     assert ROLE_PAGE_CONTENT_SETTLE_TIMEOUT_MS < CONTENT_SETTLE_TIMEOUT_MS
+
+
+def test_browser_backend_reads_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CALLUMPLOYED_BROWSER_BACKEND", "browserbase")
+
+    assert browser_backend() == "browserbase"
+
+
+def test_browserbase_session_connect_url_accepts_sdk_shapes() -> None:
+    class SnakeCaseSession:
+        connect_url = "wss://browserbase.example/snake"
+
+    class CamelCaseSession:
+        connectUrl = "wss://browserbase.example/camel"
+
+    assert _browserbase_session_connect_url(SnakeCaseSession()) == "wss://browserbase.example/snake"
+    assert _browserbase_session_connect_url(CamelCaseSession()) == "wss://browserbase.example/camel"
+    assert (
+        _browserbase_session_connect_url({"connectUrl": "wss://browserbase.example/dict"})
+        == "wss://browserbase.example/dict"
+    )
+
+
+def test_browserbase_backend_falls_back_to_local_when_key_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    async def fake_render_with_managed_browser(
+        playwright: object,
+        url: str,
+        **_options: object,
+    ) -> RenderedPageState:
+        calls.append(url)
+        return RenderedPageState(
+            url=url,
+            final_url=url,
+            title="Local fallback",
+            html="<html><body>Local fallback</body></html>",
+        )
+
+    monkeypatch.setattr(
+        "callumployed.webscraping.browser._render_with_managed_browser",
+        fake_render_with_managed_browser,
+    )
+
+    result = asyncio.run(
+        _render_with_playwright(
+            object(),  # type: ignore[arg-type]
+            "https://example.com",
+            settings=BrowserSettings.model_construct(
+                backend="browserbase",
+                headless=True,
+                timeout_ms=30_000,
+                browserbase_api_key=None,
+            ),
+            selected_backend="browserbase",
+            external_browser_port=None,
+            fallback_to_managed_browser=True,
+            timeout_ms=1_000,
+            blocked_types=set(),
+            content_settle_min_wait_ms=1,
+            content_settle_timeout_ms=1,
+            content_settle_poll_ms=1,
+            lazy_scroll_step_delay_ms=1,
+        )
+    )
+
+    assert result.title == "Local fallback"
+    assert calls == ["https://example.com"]
+
+
+def test_browserbase_backend_falls_back_to_local_when_remote_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    async def fake_render_with_browserbase(*_args: object, **_options: object) -> RenderedPageState:
+        raise NavigationError("Browserbase failed")
+
+    async def fake_render_with_managed_browser(
+        playwright: object,
+        url: str,
+        **_options: object,
+    ) -> RenderedPageState:
+        calls.append(url)
+        return RenderedPageState(
+            url=url,
+            final_url=url,
+            title="Local fallback",
+            html="<html><body>Local fallback</body></html>",
+        )
+
+    monkeypatch.setattr(
+        "callumployed.webscraping.browser._render_with_browserbase",
+        fake_render_with_browserbase,
+    )
+    monkeypatch.setattr(
+        "callumployed.webscraping.browser._render_with_managed_browser",
+        fake_render_with_managed_browser,
+    )
+
+    result = asyncio.run(
+        _render_with_playwright(
+            object(),  # type: ignore[arg-type]
+            "https://example.com",
+            settings=BrowserSettings.model_construct(
+                backend="browserbase",
+                headless=True,
+                timeout_ms=30_000,
+                browserbase_api_key="configured",
+            ),
+            selected_backend="browserbase",
+            external_browser_port=None,
+            fallback_to_managed_browser=True,
+            timeout_ms=1_000,
+            blocked_types=set(),
+            content_settle_min_wait_ms=1,
+            content_settle_timeout_ms=1,
+            content_settle_poll_ms=1,
+            lazy_scroll_step_delay_ms=1,
+        )
+    )
+
+    assert result.title == "Local fallback"
+    assert calls == ["https://example.com"]
+
+
+def test_access_denied_body_is_treated_as_blocked_page() -> None:
+    assert _looks_like_blocked_page(
+        "Access Denied",
+        "You don't have permission to access this server.",
+    )
 
 
 def _fixture_page() -> RenderedPageState:
@@ -367,6 +506,48 @@ def test_assess_role_page_accepts_common_job_section_signals() -> None:
     assert assessment.confidence == 0.66
     assert "description" in assessment.reasons
     assert "qualifications" in assessment.reasons
+
+
+def test_assess_role_page_uses_url_slug_when_dom_title_is_noisy() -> None:
+    page = RenderedPageState(
+        url=(
+            "https://www.tesla.com/careers/search/job/"
+            "internship-software-engineer-vehicle-ui-development-fall-2026-270063"
+        ),
+        final_url=(
+            "https://www.tesla.com/careers/search/job/"
+            "internship-software-engineer-vehicle-ui-development-fall-2026-270063"
+        ),
+        title="Tesla homepage Careers Skip to main content",
+        html="""
+        <h1>Tesla homepage Careers Skip to main content</h1>
+        <section>Job description. Responsibilities. Requirements. Apply now.</section>
+        """,
+    )
+
+    assessment = assess_role_page(page)
+
+    assert assessment.is_role is True
+    assert assessment.title == "Internship Software Engineer Vehicle UI Development Fall 2026"
+    assert "title: URL slug" in assessment.reasons
+
+
+def test_assess_role_page_prefers_selected_link_title_hint_over_generic_h1() -> None:
+    page = RenderedPageState(
+        url="https://example.com/careers/search/job/software-engineer-intern-12345",
+        final_url="https://example.com/careers/search/job/software-engineer-intern-12345",
+        title="Careers",
+        html="""
+        <h1>Careers</h1>
+        <section>Job description. Responsibilities. Requirements. Apply now.</section>
+        """,
+    )
+
+    assessment = assess_role_page(page, title_hints=("Backend Platform Intern",))
+
+    assert assessment.is_role is True
+    assert assessment.title == "Backend Platform Intern"
+    assert "title: selected link text" in assessment.reasons
 
 
 def test_assess_role_page_rejects_generic_careers_listing() -> None:

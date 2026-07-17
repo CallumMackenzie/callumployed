@@ -13,6 +13,7 @@ from mailbox signals.
 - Typer CLI
 - FastMCP server for agent/tool access
 - Playwright browser scanning
+- Browserbase remote browser sessions with local fallback
 - LangGraph scan workflow orchestration
 - BeautifulSoup link extraction
 - `extruct` structured-data extraction for `schema.org/JobPosting`
@@ -102,10 +103,54 @@ Examples:
 
 ```bash
 callumployed stats
+callumployed serve
 callumployed scan url https://example.com/careers
 callumployed scan company 1
 callumployed scan all
+callumployed roles rescan 49
 ```
+
+`callumployed serve` starts a local web tracker at `http://127.0.0.1:8765`
+with overall stats, status panes, search, and collapsible job lists.
+
+### Browser backend
+
+Browser rendering defaults to local Playwright. To try Browserbase first, configure:
+
+```bash
+CALLUMPLOYED_BROWSER_BACKEND=browserbase
+BROWSERBASE_API_KEY=...
+```
+
+When Browserbase is selected, rendering is opportunistic. If the API key is missing,
+the Browserbase SDK is unavailable, the cloud session fails, or the rendered page is a
+blocked body such as `Access Denied`, scanning falls back locally. Scan workflows that
+receive a `BrowserProfileManager` can then fall back again to the managed Brave profile
+pool, which is useful for sites that block clean cloud/local browser sessions.
+
+Useful browser commands:
+
+```bash
+callumployed browser config
+callumployed browser smoke https://example.com
+callumployed browser profiles
+```
+
+`browser config` reports whether Browserbase is configured without printing the secret.
+
+### Role rescans
+
+Existing roles can be revisited without rediscovering them from a company career page:
+
+```bash
+callumployed roles rescan 49
+callumployed roles rescan 49 --update-status
+```
+
+Rescans revisit the stored role URL, re-run role-page assessment, refresh extracted
+fields such as title, location, description, posting ID, and `last_seen_at`, and record
+a `role_rescanned` event. By default, status is preserved; `--update-status` marks a
+role closed when the refreshed page looks closed or unavailable.
 
 The scan graph handles career-page scan orchestration only. It does not use
 LangGraph checkpointing yet. Link discovery is layered:
@@ -172,8 +217,11 @@ artifacts plus role-discovery attempts for selected links.
 
 ### 1. Render the career page
 
-`render_page_node` calls Playwright through `render_careers_page()` and produces a
-`RenderedPageState` with the requested URL, final URL, title, HTML, and visible text.
+`render_page_node` calls `render_careers_page()` and produces a `RenderedPageState`
+with the requested URL, final URL, title, HTML, and visible text. Depending on config,
+the renderer can use local Playwright or Browserbase. Browserbase failures fall back to
+local rendering, and scan workflows with a managed profile pool can fall back to a
+cloned Brave profile.
 
 ### 2. Extract link candidates
 
@@ -271,8 +319,11 @@ error text.
 2. Known ATS/job-board URL and page-text signals identify likely role pages without
    structured data.
 3. Generic careers/search/listing signals reject pages that are not specific roles.
-4. `trafilatura` extracts clean main text for descriptions and downstream use.
-5. Closed-role phrases set `is_closed`.
+4. Title selection ranks structured titles, selected-link hints, DOM titles, browser
+   titles, and URL slugs, so noisy titles such as generic careers-page text can be
+   replaced with role-specific titles.
+5. `trafilatura` extracts clean main text for descriptions and downstream use.
+6. Closed-role phrases set `is_closed`.
 
 The assessment improves the saved attempt title and text excerpt. For persisted company
 scans, accepted role pages create or reuse a `roles` row when confidence is high enough

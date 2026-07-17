@@ -7,6 +7,7 @@ from typer.testing import CliRunner
 from callumployed.cli import app
 from callumployed.data.models import (
     Company,
+    Role,
     RoleDiscoveryAttempt,
     RoleDiscoveryStatus,
     ScanRun,
@@ -17,6 +18,7 @@ from callumployed.webscraping.models import (
     DiscoveredJobLink,
     ExtractionConfidence,
     RenderedPageState,
+    RolePageAssessment,
     ScoredLinkCandidate,
 )
 from callumployed.webscraping.profile_manager import BrowserProfileManager
@@ -361,6 +363,22 @@ def test_browser_profiles_command_lists_internal_profiles(
     assert "default-002: available" in list_result.output
 
 
+def test_browser_config_command_reports_key_without_printing_secret() -> None:
+    result = runner.invoke(
+        app,
+        ["browser", "config"],
+        env={
+            "CALLUMPLOYED_BROWSER_BACKEND": "browserbase",
+            "BROWSERBASE_API_KEY": "test-secret",
+        },
+    )
+
+    assert result.exit_code == 0
+    assert "backend: browserbase" in result.output
+    assert "browserbase_api_key: configured" in result.output
+    assert "test-secret" not in result.output
+
+
 def test_config_graduate_degree_role_filter_commands(tmp_path: Path) -> None:
     database = tmp_path / "config-graduate-roles.sqlite3"
     env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
@@ -484,6 +502,68 @@ def test_roles_show_and_update_commands(tmp_path: Path) -> None:
     assert clear_result.exit_code == 0
     assert show_after_clear_result.exit_code == 0
     assert "Notes:" not in show_after_clear_result.output
+
+
+def test_roles_rescan_command_reports_refreshed_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "roles-rescan.sqlite3"
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+
+    async def fake_run_rescan_role(
+        role_id: int,
+        *,
+        browser_profile_manager: object,
+        update_status: bool,
+    ) -> dict[str, object]:
+        assert role_id == 1
+        assert isinstance(browser_profile_manager, BrowserProfileManager)
+        assert update_status is True
+        previous_role = Role(
+            id=1,
+            company_id=1,
+            title="Old Intern",
+            role_url="https://example.com/jobs/1",
+        )
+        role = previous_role.model_copy(
+            update={
+                "title": "Software Engineering Intern",
+                "location": "Vancouver",
+                "posting_id": "REQ-1",
+            }
+        )
+        return {
+            "previous_role": previous_role,
+            "role": role,
+            "assessment": RolePageAssessment(
+                is_role=True,
+                is_closed=False,
+                confidence=0.95,
+                title="Software Engineering Intern",
+                location="Vancouver",
+                posting_id="REQ-1",
+                extraction_method="jobposting_structured_data",
+                reasons=["schema.org JobPosting structured data"],
+            ),
+            "final_url": "https://example.com/jobs/1",
+        }
+
+    monkeypatch.setattr("callumployed.cli.run_rescan_role", fake_run_rescan_role)
+
+    result = runner.invoke(
+        app,
+        ["roles", "rescan", "1", "--update-status"],
+        env=env,
+    )
+
+    assert result.exit_code == 0
+    assert "Rescanned role #1: Software Engineering Intern" in result.output
+    assert "Is role: True" in result.output
+    assert "Confidence: 0.95" in result.output
+    assert "Title: Old Intern -> Software Engineering Intern" in result.output
+    assert "Location: none -> Vancouver" in result.output
+    assert "Posting ID: none -> REQ-1" in result.output
 
 
 def test_roles_set_status_reports_missing_role(tmp_path: Path) -> None:

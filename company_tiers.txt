@@ -1,0 +1,70 @@
+Jane Street, tier 0
+Hudson River Trading, tier 0
+Citadel, tier 0
+Citadel Securities, tier 0
+Jump Trading, tier 0
+Two Sigma, tier 0
+Five Rings, tier 0
+Optiver, tier 0
+IMC Trading, tier 0
+DRW, tier 0
+Tower Research Capital, tier 0
+SIG / Susquehanna, tier 0
+Headlands Technologies, tier 0
+Radix Trading, tier 0
+Aquatic Capital, tier 0
+The Voleon Group, tier 0
+G-Research, tier 0
+XTX Markets, tier 0
+QRT / Qube Research, tier 0
+WorldQuant, tier 0
+PDT Partners, tier 0
+OpenAI, tier 0
+Anthropic, tier 0
+Google DeepMind, tier 0
+NVIDIA, tier 0
+Databricks, tier 1
+Snowflake, tier 1
+Meta, tier 1
+Google, tier 1
+Apple, tier 1
+Scale AI, tier 1
+xAI, tier 1
+Cerebras, tier 1
+CoreWeave, tier 1
+Mistral AI, tier 1
+Cohere, tier 1
+Cursor / Anysphere, tier 1
+Applied Intuition, tier 1
+Anduril, tier 1
+Palantir, tier 1
+Figma, tier 1
+SpaceX, tier 1
+Plaid, tier 1
+Brex, tier 1
+Coinbase, tier 1
+Robinhood, tier 1
+Adyen, tier 1
+Mercury, tier 1
+Microsoft, tier 2
+Cloudflare, tier 2
+Uber, tier 2
+Roblox, tier 2
+Tesla, tier 2
+Ramp, tier 2
+Perplexity AI, tier 2
+Neuralink, tier 2
+ByteDance / TikTok, tier 2
+Airbnb, tier 2
+Pinterest, tier 3
+LinkedIn, tier 3
+Shopify, tier 3
+Rippling, tier 3
+Vercel, tier 3
+MongoDB, tier 3
+Confluent, tier 3
+Cockroach Labs, tier 3
+Samsara, tier 3
+Affirm, tier 4
+Chime, tier 4
+SoFi, tier 4

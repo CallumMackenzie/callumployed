@@ -524,14 +524,19 @@ def test_update_role_changes_and_clears_fields() -> None:
         role.id,
         title="Backend Engineer",
         role_url="https://example.com/jobs/backend",
+        description="Build backend systems.",
+        posting_id="REQ-42",
         clear_location=True,
         clear_notes=True,
+        touch_last_seen=True,
     )
 
     assert updated_role.title == "Backend Engineer"
     assert updated_role.role_url == "https://example.com/jobs/backend"
     assert updated_role.location is None
     assert updated_role.notes is None
+    assert updated_role.description == "Build backend systems."
+    assert updated_role.posting_id == "REQ-42"
 
 
 def test_list_role_events_returns_recent_role_events() -> None:

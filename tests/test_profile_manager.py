@@ -41,6 +41,7 @@ def _template(tmp_path: Path) -> Path:
     template = tmp_path / "template"
     template.mkdir()
     (template / "Cookies").write_text("warm-session", encoding="utf-8")
+    (template / "RunningChromeVersion").write_text("ignore me", encoding="utf-8")
     (template / "SingletonLock").write_text("ignore me", encoding="utf-8")
     return template
 
@@ -96,6 +97,7 @@ def test_profile_manager_clones_template_and_builds_brave_command(
     lease = manager.acquire("tesla")
     lease.close()
     assert (lease.record.path / "Cookies").read_text(encoding="utf-8") == "warm-session"
+    assert not (lease.record.path / "RunningChromeVersion").exists()
     assert not (lease.record.path / "SingletonLock").exists()
     (template_path / "Cookies").write_text("refreshed-session", encoding="utf-8")
     refreshed_lease = manager.acquire("tesla")

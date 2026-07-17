@@ -16,6 +16,7 @@ from callumployed.data.repositories import (
     add_company,
     add_company_career_page,
     add_role,
+    get_role,
     list_role_discovery_attempts,
     list_roles,
     list_scan_candidates,
@@ -25,6 +26,7 @@ from callumployed.data.repositories import (
     set_require_software_keywords,
 )
 from callumployed.services import scan_workflow
+from callumployed.webscraping.errors import NavigationError
 from callumployed.webscraping.models import RenderedPageState
 from callumployed.webscraping.profile_manager import BrowserProfileManager
 
@@ -97,6 +99,44 @@ def test_render_page_node_uses_browser_profile_manager(monkeypatch: pytest.Monke
 
     assert manager_calls == ["https://example.com/careers"]
     assert rendered_ports == [9440]
+    assert state["page"].final_url == "https://example.com/careers"
+
+
+def test_browserbase_render_failure_falls_back_to_profile_manager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager_calls: list[str] = []
+
+    async def fake_render_careers_page(
+        url: str,
+        **_render_options: object,
+    ) -> RenderedPageState:
+        raise NavigationError("browserbase failed")
+
+    class FakeProfileManager:
+        async def render(
+            self,
+            render: object,
+            url: str,
+            *,
+            render_options: object | None = None,
+        ) -> RenderedPageState:
+            manager_calls.append(url)
+            return _page(url)
+
+    monkeypatch.setenv("CALLUMPLOYED_BROWSER_BACKEND", "browserbase")
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    state = asyncio.run(
+        scan_workflow.render_page_node(
+            {
+                "url": "https://example.com/careers",
+                "browser_profile_manager": cast(BrowserProfileManager, FakeProfileManager()),
+            }
+        )
+    )
+
+    assert manager_calls == ["https://example.com/careers"]
     assert state["page"].final_url == "https://example.com/careers"
 
 
@@ -434,6 +474,81 @@ def test_scan_company_visits_selected_discovered_links(
     assert roles[0].description == "Software Engineering Intern Vancouver Apply now"
     assert roles[0].posting_id == "REQ-123"
     assert roles[0].role_status is RoleStatus.DISCOVERED
+
+
+def test_rescan_role_refreshes_existing_role_fields(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+        **_render_options: object,
+    ) -> RenderedPageState:
+        return RenderedPageState(
+            url=url,
+            final_url=url,
+            title="Careers",
+            html="""
+            <html>
+              <head>
+                <script type="application/ld+json">
+                {
+                  "@context": "https://schema.org",
+                  "@type": "JobPosting",
+                  "title": "Software Engineering Intern, Platform",
+                  "jobLocation": {
+                    "@type": "Place",
+                    "address": {
+                      "@type": "PostalAddress",
+                      "addressLocality": "Vancouver",
+                      "addressRegion": "BC",
+                      "addressCountry": "CA"
+                    }
+                  },
+                  "description": "Build software systems for production services.",
+                  "identifier": {
+                    "@type": "PropertyValue",
+                    "value": "REQ-123"
+                  }
+                }
+                </script>
+              </head>
+              <body><h1>Careers</h1></body>
+            </html>
+            """,
+            visible_text="Careers Apply now Job description",
+        )
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Acme"))
+        assert company.id is not None
+        role = add_role(
+            connection,
+            Role(
+                company_id=company.id,
+                title="Old Intern",
+                role_url="https://example.com/jobs/software-engineering-intern-platform",
+            ),
+        )
+        assert role.id is not None
+        role_id = role.id
+
+    result = asyncio.run(scan_workflow.rescan_role(role_id))
+
+    assert result["assessment"].is_role is True
+    assert result["role"].title == "Software Engineering Intern, Platform"
+    assert result["role"].location == "Vancouver, BC, CA"
+    assert result["role"].description == "Build software systems for production services."
+    assert result["role"].posting_id == "REQ-123"
+    with db.connect() as connection:
+        refreshed = get_role(connection, role_id)
+    assert refreshed.title == "Software Engineering Intern, Platform"
 
 
 def test_scan_company_creates_discovered_role_for_closed_application_page(

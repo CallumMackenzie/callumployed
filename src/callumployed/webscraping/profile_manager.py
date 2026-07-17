@@ -337,6 +337,8 @@ class BrowserProfileManager:
 
 def _browser_profile_copy_ignore(_directory: str, names: list[str]) -> set[str]:
     volatile_names = {
+        "DevToolsActivePort",
+        "RunningChromeVersion",
         "SingletonCookie",
         "SingletonLock",
         "SingletonSocket",
