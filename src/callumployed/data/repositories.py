@@ -30,6 +30,7 @@ APPLICATION_STATUSES = (
     RoleStatus.REJECTED,
     RoleStatus.OFFER,
 )
+REVIEW_LATER_EVENT_TYPE = "review_later"
 
 
 def _lastrowid(cursor: turso.Cursor) -> int:
@@ -559,13 +560,32 @@ def list_role_items(
             roles.updated_at,
             roles.notes,
             roles.description,
-            roles.posting_id
+            roles.posting_id,
+            COUNT(review_later_events.id) AS review_later_count
         FROM roles
         JOIN companies ON companies.id = roles.company_id
+        LEFT JOIN events AS review_later_events
+            ON review_later_events.role_id = roles.id
+            AND review_later_events.event_type = ?
         {where}
+        GROUP BY
+            roles.id,
+            roles.company_id,
+            companies.name,
+            roles.title,
+            roles.role_url,
+            roles.location,
+            roles.role_status,
+            roles.first_seen_at,
+            roles.last_seen_at,
+            roles.created_at,
+            roles.updated_at,
+            roles.notes,
+            roles.description,
+            roles.posting_id
         ORDER BY roles.updated_at DESC, roles.id DESC
         """,
-        values,
+        [REVIEW_LATER_EVENT_TYPE, *values],
     ).fetchall()
     return [RoleListItem.model_validate(dict(row)) for row in rows]
 
@@ -632,6 +652,27 @@ def set_role_status(
     )
     connection.commit()
     return get_role(connection, role_id)
+
+
+def record_role_review_later(
+    connection: turso.Connection,
+    role_id: int,
+    *,
+    summary: str = "Review postponed from tracker.",
+) -> Role:
+    role = get_role(connection, role_id)
+    add_event(
+        connection,
+        Event(
+            company_id=role.company_id,
+            role_id=role_id,
+            event_type=REVIEW_LATER_EVENT_TYPE,
+            source=EventSource.MANUAL,
+            summary=summary,
+        ),
+    )
+    connection.commit()
+    return role
 
 
 def create_scan_run(connection: turso.Connection, company_id: int) -> ScanRun:

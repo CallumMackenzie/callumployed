@@ -87,6 +87,7 @@ class RoleListItem(AppModel):
     notes: str | None = None
     description: str | None = None
     posting_id: str | None = None
+    review_later_count: int = 0
 
 
 class ScanRun(AppModel):

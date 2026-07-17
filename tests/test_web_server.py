@@ -115,6 +115,42 @@ def test_tracker_status_endpoint_moves_role(
     assert discovered["count"] == 0
 
 
+def test_tracker_review_later_endpoint_records_postponement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-review-later.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Backend Engineer", "https://example.com/jobs/backend"],
+        env=env,
+    )
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        url = f"http://127.0.0.1:{port}/api/roles/1/review-later"
+        request = Request(url, data=b"", method="POST")
+
+        with urlopen(request, timeout=5) as response:
+            assert response.status == 200
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    payload = build_tracker_payload()
+    discovered = next(status for status in payload["statuses"] if status["key"] == "discovered")
+    assert discovered["jobs"][0]["review_later_count"] == 1
+
+
 def test_tracker_status_endpoint_rejects_unsupported_status(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -11,7 +11,12 @@ from urllib.parse import parse_qs, urlparse
 
 from callumployed.data import db
 from callumployed.data.models import RoleStatus
-from callumployed.data.repositories import get_tracking_stats, list_role_items, set_role_status
+from callumployed.data.repositories import (
+    get_tracking_stats,
+    list_role_items,
+    record_role_review_later,
+    set_role_status,
+)
 
 STATIC_PACKAGE = "callumployed.web.static"
 STATUS_LABELS: dict[str, str] = {
@@ -96,6 +101,14 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             ):
                 self._update_role_status(path_parts[2])
                 return
+            if (
+                len(path_parts) == 4
+                and path_parts[0] == "api"
+                and path_parts[1] == "roles"
+                and path_parts[3] == "review-later"
+            ):
+                self._record_review_later(path_parts[2])
+                return
             self.send_error(HTTPStatus.NOT_FOUND)
 
         def log_message(self, format: str, *args: object) -> None:
@@ -161,6 +174,22 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                         status,
                         summary="Status updated from tracker.",
                     )
+            except LookupError:
+                self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
+                return
+
+            self._send_json({"role": role.model_dump(mode="json")})
+
+        def _record_review_later(self, role_id_text: str) -> None:
+            try:
+                role_id = int(role_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
+                return
+
+            try:
+                with db.connect() as connection:
+                    role = record_role_review_later(connection, role_id)
             except LookupError:
                 self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
                 return

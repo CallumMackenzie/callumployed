@@ -661,7 +661,7 @@ button:hover {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface);
-  padding: 22px;
+  padding: 18px;
 }
 
 .review-message {
@@ -677,41 +677,56 @@ button:hover {
   font-weight: 800;
 }
 
+.review-message-warning {
+  border-color: #efd18f;
+  background: #fff3d8;
+  color: #7c5207;
+}
+
 .review-title-row {
-  margin-bottom: 22px;
+  margin-bottom: 12px;
 }
 
 .review-company {
-  margin: 0 0 6px;
+  margin: 0 0 4px;
   color: var(--accent);
-  font-size: 0.92rem;
+  font-size: 0.8rem;
   font-weight: 900;
   text-transform: uppercase;
 }
 
 .review-role-title {
   color: var(--text);
-  font-size: clamp(1.6rem, 4vw, 2.8rem);
+  font-size: clamp(1.35rem, 3vw, 2.25rem);
   font-weight: 900;
-  line-height: 1.05;
+  line-height: 1.08;
   overflow-wrap: anywhere;
 }
 
 .review-details {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px 18px;
-  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 0 0 12px;
 }
 
 .review-detail {
   min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 4px 6px;
+  background: var(--surface-strong);
 }
 
 .review-detail dt {
-  margin-bottom: 3px;
+  flex: 0 0 auto;
+  margin: 0;
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: 0.64rem;
   font-weight: 900;
   text-transform: uppercase;
 }
@@ -719,25 +734,34 @@ button:hover {
 .review-detail dd {
   margin: 0;
   color: var(--text);
-  line-height: 1.45;
+  font-size: 0.82rem;
+  line-height: 1.25;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 
 .review-description {
-  grid-column: 1 / -1;
+  display: block;
+  margin: 0 0 12px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  padding: 12px 0;
+  background: transparent;
 }
 
 .review-description dd {
   display: grid;
-  gap: 10px;
+  gap: 8px;
+  margin-top: 6px;
   white-space: normal;
 }
 
 .review-description h3 {
-  margin: 14px 0 0;
+  margin: 10px 0 0;
   color: var(--text);
-  font-size: 1.08rem;
+  font-size: 0.98rem;
   line-height: 1.25;
 }
 
@@ -755,11 +779,20 @@ button:hover {
 }
 
 .review-description li + li {
-  margin-top: 4px;
+  margin-top: 2px;
 }
 
-.review-detail:nth-last-child(-n + 2) {
-  grid-column: 1 / -1;
+.review-technical-details {
+  margin-bottom: 0;
+  padding-top: 0;
+}
+
+.review-technical-details .review-detail {
+  background: #f8fafb;
+}
+
+.review-technical-details .review-detail:last-child {
+  flex: 1 1 100%;
 }
 
 .review-empty {
@@ -884,14 +917,6 @@ button:hover {
   .review-card {
     min-height: calc(100dvh - 220px);
     padding: 16px;
-  }
-
-  .review-details {
-    grid-template-columns: 1fr;
-  }
-
-  .review-detail:nth-last-child(-n + 2) {
-    grid-column: auto;
   }
 
   .review-actions {

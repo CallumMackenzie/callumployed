@@ -29,6 +29,7 @@ from callumployed.data.repositories import (
     list_scan_candidates,
     list_scan_pages,
     list_scan_runs,
+    record_role_review_later,
     set_include_graduate_degree_roles,
     set_include_hardware_roles,
     set_primary_company_career_page_url,
@@ -452,6 +453,26 @@ def test_role_repository_adds_filters_and_records_status_events() -> None:
     assert updated_role.role_status is RoleStatus.INTERESTED
     assert event.old_status is RoleStatus.DISCOVERED
     assert event.new_status is RoleStatus.INTERESTED
+
+
+def test_list_role_items_counts_review_later_events() -> None:
+    connection = db.connect(":memory:")
+    db.run_migrations(connection)
+    company = add_company(connection, Company(name="Acme"))
+    assert company.id is not None
+    role = add_role(
+        connection,
+        Role(company_id=company.id, title="Backend Engineer", role_url="https://example.com"),
+    )
+    assert role.id is not None
+
+    record_role_review_later(connection, role.id)
+    record_role_review_later(connection, role.id)
+
+    roles = list_role_items(connection)
+
+    assert len(roles) == 1
+    assert roles[0].review_later_count == 2
 
 
 def test_clear_roles_deletes_roles_and_role_linked_events() -> None:

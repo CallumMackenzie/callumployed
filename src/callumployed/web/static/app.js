@@ -17,6 +17,8 @@ const expandAllButton = document.querySelector("#expand-all");
 const collapseAllButton = document.querySelector("#collapse-all");
 const collapseEmptyButton = document.querySelector("#collapse-empty");
 
+const REVIEW_LATER_RECOMMENDATION_THRESHOLD = 3;
+
 let hideEmpty = true;
 let trackerData = null;
 let reviewQueue = [];
@@ -53,6 +55,18 @@ function formatDate(value) {
     hour: "numeric",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function formatCompactDate(value) {
+  if (!value) return "";
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  })
+    .format(new Date(value))
+    .replace(", ", " ");
 }
 
 function escapeHtml(value) {
@@ -311,6 +325,7 @@ function closeReviewView() {
 function renderReviewRole(message = "") {
   const current = reviewQueue[0];
   const total = reviewQueue.length;
+  const reviewLaterMessage = current ? getReviewLaterRecommendation(current) : "";
   reviewHeading.textContent = total > 0 ? "Review queue" : "Review complete";
   reviewProgress.textContent =
     total > 0 ? `${total} discovered ${total === 1 ? "role" : "roles"} in queue` : "";
@@ -331,25 +346,34 @@ function renderReviewRole(message = "") {
 
   reviewCard.innerHTML = `
     ${message ? `<p class="review-message">${escapeHtml(message)}</p>` : ""}
+    ${reviewLaterMessage ? `<p class="review-message review-message-warning">${escapeHtml(reviewLaterMessage)}</p>` : ""}
     <div class="review-title-row">
       <p class="review-company">${escapeHtml(current.company_name)}</p>
       <a class="review-role-title" href="${escapeHtml(current.role_url)}" target="_blank" rel="noreferrer">${escapeHtml(current.title)}</a>
     </div>
     <dl class="review-details">
-      ${renderReviewDetail("Role ID", current.id)}
-      ${renderReviewDetail("Company ID", current.company_id)}
       ${renderReviewDetail("Location", current.location)}
+      ${renderReviewDetail("First", formatCompactDate(current.first_seen_at))}
+      ${renderReviewDetail("Last", formatCompactDate(current.last_seen_at))}
+      ${renderReviewDetail("Notes", current.notes)}
+    </dl>
+    ${renderReviewDescription(current.description)}
+    <dl class="review-details review-technical-details">
+      ${renderReviewDetail("Company ID", current.company_id)}
+      ${renderReviewDetail("Role ID", current.id)}
       ${renderReviewDetail("Status", current.role_status)}
       ${renderReviewDetail("Posting ID", current.posting_id)}
-      ${renderReviewDetail("First seen", formatDate(current.first_seen_at))}
-      ${renderReviewDetail("Last seen", formatDate(current.last_seen_at))}
-      ${renderReviewDetail("Created", formatDate(current.created_at))}
-      ${renderReviewDetail("Updated", formatDate(current.updated_at))}
+      ${renderReviewDetail("Created", formatCompactDate(current.created_at))}
+      ${renderReviewDetail("Updated", formatCompactDate(current.updated_at))}
       ${renderReviewDetail("URL", current.role_url, true)}
-      ${renderReviewDetail("Notes", current.notes)}
-      ${renderReviewDescription(current.description)}
     </dl>
   `;
+}
+
+function getReviewLaterRecommendation(role) {
+  const count = Number(role.review_later_count ?? 0);
+  if (count <= REVIEW_LATER_RECOMMENDATION_THRESHOLD) return "";
+  return `Role review has been postponed ${count} times. It is recommended to set it to disinterested.`;
 }
 
 function renderReviewDetail(label, value, isLink = false) {
@@ -415,11 +439,26 @@ async function handleReviewAction(action) {
   if (!current) return;
 
   if (action === "later") {
-    if (reviewQueue.length > 1) {
-      reviewQueue.push(reviewQueue.shift());
-      renderReviewRole("Moved to the back of the queue.");
-    } else {
-      renderReviewRole("Only one role is in the queue.");
+    const buttons = reviewView.querySelectorAll(".review-action");
+    buttons.forEach((button) => {
+      button.disabled = true;
+    });
+
+    try {
+      await recordRoleReviewLater(current.id);
+      current.review_later_count = Number(current.review_later_count ?? 0) + 1;
+      if (reviewQueue.length > 1) {
+        reviewQueue.push(reviewQueue.shift());
+        renderReviewRole("Moved to the back of the queue.");
+      } else {
+        renderReviewRole("Only one role is in the queue.");
+      }
+    } catch {
+      renderReviewRole("Could not postpone that role. Try again.");
+    } finally {
+      reviewView.querySelectorAll(".review-action").forEach((button) => {
+        button.disabled = reviewQueue.length === 0;
+      });
     }
     return;
   }
@@ -442,6 +481,13 @@ async function handleReviewAction(action) {
     });
     renderReviewRole("Could not update that role. Try again.");
   }
+}
+
+async function recordRoleReviewLater(roleId) {
+  const response = await fetch(`/api/roles/${encodeURIComponent(roleId)}/review-later`, {
+    method: "POST",
+  });
+  if (!response.ok) throw new Error("Review later update failed");
 }
 
 async function updateRoleStatusById(roleId, status) {
