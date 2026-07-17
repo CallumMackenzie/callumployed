@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from bs4 import BeautifulSoup
 
 from callumployed.config import BrowserSettings
 from callumployed.webscraping.browser import (
@@ -26,6 +27,7 @@ from callumployed.webscraping.classifier import (
     score_candidates,
     select_heuristic_links,
 )
+from callumployed.webscraping.description_parser import extract_job_description
 from callumployed.webscraping.errors import NavigationError
 from callumployed.webscraping.extraction import extract_link_candidates
 from callumployed.webscraping.location_parser import parse_job_location
@@ -552,6 +554,124 @@ def test_assess_role_page_extracts_location_from_job_text(
 
     assert assessment.is_role is True
     assert assessment.location == "Toronto, ON; Waterloo, ON"
+
+
+def test_extract_job_description_trims_boilerplate_and_duplicates() -> None:
+    soup = BeautifulSoup(
+        """
+        <main>
+          <h2>What to Expect</h2>
+          <p>Build software for manufacturing systems.</p>
+          <h2>What You'll Do</h2>
+          <ul>
+            <li>Build tools and automation.</li>
+            <li>Build tools and automation.</li>
+            <li>Inspect network protocols.</li>
+          </ul>
+          <h2>Benefits</h2>
+          <p>Medical plans and dental plans.</p>
+          <h2>Equal Opportunity</h2>
+          <p>Tesla is an Equal Opportunity employer.</p>
+        </main>
+        """,
+        "lxml",
+    )
+
+    description = extract_job_description(soup)
+
+    assert description == "\n".join(
+        [
+            "## What to Expect",
+            "Build software for manufacturing systems.",
+            "## What You'll Do",
+            "Build tools and automation.",
+            "Inspect network protocols.",
+        ]
+    )
+
+
+def test_extract_job_description_dedupes_inline_repeated_sections() -> None:
+    repeated_core = (
+        "Consider before submitting an application: This position is expected to "
+        "start August or September 2026. Internship Programs at Tesla The Internship "
+        "Recruiting Team is driven by the passion to recognize emerging talent. "
+        "About the Team Manufacturing software is one of the most critical and "
+        "innovative areas to work in at Tesla. What You'll Do Build tools, "
+        "test-automation, and documentation. What You'll Bring Proficiency in Go, "
+        "TCP/IP, Networking Programming, and related technologies. "
+    )
+    soup = BeautifulSoup(
+        f"""
+        <main>
+          <div class="job-description">
+            {repeated_core}
+            Benefits As a full-time Tesla Intern, you will be eligible for medical plans.
+            {repeated_core}
+            Tesla is an Equal Opportunity employer.
+          </div>
+        </main>
+        """,
+        "lxml",
+    )
+
+    description = extract_job_description(soup)
+
+    assert description is not None
+    assert description.count("Consider before submitting an application") == 1
+    assert "## What You'll Do" in description
+    assert "## What You'll Bring" in description
+    assert "Benefits" not in description
+    assert "Equal Opportunity" not in description
+
+
+def test_assess_role_page_cleans_tesla_style_description() -> None:
+    page = RenderedPageState(
+        url="https://www.tesla.com/careers/search/job/internship-software-engineer-it-apps",
+        final_url="https://www.tesla.com/careers/search/job/internship-software-engineer-it-apps",
+        title="Internship, Software Engineer, IT Apps",
+        html="""
+        <main>
+          <h1>Internship, Software Engineer, IT Apps</h1>
+          <div class="tds-content_container">
+            <p>Fremont, California</p>
+            <p>Req. ID 271209</p>
+            <h2>What to Expect</h2>
+            <p>Consider before submitting an application.</p>
+            <h2>What You'll Do</h2>
+            <p>Build tools, test-automation, and documentation.</p>
+            <h2>What You'll Bring</h2>
+            <p>Proficiency in Go, TCP/IP, and related technologies.</p>
+            <h2>Benefits</h2>
+            <p>Medical plans and family-building benefits.</p>
+            <h2>Equal Opportunity</h2>
+            <p>Tesla is an Equal Opportunity employer.</p>
+            <h2>What to Expect</h2>
+            <p>Consider before submitting an application.</p>
+          </div>
+        </main>
+        """,
+        visible_text=(
+            "Fremont, California Req. ID 271209 What to Expect Consider before "
+            "submitting an application. What You'll Do Build tools, test-automation, "
+            "and documentation. Benefits Medical plans."
+        ),
+    )
+
+    assessment = assess_role_page(page)
+
+    assert assessment.is_role is True
+    assert assessment.description == "\n".join(
+        [
+            "## What to Expect",
+            "Consider before submitting an application.",
+            "## What You'll Do",
+            "Build tools, test-automation, and documentation.",
+            "## What You'll Bring",
+            "Proficiency in Go, TCP/IP, and related technologies.",
+        ]
+    )
+    assert "Equal Opportunity" not in assessment.description
+    assert "Medical plans" not in assessment.description
 
 
 def test_assess_role_page_accepts_common_job_section_signals() -> None:

@@ -299,7 +299,7 @@ function renderReviewRole(message = "") {
       ${renderReviewDetail("Updated", formatDate(current.updated_at))}
       ${renderReviewDetail("URL", current.role_url, true)}
       ${renderReviewDetail("Notes", current.notes)}
-      ${renderReviewDetail("Description", current.description)}
+      ${renderReviewDescription(current.description)}
     </dl>
   `;
 }
@@ -315,6 +315,51 @@ function renderReviewDetail(label, value, isLink = false) {
       <dd>${content}</dd>
     </div>
   `;
+}
+
+function renderReviewDescription(value) {
+  if (!value) return "";
+  return `
+    <div class="review-detail review-description">
+      <dt>Description</dt>
+      <dd>${renderDescriptionMarkdown(value)}</dd>
+    </div>
+  `;
+}
+
+function renderDescriptionMarkdown(value) {
+  const lines = String(value)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const blocks = [];
+  let listItems = [];
+
+  const flushList = () => {
+    if (listItems.length === 0) return;
+    blocks.push(`<ul>${listItems.map((item) => `<li>${item}</li>`).join("")}</ul>`);
+    listItems = [];
+  };
+
+  lines.forEach((line) => {
+    const heading = line.match(/^#{2,3}\s+(.+)$/);
+    if (heading) {
+      flushList();
+      blocks.push(`<h3>${escapeHtml(heading[1])}</h3>`);
+      return;
+    }
+
+    const bullet = line.match(/^[-*]\s+(.+)$/);
+    if (bullet) {
+      listItems.push(escapeHtml(bullet[1]));
+      return;
+    }
+
+    flushList();
+    blocks.push(`<p>${escapeHtml(line)}</p>`);
+  });
+  flushList();
+  return blocks.join("");
 }
 
 async function handleReviewAction(action) {

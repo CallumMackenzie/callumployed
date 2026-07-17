@@ -604,6 +604,40 @@ button:hover {
   white-space: pre-wrap;
 }
 
+.review-description {
+  grid-column: 1 / -1;
+}
+
+.review-description dd {
+  display: grid;
+  gap: 10px;
+  white-space: normal;
+}
+
+.review-description h3 {
+  margin: 14px 0 0;
+  color: var(--text);
+  font-size: 1.08rem;
+  line-height: 1.25;
+}
+
+.review-description h3:first-child {
+  margin-top: 0;
+}
+
+.review-description p,
+.review-description ul {
+  margin: 0;
+}
+
+.review-description ul {
+  padding-left: 1.2rem;
+}
+
+.review-description li + li {
+  margin-top: 4px;
+}
+
 .review-detail:nth-last-child(-n + 2) {
   grid-column: 1 / -1;
 }

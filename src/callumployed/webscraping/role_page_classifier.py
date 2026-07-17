@@ -7,6 +7,7 @@ import extruct  # type: ignore[import-untyped]
 import trafilatura
 from bs4 import BeautifulSoup
 
+from callumployed.webscraping.description_parser import extract_job_description
 from callumployed.webscraping.location_parser import parse_job_location
 from callumployed.webscraping.models import RenderedPageState, RolePageAssessment
 
@@ -148,7 +149,11 @@ def assess_role_page(
             ),
             title_hints=title_hints,
         )
-        description = _clean_text(_first_string(structured_posting.get("description")))
+        description = extract_job_description(
+            soup,
+            structured_description=_first_string(structured_posting.get("description")),
+            fallback_text=_extract_main_text(page),
+        )
         return RolePageAssessment(
             is_role=True,
             is_closed=_is_closed_page(page, description),
@@ -158,7 +163,7 @@ def assess_role_page(
                 _extract_job_location(structured_posting),
                 context_text=_location_context(page, description),
             ),
-            description=description or _extract_main_text(page),
+            description=description,
             posting_id=_extract_posting_id(structured_posting, page),
             extraction_method="jobposting_structured_data",
             reasons=[
@@ -175,7 +180,13 @@ def assess_role_page(
     domain = parsed.netloc.lower()
     path = parsed.path.lower()
     title, title_source = _select_role_title(page, soup, title_hints=title_hints)
-    description = _extract_main_text(page)
+    fallback_description = _clean_text(
+        " ".join(part for part in (page.visible_text, _extract_main_text(page)) if part)
+    )
+    description = extract_job_description(
+        soup,
+        fallback_text=fallback_description,
+    )
     visible_text = _clean_text(" ".join(part for part in (page.visible_text, description) if part))
     is_closed = _is_closed_page(page, visible_text)
 
