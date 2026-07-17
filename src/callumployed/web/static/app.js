@@ -1,8 +1,12 @@
 const statsEl = document.querySelector("#stats");
 const statusListEl = document.querySelector("#status-list");
 const statusTabsEl = document.querySelector("#status-tabs");
+const searchToggle = document.querySelector("#search-toggle");
+const searchDialog = document.querySelector("#search-dialog");
+const searchBackdrop = document.querySelector("#search-backdrop");
 const searchForm = document.querySelector("#search-form");
 const searchInput = document.querySelector("#search-input");
+const closeSearchButton = document.querySelector("#close-search");
 const reviewDiscoveredButton = document.querySelector("#review-discovered");
 const reviewView = document.querySelector("#review-view");
 const reviewHeading = document.querySelector("#review-heading");
@@ -16,6 +20,30 @@ const collapseEmptyButton = document.querySelector("#collapse-empty");
 let hideEmpty = true;
 let trackerData = null;
 let reviewQueue = [];
+
+function getActiveSearchQuery() {
+  return trackerData?.query?.trim() ?? "";
+}
+
+function updateSearchButton() {
+  const active = Boolean(getActiveSearchQuery());
+  searchToggle.classList.toggle("search-active", active);
+  searchToggle.setAttribute("aria-label", active ? "Clear search" : "Search jobs");
+}
+
+function openSearchDialog() {
+  searchInput.value = getActiveSearchQuery();
+  searchDialog.hidden = false;
+  searchForm.hidden = false;
+  searchInput.focus();
+  searchInput.select();
+}
+
+function closeSearchDialog() {
+  searchDialog.hidden = true;
+  searchForm.hidden = true;
+  searchToggle.focus();
+}
 
 function formatDate(value) {
   if (!value) return "";
@@ -133,7 +161,7 @@ function renderInterestedActions(job) {
 
 function renderAppliedActions(job) {
   return `
-    <div class="job-actions" aria-label="Applied role actions">
+    <div class="job-actions job-actions-nowrap" aria-label="Applied role actions">
       <button class="job-action" type="button" data-role-id="${job.id}" data-status="OA">OA</button>
       <button class="job-action" type="button" data-role-id="${job.id}" data-status="interview">Interview</button>
       <button class="job-action danger" type="button" data-role-id="${job.id}" data-status="rejected">Rejected</button>
@@ -162,6 +190,7 @@ function renderInterviewActions(job) {
 function render(data) {
   trackerData = data;
   searchInput.value = data.query;
+  updateSearchButton();
   renderStats(data.stats);
   renderTabs(data.statuses);
   renderStatuses(data.statuses);
@@ -180,7 +209,26 @@ async function loadTracker(query = "") {
 searchForm.addEventListener("submit", (event) => {
   event.preventDefault();
   loadTracker(searchInput.value.trim());
+  closeSearchDialog();
 });
+
+searchToggle.addEventListener("click", () => {
+  if (getActiveSearchQuery()) {
+    loadTracker();
+    return;
+  }
+  openSearchDialog();
+});
+
+searchInput.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  event.stopPropagation();
+  closeSearchDialog();
+});
+
+closeSearchButton.addEventListener("click", closeSearchDialog);
+
+searchBackdrop.addEventListener("click", closeSearchDialog);
 
 statusTabsEl.addEventListener("click", (event) => {
   const button = event.target.closest("[data-target]");
@@ -224,7 +272,7 @@ async function updateRoleStatus(button) {
       body: JSON.stringify({ status }),
     });
     if (!response.ok) throw new Error("Status update failed");
-    await loadTracker(searchInput.value.trim());
+    await loadTracker(getActiveSearchQuery());
   } catch {
     actions.querySelectorAll("button").forEach((item) => {
       item.disabled = false;
@@ -387,7 +435,7 @@ async function handleReviewAction(action) {
     await updateRoleStatusById(current.id, action);
     reviewQueue.shift();
     renderReviewRole(action === "interested" ? "Marked interested." : "Marked disinterested.");
-    await loadTracker(searchInput.value.trim());
+    await loadTracker(getActiveSearchQuery());
   } catch {
     buttons.forEach((button) => {
       button.disabled = false;
@@ -416,6 +464,7 @@ reviewView.addEventListener("click", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !searchDialog.hidden) closeSearchDialog();
   if (event.key === "Escape" && !reviewView.hidden) closeReviewView();
 });
 

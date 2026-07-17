@@ -16,11 +16,6 @@
             <h1>Job tracker</h1>
           </div>
         </div>
-        <form class="search" id="search-form">
-          <label class="sr-only" for="search-input">Search jobs</label>
-          <input id="search-input" name="q" type="search" placeholder="Search company, title, status" />
-          <button type="submit">Search</button>
-        </form>
       </header>
 
       <section class="stats-grid" id="stats" aria-label="Overall stats"></section>
@@ -32,6 +27,18 @@
       <section class="status-toolbar" aria-label="Status navigation">
         <div class="status-tabs" id="status-tabs"></div>
         <div class="view-actions">
+          <button class="search-toggle" id="search-toggle" type="button" aria-haspopup="dialog" aria-label="Search jobs">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="11" cy="11" r="7"></circle>
+              <path d="m16.5 16.5 4 4"></path>
+            </svg>
+            <svg class="search-clear-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="11" cy="11" r="7"></circle>
+              <path d="m16.5 16.5 4 4"></path>
+              <path d="m8.5 8.5 5 5"></path>
+              <path d="m13.5 8.5-5 5"></path>
+            </svg>
+          </button>
           <button type="button" id="expand-all">Expand</button>
           <button type="button" id="collapse-all">Collapse all</button>
           <button type="button" id="collapse-empty">Show empty</button>
@@ -40,6 +47,24 @@
 
       <section class="status-list" id="status-list" aria-live="polite"></section>
     </main>
+
+    <section class="search-dialog" id="search-dialog" aria-labelledby="search-heading" hidden>
+      <button class="search-backdrop" id="search-backdrop" type="button" aria-label="Close search"></button>
+      <div class="search-panel" role="dialog" aria-modal="true">
+        <header class="search-header">
+          <div>
+            <p class="eyebrow">tracker search</p>
+            <h2 id="search-heading">Search jobs</h2>
+          </div>
+          <button type="button" id="close-search">Close</button>
+        </header>
+        <form class="search" id="search-form" hidden>
+          <label class="sr-only" for="search-input">Search jobs</label>
+          <input id="search-input" name="q" type="search" placeholder="Search company, title, status" />
+          <button type="submit">Search</button>
+        </form>
+      </div>
+    </section>
 
     <section class="review-view" id="review-view" aria-label="Discovered job review" hidden>
       <div class="review-shell">

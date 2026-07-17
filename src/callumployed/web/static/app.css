@@ -53,7 +53,7 @@ input {
 
 .topbar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 420px);
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 20px;
   align-items: end;
   margin-bottom: 20px;
@@ -88,10 +88,100 @@ h1 {
   letter-spacing: 0;
 }
 
+.search-toggle {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 42px;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+}
+
+.search-toggle svg {
+  grid-area: 1 / 1;
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.search-toggle .search-clear-icon,
+.search-toggle.search-active svg:first-child {
+  display: none;
+}
+
+.search-toggle.search-active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.search-toggle.search-active .search-clear-icon {
+  display: block;
+}
+
+.search-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 8;
+  display: grid;
+  place-items: start center;
+  padding: 16vh 16px 32px;
+}
+
+.search-dialog[hidden] {
+  display: none;
+}
+
+.search-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: rgb(23 33 38 / 0.32);
+  cursor: default;
+}
+
+.search-panel {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 16px;
+  width: min(520px, 100%);
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 18px 60px rgb(23 33 38 / 0.22);
+}
+
+.search-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: start;
+}
+
+.search-header h2 {
+  margin: 0;
+  font-size: 1.35rem;
+  line-height: 1.1;
+  letter-spacing: 0;
+}
+
 .search {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
+  width: 100%;
+}
+
+.search[hidden] {
+  display: none;
 }
 
 .search input {
@@ -204,7 +294,27 @@ button:hover {
 
 .view-actions {
   display: flex;
+  align-items: center;
+  justify-content: flex-end;
   gap: 8px;
+}
+
+.view-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  padding: 0 12px;
+  font-size: 0.9rem;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.view-actions .search-toggle {
+  display: inline-grid;
+  flex: 0 0 42px;
+  padding: 0;
 }
 
 .review-entry {
@@ -724,6 +834,11 @@ button:hover {
     grid-template-columns: 1fr;
   }
 
+  .search-dialog {
+    align-items: start;
+    padding-top: 12vh;
+  }
+
   .stats-grid {
     width: 100%;
   }
@@ -746,7 +861,11 @@ button:hover {
 
   .review-entry button,
   .view-actions button {
-    flex: 1;
+    flex: 1 1 auto;
+  }
+
+  .view-actions .search-toggle {
+    flex: 0 0 42px;
   }
 
   .job-detail {
