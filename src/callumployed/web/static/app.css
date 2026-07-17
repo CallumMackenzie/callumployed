@@ -368,6 +368,38 @@ button:hover {
   color: var(--muted);
 }
 
+.job-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.job-action {
+  min-width: 7.5rem;
+  padding: 8px 10px;
+  border-color: var(--bucket-line);
+  background: var(--bucket-bg);
+  color: var(--bucket);
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+.job-action:hover {
+  border-color: var(--bucket);
+}
+
+.job-action.danger {
+  border-color: #efc4bd;
+  background: #fae9e6;
+  color: var(--danger);
+}
+
+.job-action:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
 .job-detail dl {
   display: flex;
   flex-wrap: wrap;

@@ -4,9 +4,10 @@ const statusTabsEl = document.querySelector("#status-tabs");
 const searchForm = document.querySelector("#search-form");
 const searchInput = document.querySelector("#search-input");
 const expandAllButton = document.querySelector("#expand-all");
+const collapseAllButton = document.querySelector("#collapse-all");
 const collapseEmptyButton = document.querySelector("#collapse-empty");
 
-let hideEmpty = false;
+let hideEmpty = true;
 let trackerData = null;
 
 function formatDate(value) {
@@ -63,6 +64,10 @@ function renderStatuses(statuses) {
                 </span>
               </summary>
               <div class="job-detail">
+                ${status.key === "discovered" ? renderDiscoveredActions(job) : ""}
+                ${status.key === "interested" ? renderInterestedActions(job) : ""}
+                ${status.key === "applied" ? renderAppliedActions(job) : ""}
+                ${status.key === "OA" ? renderOaActions(job) : ""}
                 <dl>
                   ${
                     job.location
@@ -85,18 +90,56 @@ function renderStatuses(statuses) {
 
       return `
         <section class="status-pane ${status.count === 0 ? "empty" : ""} ${hideEmpty ? "hidden-empty" : ""}" id="status-${escapeHtml(status.key)}" data-bucket="${escapeHtml(status.key)}">
-          <button class="pane-toggle" type="button" aria-expanded="true">
-            <span class="chevron">v</span>
+          <button class="pane-toggle" type="button" aria-expanded="false">
+            <span class="chevron">></span>
             <span class="pane-title">${escapeHtml(status.label)}</span>
             <span class="count">${status.count}</span>
           </button>
-          <div class="pane-body">
+          <div class="pane-body" hidden>
             ${jobs ? `<div class="jobs">${jobs}</div>` : `<p class="empty-copy">No jobs in this status.</p>`}
           </div>
         </section>
       `;
     })
     .join("");
+}
+
+function renderDiscoveredActions(job) {
+  return `
+    <div class="job-actions" aria-label="Discovered role actions">
+      <button class="job-action" type="button" data-role-id="${job.id}" data-status="interested">Interested</button>
+      <button class="job-action" type="button" data-role-id="${job.id}" data-status="disinterested">Disinterested</button>
+      <button class="job-action danger" type="button" data-role-id="${job.id}" data-status="closed">Closed</button>
+    </div>
+  `;
+}
+
+function renderInterestedActions(job) {
+  return `
+    <div class="job-actions" aria-label="Interested role actions">
+      <button class="job-action" type="button" data-role-id="${job.id}" data-status="applied">Applied</button>
+      <button class="job-action" type="button" data-role-id="${job.id}" data-status="disinterested">Disinterested</button>
+    </div>
+  `;
+}
+
+function renderAppliedActions(job) {
+  return `
+    <div class="job-actions" aria-label="Applied role actions">
+      <button class="job-action" type="button" data-role-id="${job.id}" data-status="OA">OA</button>
+      <button class="job-action" type="button" data-role-id="${job.id}" data-status="interview">Interview</button>
+      <button class="job-action danger" type="button" data-role-id="${job.id}" data-status="rejected">Rejected</button>
+    </div>
+  `;
+}
+
+function renderOaActions(job) {
+  return `
+    <div class="job-actions" aria-label="OA role actions">
+      <button class="job-action" type="button" data-role-id="${job.id}" data-status="interview">Interview</button>
+      <button class="job-action danger" type="button" data-role-id="${job.id}" data-status="rejected">Rejected</button>
+    </div>
+  `;
 }
 
 function render(data) {
@@ -131,6 +174,12 @@ statusTabsEl.addEventListener("click", (event) => {
 });
 
 statusListEl.addEventListener("click", (event) => {
+  const action = event.target.closest(".job-action");
+  if (action) {
+    updateRoleStatus(action);
+    return;
+  }
+
   const toggle = event.target.closest(".pane-toggle");
   if (!toggle) return;
   const body = toggle.parentElement.querySelector(".pane-body");
@@ -140,11 +189,51 @@ statusListEl.addEventListener("click", (event) => {
   body.hidden = expanded;
 });
 
+async function updateRoleStatus(button) {
+  const { roleId, status } = button.dataset;
+  if (!roleId || !status) return;
+
+  const actions = button.closest(".job-actions");
+  actions.querySelectorAll("button").forEach((item) => {
+    item.disabled = true;
+  });
+  button.textContent = "Updating...";
+
+  try {
+    const response = await fetch(`/api/roles/${encodeURIComponent(roleId)}/status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
+    if (!response.ok) throw new Error("Status update failed");
+    await loadTracker(searchInput.value.trim());
+  } catch {
+    actions.querySelectorAll("button").forEach((item) => {
+      item.disabled = false;
+    });
+    button.textContent =
+      status === "disinterested"
+        ? "Disinterested"
+        : status.charAt(0).toUpperCase() + status.slice(1);
+  }
+}
+
 expandAllButton.addEventListener("click", () => {
   document.querySelectorAll(".pane-toggle").forEach((toggle) => {
     toggle.setAttribute("aria-expanded", "true");
     toggle.querySelector(".chevron").textContent = "v";
     toggle.parentElement.querySelector(".pane-body").hidden = false;
+  });
+});
+
+collapseAllButton.addEventListener("click", () => {
+  document.querySelectorAll(".job[open]").forEach((job) => {
+    job.open = false;
+  });
+  document.querySelectorAll(".pane-toggle").forEach((toggle) => {
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.querySelector(".chevron").textContent = ">";
+    toggle.parentElement.querySelector(".pane-body").hidden = true;
   });
 });
 

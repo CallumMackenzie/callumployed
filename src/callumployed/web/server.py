@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlparse
 
 from callumployed.data import db
 from callumployed.data.models import RoleStatus
-from callumployed.data.repositories import get_tracking_stats, list_role_items
+from callumployed.data.repositories import get_tracking_stats, list_role_items, set_role_status
 
 STATIC_PACKAGE = "callumployed.web.static"
 STATUS_LABELS: dict[str, str] = {
@@ -32,8 +32,10 @@ STATUS_LABELS: dict[str, str] = {
 class LocalThreadingHTTPServer(ThreadingHTTPServer):
     def server_bind(self) -> None:
         self.socket.bind(self.server_address)
-        self.server_name = str(self.server_address[0])
-        self.server_port = int(self.server_address[1])
+        host, port = self.socket.getsockname()[:2]
+        self.server_address = (host, port)
+        self.server_name = str(host)
+        self.server_port = int(port)
 
 
 def build_tracker_payload(query: str | None = None) -> dict[str, Any]:
@@ -83,6 +85,19 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
+        def do_POST(self) -> None:
+            parsed_url = urlparse(self.path)
+            path_parts = [part for part in PurePosixPath(parsed_url.path).parts if part != "/"]
+            if (
+                len(path_parts) == 4
+                and path_parts[0] == "api"
+                and path_parts[1] == "roles"
+                and path_parts[3] == "status"
+            ):
+                self._update_role_status(path_parts[2])
+                return
+            self.send_error(HTTPStatus.NOT_FOUND)
+
         def log_message(self, format: str, *args: object) -> None:
             return
 
@@ -93,6 +108,63 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def _read_json_body(self) -> dict[str, Any] | None:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0:
+                return {}
+            try:
+                payload = json.loads(self.rfile.read(length).decode())
+            except json.JSONDecodeError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid JSON body")
+                return None
+            if not isinstance(payload, dict):
+                self.send_error(HTTPStatus.BAD_REQUEST, "JSON body must be an object")
+                return None
+            return payload
+
+        def _update_role_status(self, role_id_text: str) -> None:
+            try:
+                role_id = int(role_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
+                return
+
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            status_value = payload.get("status")
+            try:
+                status = RoleStatus(status_value)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role status")
+                return
+
+            if status not in {
+                RoleStatus.APPLIED,
+                RoleStatus.CLOSED,
+                RoleStatus.DISINTERESTED,
+                RoleStatus.INTERESTED,
+                RoleStatus.INTERVIEW,
+                RoleStatus.OA,
+                RoleStatus.REJECTED,
+            }:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Unsupported role status")
+                return
+
+            try:
+                with db.connect() as connection:
+                    role = set_role_status(
+                        connection,
+                        role_id,
+                        status,
+                        summary="Status updated from tracker.",
+                    )
+            except LookupError:
+                self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
+                return
+
+            self._send_json({"role": role.model_dump(mode="json")})
 
         def _send_static_file(self, filename: str, content_type: str) -> None:
             try:
