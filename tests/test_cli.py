@@ -1099,7 +1099,7 @@ def test_scan_history_and_show_optionally_includes_link_candidates(
     )
     assert "Page title: Software Engineering Intern" in show_candidates_result.output
     assert "- [0.00] URL: <https://example.com/about>" not in show_candidates_result.output
-    assert "Location: Vancouver, BC, CA" in show_role_result.output
+    assert "Location: Vancouver, BC, Canada" in show_role_result.output
     assert "Posting ID: REQ-123" in show_role_result.output
     assert "Description: Software Engineering Intern Vancouver Apply now" in show_role_result.output
 

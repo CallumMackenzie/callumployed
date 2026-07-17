@@ -1,5 +1,6 @@
 import re
 from typing import Any, Literal, TypedDict, cast
+from urllib.parse import urlparse
 
 from langgraph.graph import END, StateGraph
 
@@ -375,9 +376,6 @@ async def rescan_role(
 ) -> RoleRescanResult:
     with db.connect() as connection:
         role = get_role(connection, role_id)
-        include_graduate_degree_roles = should_include_graduate_degree_roles(connection)
-        include_hardware_roles = should_include_hardware_roles(connection)
-        require_software_keywords = should_require_software_keywords(connection)
 
     page = await _render_with_browser_profile_manager(
         role.role_url,
@@ -388,12 +386,20 @@ async def rescan_role(
         lazy_scroll_step_delay_ms=ROLE_PAGE_LAZY_SCROLL_STEP_DELAY_MS,
     )
     assessment = assess_role_page(page, title_hints=(role.title,))
-    assessment = _apply_role_filters(
-        assessment,
-        include_graduate_degree_roles=include_graduate_degree_roles,
-        include_hardware_roles=include_hardware_roles,
-        require_software_keywords=require_software_keywords,
-    )
+    if _role_url_redirected_to_listing(role.role_url, page.final_url):
+        assessment = assessment.model_copy(
+            update={
+                "is_role": False,
+                "is_closed": False,
+                "location": None,
+                "description": None,
+                "rejection_reason": "role URL redirected to a generic careers listing",
+                "reasons": [
+                    *assessment.reasons,
+                    "role URL redirected to a generic careers listing",
+                ],
+            }
+        )
 
     with db.connect() as connection:
         updated_role = role
@@ -437,6 +443,12 @@ async def rescan_role(
         "assessment": assessment,
         "final_url": page.final_url,
     }
+
+
+def _role_url_redirected_to_listing(role_url: str, final_url: str) -> bool:
+    original_path = urlparse(role_url).path.rstrip("/")
+    final_path = urlparse(final_url).path.rstrip("/")
+    return "/job/" in original_path and "/job/" not in final_path
 
 
 def _role_rescan_event_summary(assessment: RolePageAssessment, role: Role) -> str:

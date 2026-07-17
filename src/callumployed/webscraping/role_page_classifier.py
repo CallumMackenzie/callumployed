@@ -87,7 +87,11 @@ GENERIC_LISTING_TERMS = (
     "search jobs",
     "view all jobs",
 )
-POSTING_ID_PATTERN = re.compile(r"\b(?:job|req|requisition)\s*(?:id|#)?\s*:?\s*([a-z0-9-]+)", re.I)
+POSTING_ID_PATTERN = re.compile(
+    r"\b(?:job\s*(?:id|#)|req(?:uisition)?\s*(?:id|#)?)\s*:?\s*([a-z0-9-]+)",
+    re.I,
+)
+POSTING_ID_URL_PATTERN = re.compile(r"-(\d{4,})(?:[/#?]|$)")
 ROLE_TITLE_TERMS = (
     "analyst",
     "architect",
@@ -485,6 +489,9 @@ def _extract_posting_id(posting: dict[str, Any], page: RenderedPageState) -> str
             return posting_id
     if isinstance(identifier, str):
         return _clean_text(identifier)
+    url_match = POSTING_ID_URL_PATTERN.search(page.final_url)
+    if url_match:
+        return url_match.group(1)
     haystack = " ".join(part for part in (page.final_url, page.title, page.visible_text) if part)
     match = POSTING_ID_PATTERN.search(haystack)
     if match:

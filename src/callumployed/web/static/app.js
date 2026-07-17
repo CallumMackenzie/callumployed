@@ -114,7 +114,7 @@ function renderStatuses(statuses) {
 
 function renderDiscoveredActions(job) {
   return `
-    <div class="job-actions" aria-label="Discovered role actions">
+    <div class="job-actions job-actions-nowrap" aria-label="Discovered role actions">
       <button class="job-action" type="button" data-role-id="${job.id}" data-status="interested">Interested</button>
       <button class="job-action" type="button" data-role-id="${job.id}" data-status="disinterested">Disinterested</button>
       <button class="job-action danger" type="button" data-role-id="${job.id}" data-status="closed">Closed</button>

@@ -26,6 +26,11 @@ TRAILING_NOISE_PATTERN = re.compile(
     r")\b.*$",
     re.I,
 )
+SEARCH_FILTER_NOISE_PATTERN = re.compile(
+    r"\b(?:state\s*[-:]\s*select|help\s+us\s+improve\s+our\s+website|"
+    r"privacy\s*&\s*legal)\b",
+    re.I,
+)
 COUNTRY_ALIASES = {
     "ca": "Canada",
     "canada": "Canada",
@@ -120,7 +125,8 @@ def _normalize_location_text(text: str | None) -> str | None:
         return _join_location_parts(modes)
 
     if _looks_like_location_fragment(cleaned):
-        return _join_location_parts([*modes, cleaned])
+        normalized_fragment = _normalize_location_fragment(cleaned)
+        return _join_location_parts([*modes, normalized_fragment])
     return _join_location_parts(modes)
 
 
@@ -131,6 +137,8 @@ def _clean_location_text(text: str | None) -> str | None:
     cleaned = LOCATION_LABEL_PATTERN.sub("", cleaned)
     cleaned = TRAILING_NOISE_PATTERN.sub("", cleaned)
     cleaned = cleaned.strip(" -|:;,")
+    if SEARCH_FILTER_NOISE_PATTERN.search(cleaned):
+        return None
     return cleaned or None
 
 
@@ -169,6 +177,16 @@ def _looks_like_location_fragment(text: str) -> bool:
     if re.search(r"\b(?:job|responsibilities|requirements|qualifications|salary)\b", text, re.I):
         return False
     return bool(re.search(r"[A-Za-z]", text))
+
+
+def _normalize_location_fragment(text: str) -> str:
+    parts = _comma_parts(text)
+    if len(parts) <= 1:
+        return _normalize_place_name(text)
+    return ", ".join(
+        _normalize_place_part(part, index=index, total=len(parts), raw_parts=parts)
+        for index, part in enumerate(parts)
+    )
 
 
 def _normalize_place_segments(text: str, places: list[str]) -> list[str]:

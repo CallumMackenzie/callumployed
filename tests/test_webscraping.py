@@ -523,6 +523,20 @@ def test_parse_job_location_normalizes_geograpy_places(
         parse_job_location("Fremont, California Req. ID 271209 Job Type Intern")
         == "Fremont, CA"
     )
+    assert (
+        parse_job_location(
+            "PALO ALTO, California Req. ID 270521 Job Type Intern/Apprentice "
+            "What to Expect This position is expected to begin around August 2026"
+        )
+        == "PALO ALTO, CA"
+    )
+    assert (
+        parse_job_location(
+            "United States of America State - Select - Tesla © 2026 Privacy & Legal "
+            "Help Us Improve Our Website with Cookies"
+        )
+        is None
+    )
 
 
 def test_assess_role_page_extracts_location_from_job_text(
@@ -724,6 +738,7 @@ def test_assess_role_page_uses_url_slug_when_dom_title_is_noisy() -> None:
 
     assert assessment.is_role is True
     assert assessment.title == "Internship Software Engineer Vehicle UI Development Fall 2026"
+    assert assessment.posting_id == "270063"
     assert "title: URL slug" in assessment.reasons
 
 
@@ -742,6 +757,7 @@ def test_assess_role_page_prefers_selected_link_title_hint_over_generic_h1() -> 
 
     assert assessment.is_role is True
     assert assessment.title == "Backend Platform Intern"
+    assert assessment.posting_id == "12345"
     assert "title: selected link text" in assessment.reasons
 
 

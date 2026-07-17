@@ -431,6 +431,16 @@ button:hover {
   margin: 0 0 12px;
 }
 
+.job-actions-nowrap {
+  flex-wrap: nowrap;
+}
+
+.job-actions-nowrap .job-action {
+  flex: 1 1 0;
+  min-width: 0;
+  white-space: nowrap;
+}
+
 .job-action {
   min-width: 7.5rem;
   padding: 8px 10px;

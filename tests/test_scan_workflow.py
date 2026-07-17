@@ -552,6 +552,136 @@ def test_rescan_role_refreshes_existing_role_fields(
     assert refreshed.title == "Software Engineering Intern, Platform"
 
 
+def test_rescan_role_refreshes_fields_even_when_discovery_filters_would_reject(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+        **_render_options: object,
+    ) -> RenderedPageState:
+        return RenderedPageState(
+            url=url,
+            final_url=url,
+            title="Careers",
+            html="""
+            <html>
+              <head>
+                <script type="application/ld+json">
+                {
+                  "@context": "https://schema.org",
+                  "@type": "JobPosting",
+                  "title": "Software Engineering Intern",
+                  "jobLocation": {
+                    "@type": "Place",
+                    "address": {
+                      "@type": "PostalAddress",
+                      "addressLocality": "Palo Alto",
+                      "addressRegion": "CA",
+                      "addressCountry": "US"
+                    }
+                  },
+                  "description": "Build software. Currently pursuing a graduate degree."
+                }
+                </script>
+              </head>
+              <body><h1>Careers</h1></body>
+            </html>
+            """,
+            visible_text="Careers Apply now Job description",
+        )
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    with db.connect() as connection:
+        set_include_graduate_degree_roles(connection, False)
+        company = add_company(connection, Company(name="Tesla"))
+        assert company.id is not None
+        role = add_role(
+            connection,
+            Role(
+                company_id=company.id,
+                title="Old Intern",
+                role_url="https://example.com/jobs/software-engineering-intern",
+                location="Old Location",
+                description="Old description",
+            ),
+        )
+        assert role.id is not None
+        role_id = role.id
+
+    result = asyncio.run(scan_workflow.rescan_role(role_id))
+
+    assert result["assessment"].is_role is True
+    assert result["assessment"].rejection_reason is None
+    assert result["role"].title == "Software Engineering Intern"
+    assert result["role"].location == "Palo Alto, CA, United States"
+    assert result["role"].description == "Build software. Currently pursuing a graduate degree."
+
+
+def test_rescan_role_does_not_overwrite_when_job_redirects_to_listing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+        **_render_options: object,
+    ) -> RenderedPageState:
+        return RenderedPageState(
+            url=url,
+            final_url="https://www.tesla.com/careers/search/?site=US",
+            title="Tesla Careers",
+            html="""
+            <html>
+              <body>
+                <h1>Software Engineering Intern</h1>
+                <section>
+                  United States of America State - Select - Tesla Careers Skip
+                  Software Engineering Intern Palo Alto, California
+                </section>
+              </body>
+            </html>
+            """,
+            visible_text=(
+                "Software Engineering Intern United States of America "
+                "State - Select - Tesla Careers Skip Palo Alto, California"
+            ),
+        )
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Tesla"))
+        assert company.id is not None
+        role = add_role(
+            connection,
+            Role(
+                company_id=company.id,
+                title="Software Engineering Intern",
+                role_url="https://www.tesla.com/careers/search/job/software-engineering-intern-123",
+                location="Palo Alto, CA",
+                description="Old description",
+            ),
+        )
+        assert role.id is not None
+        role_id = role.id
+
+    result = asyncio.run(scan_workflow.rescan_role(role_id))
+
+    assert result["assessment"].is_role is False
+    assert "generic careers listing" in result["assessment"].rejection_reason
+    assert result["role"].location == "Palo Alto, CA"
+    assert result["role"].description == "Old description"
+
+
 def test_scan_company_creates_discovered_role_for_closed_application_page(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
