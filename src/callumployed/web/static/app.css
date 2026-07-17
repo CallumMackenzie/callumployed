@@ -414,6 +414,12 @@ button:hover {
   color: var(--danger);
 }
 
+.job-action.success {
+  border-color: #b8dec8;
+  background: #e6f5ec;
+  color: #167345;
+}
+
 .job-action:disabled {
   cursor: wait;
   opacity: 0.68;

@@ -265,3 +265,49 @@ def test_tracker_status_endpoint_moves_oa_role(
     target = next(item for item in payload["statuses"] if item["key"] == status)
     assert oa["count"] == 0
     assert target["count"] == 1
+
+
+@pytest.mark.parametrize("status", ["rejected", "offer"])
+def test_tracker_status_endpoint_moves_interview_role(
+    status: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / f"tracker-interview-{status}.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Backend Engineer", "https://example.com/jobs/backend"],
+        env=env,
+    )
+    runner.invoke(app, ["roles", "set-status", "1", "interview"], env=env)
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        url = f"http://127.0.0.1:{port}/api/roles/1/status"
+        request = Request(
+            url,
+            data=f'{{"status":"{status}"}}'.encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urlopen(request, timeout=5) as response:
+            assert response.status == 200
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    payload = build_tracker_payload()
+    interview = next(item for item in payload["statuses"] if item["key"] == "interview")
+    target = next(item for item in payload["statuses"] if item["key"] == status)
+    assert interview["count"] == 0
+    assert target["count"] == 1

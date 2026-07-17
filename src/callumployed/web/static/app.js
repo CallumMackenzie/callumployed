@@ -68,6 +68,7 @@ function renderStatuses(statuses) {
                 ${status.key === "interested" ? renderInterestedActions(job) : ""}
                 ${status.key === "applied" ? renderAppliedActions(job) : ""}
                 ${status.key === "OA" ? renderOaActions(job) : ""}
+                ${status.key === "interview" ? renderInterviewActions(job) : ""}
                 <dl>
                   ${
                     job.location
@@ -138,6 +139,15 @@ function renderOaActions(job) {
     <div class="job-actions" aria-label="OA role actions">
       <button class="job-action" type="button" data-role-id="${job.id}" data-status="interview">Interview</button>
       <button class="job-action danger" type="button" data-role-id="${job.id}" data-status="rejected">Rejected</button>
+    </div>
+  `;
+}
+
+function renderInterviewActions(job) {
+  return `
+    <div class="job-actions" aria-label="Interview role actions">
+      <button class="job-action danger" type="button" data-role-id="${job.id}" data-status="rejected">Rejected</button>
+      <button class="job-action success" type="button" data-role-id="${job.id}" data-status="offer">Offer</button>
     </div>
   `;
 }

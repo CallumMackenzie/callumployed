@@ -147,6 +147,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 RoleStatus.INTERESTED,
                 RoleStatus.INTERVIEW,
                 RoleStatus.OA,
+                RoleStatus.OFFER,
                 RoleStatus.REJECTED,
             }:
                 self.send_error(HTTPStatus.BAD_REQUEST, "Unsupported role status")
