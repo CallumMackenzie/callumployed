@@ -17,6 +17,27 @@ CREATE TABLE IF NOT EXISTS app_config (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS master_resumes (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    filename TEXT NOT NULL,
+    content TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS cover_letter_examples (
+    id INTEGER PRIMARY KEY,
+    filename TEXT NOT NULL,
+    content TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_cover_letter_examples_updated_at
+    ON cover_letter_examples (updated_at);
+
 CREATE TABLE IF NOT EXISTS company_career_pages (
     id INTEGER PRIMARY KEY,
     company_id INTEGER NOT NULL,

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from threading import Thread
 from urllib.error import HTTPError
@@ -149,6 +150,183 @@ def test_tracker_review_later_endpoint_records_postponement(
     payload = build_tracker_payload()
     discovered = next(status for status in payload["statuses"] if status["key"] == "discovered")
     assert discovered["jobs"][0]["review_later_count"] == 1
+
+
+def test_master_resume_endpoint_uploads_and_replaces_tex_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-master-resume.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        base_url = f"http://127.0.0.1:{port}/api/master-resume"
+
+        with urlopen(base_url, timeout=5) as response:
+            empty_payload = json.loads(response.read().decode())
+        assert empty_payload == {"master_resume": None}
+
+        request = Request(
+            base_url,
+            data=json.dumps(
+                {
+                    "filename": "/tmp/master.tex",
+                    "content": "\\documentclass{article}",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=5) as response:
+            created_payload = json.loads(response.read().decode())
+
+        assert created_payload["master_resume"]["filename"] == "master.tex"
+        assert created_payload["master_resume"]["content_bytes"] == len(
+            b"\\documentclass{article}"
+        )
+
+        replacement_request = Request(
+            base_url,
+            data=json.dumps(
+                {
+                    "filename": "replacement.tex",
+                    "content": "\\documentclass{article}\n\\begin{document}Hi\\end{document}",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(replacement_request, timeout=5) as response:
+            replaced_payload = json.loads(response.read().decode())
+        assert replaced_payload["master_resume"]["filename"] == "replacement.tex"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_master_resume_endpoint_rejects_non_tex_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-master-resume-reject.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        url = f"http://127.0.0.1:{port}/api/master-resume"
+        request = Request(
+            url,
+            data=json.dumps({"filename": "resume.pdf", "content": "not tex"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with pytest.raises(HTTPError) as error:
+            urlopen(request, timeout=5)
+        assert error.value.code == 400
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_cover_letter_examples_endpoint_uploads_multiple_examples(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-cover-letter-examples.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        base_url = f"http://127.0.0.1:{port}/api/cover-letter-examples"
+
+        with urlopen(base_url, timeout=5) as response:
+            empty_payload = json.loads(response.read().decode())
+        assert empty_payload == {"cover_letter_examples": []}
+
+        first_request = Request(
+            base_url,
+            data=json.dumps(
+                {
+                    "filename": "/tmp/apple-cover.tex",
+                    "content": "Dear Apple,",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(first_request, timeout=5) as response:
+            first_payload = json.loads(response.read().decode())
+
+        second_request = Request(
+            base_url,
+            data=json.dumps(
+                {
+                    "filename": "stripe-cover.md",
+                    "content": "Dear Stripe,",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(second_request, timeout=5) as response:
+            second_payload = json.loads(response.read().decode())
+
+        assert first_payload["cover_letter_example"]["filename"] == "apple-cover.tex"
+        assert first_payload["cover_letter_example"]["content_bytes"] == len(b"Dear Apple,")
+        assert [item["filename"] for item in second_payload["cover_letter_examples"]] == [
+            "stripe-cover.md",
+            "apple-cover.tex",
+        ]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_cover_letter_examples_endpoint_rejects_empty_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-cover-letter-examples-reject.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        url = f"http://127.0.0.1:{port}/api/cover-letter-examples"
+        request = Request(
+            url,
+            data=json.dumps({"filename": "empty.tex", "content": "  "}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with pytest.raises(HTTPError) as error:
+            urlopen(request, timeout=5)
+        assert error.value.code == 400
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
 
 
 def test_tracker_status_endpoint_rejects_unsupported_status(

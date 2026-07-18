@@ -1,3 +1,5 @@
+import pytest
+
 from callumployed.data import db
 from callumployed.data.models import (
     Company,
@@ -9,6 +11,7 @@ from callumployed.data.models import (
     ScanStatus,
 )
 from callumployed.data.repositories import (
+    add_cover_letter_example,
     add_company,
     add_company_career_page,
     add_role,
@@ -19,6 +22,8 @@ from callumployed.data.repositories import (
     create_scan_run,
     finish_scan_run,
     get_event,
+    get_master_resume,
+    list_cover_letter_examples,
     list_companies,
     list_company_career_pages,
     list_config_values,
@@ -39,6 +44,7 @@ from callumployed.data.repositories import (
     should_include_hardware_roles,
     should_require_software_keywords,
     update_role,
+    upsert_master_resume,
 )
 from callumployed.webscraping.models import (
     CareersPageScanResult,
@@ -184,6 +190,72 @@ def test_company_repository_updates_primary_career_page() -> None:
         "https://example.com/jobs",
         "https://example.com/internships",
     ]
+
+
+def test_master_resume_repository_upserts_tex_resume() -> None:
+    connection = db.connect(":memory:")
+    db.run_migrations(connection)
+
+    created = upsert_master_resume(
+        connection,
+        filename="/tmp/master.tex",
+        content="\\documentclass{article}",
+    )
+    replaced = upsert_master_resume(
+        connection,
+        filename="updated.tex",
+        content="\\documentclass{article}\n\\begin{document}Callum\\end{document}",
+    )
+
+    assert created.id == 1
+    assert replaced.id == 1
+    assert replaced.filename == "updated.tex"
+    assert replaced.content.startswith("\\documentclass")
+    assert replaced.content_sha256 != created.content_sha256
+    assert get_master_resume(connection) == replaced
+
+
+def test_master_resume_repository_rejects_non_tex_resume() -> None:
+    connection = db.connect(":memory:")
+    db.run_migrations(connection)
+
+    with pytest.raises(ValueError, match=".tex"):
+        upsert_master_resume(connection, filename="resume.pdf", content="not tex")
+
+
+def test_cover_letter_example_repository_adds_multiple_examples() -> None:
+    connection = db.connect(":memory:")
+    db.run_migrations(connection)
+
+    first = add_cover_letter_example(
+        connection,
+        filename="/tmp/apple-cover.tex",
+        content="Dear Apple,",
+    )
+    second = add_cover_letter_example(
+        connection,
+        filename="stripe-cover.md",
+        content="Dear Stripe,",
+    )
+
+    examples = list_cover_letter_examples(connection)
+
+    assert first.id == 1
+    assert second.id == 2
+    assert [example.filename for example in examples] == [
+        "stripe-cover.md",
+        "apple-cover.tex",
+    ]
+    assert examples[0].content == "Dear Stripe,"
+    assert examples[0].content_sha256 != examples[1].content_sha256
+
+
+def test_cover_letter_example_repository_rejects_empty_content() -> None:
+    connection = db.connect(":memory:")
+    db.run_migrations(connection)
+
+    with pytest.raises(ValueError, match="content"):
+        add_cover_letter_example(connection, filename="empty.tex", content="  ")
 
 
 def test_scan_repository_persists_pages_and_candidates() -> None:

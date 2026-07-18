@@ -322,6 +322,118 @@ button:hover {
   margin-bottom: 4px;
 }
 
+.materials-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  gap: 0;
+  max-width: 860px;
+  margin-bottom: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.material-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  min-height: 58px;
+  padding: 9px 10px;
+}
+
+.material-row + .material-row {
+  border-left: 1px solid var(--line);
+}
+
+.material-status {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.material-label {
+  margin: 0 0 2px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.material-meta {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.88rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.materials-panel button {
+  flex: 0 0 auto;
+  min-width: 78px;
+  padding: 8px 10px;
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+  font-weight: 800;
+}
+
+.materials-panel button:disabled {
+  border-color: var(--line);
+  background: var(--surface-strong);
+  color: var(--muted);
+  cursor: wait;
+}
+
+.examples-list {
+  display: flex;
+  gap: 5px;
+  max-width: 100%;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  overflow: hidden;
+}
+
+.examples-list:empty {
+  display: none;
+}
+
+.examples-list li {
+  flex: 0 1 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 170px;
+  min-height: 24px;
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-strong);
+}
+
+.examples-list span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 800;
+  font-size: 0.78rem;
+}
+
+.examples-list small {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.examples-more {
+  color: var(--muted);
+}
+
 #review-discovered {
   border-color: var(--accent);
   background: var(--accent);
@@ -930,7 +1042,27 @@ button:hover {
     margin-bottom: 0;
   }
 
+  .materials-panel {
+    grid-template-columns: 1fr;
+    max-width: none;
+  }
+
+  .material-row {
+    align-items: center;
+  }
+
+  .material-row + .material-row {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+
+  .examples-list {
+    flex-wrap: wrap;
+    overflow: visible;
+  }
+
   .review-entry button,
+  .materials-panel button,
   .view-actions button {
     flex: 1 1 auto;
   }

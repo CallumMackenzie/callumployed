@@ -20,6 +20,32 @@
 
       <section class="stats-grid" id="stats" aria-label="Overall stats"></section>
 
+      <section class="materials-panel" aria-label="Application materials">
+        <div class="material-row">
+          <div class="material-status">
+            <p class="material-label">Resume</p>
+            <p class="material-meta" id="resume-meta">No resume uploaded</p>
+          </div>
+          <input class="sr-only" id="resume-upload" type="file" accept=".tex,text/x-tex" />
+          <button type="button" id="resume-upload-button">Upload</button>
+        </div>
+        <div class="material-row">
+          <div class="material-status">
+            <p class="material-label">Cover letters</p>
+            <p class="material-meta" id="cover-letter-meta">No examples uploaded</p>
+            <ul class="examples-list" id="cover-letter-list"></ul>
+          </div>
+          <input
+            class="sr-only"
+            id="cover-letter-upload"
+            type="file"
+            accept=".tex,.txt,.md,text/plain,text/markdown,text/x-tex"
+            multiple
+          />
+          <button type="button" id="cover-letter-upload-button">Upload</button>
+        </div>
+      </section>
+
       <section class="review-entry" aria-label="Discovered review">
         <button type="button" id="review-discovered">Review discovered</button>
       </section>

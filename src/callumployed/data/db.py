@@ -29,6 +29,8 @@ def run_migrations(connection: turso.Connection) -> None:
     for migration in sorted(MIGRATIONS_DIR.glob("*.sql")):
         connection.executescript(migration.read_text())
     _ensure_app_config_table(connection)
+    _ensure_master_resumes_table(connection)
+    _ensure_cover_letter_examples_table(connection)
     _ensure_role_information_columns(connection)
     _ensure_role_discovery_assessment_columns(connection)
     _backfill_legacy_company_career_pages(connection)
@@ -43,6 +45,42 @@ def _ensure_app_config_table(connection: turso.Connection) -> None:
             value TEXT NOT NULL,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
+        """
+    )
+
+
+def _ensure_master_resumes_table(connection: turso.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS master_resumes (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            filename TEXT NOT NULL,
+            content TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+
+
+def _ensure_cover_letter_examples_table(connection: turso.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS cover_letter_examples (
+            id INTEGER PRIMARY KEY,
+            filename TEXT NOT NULL,
+            content TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_cover_letter_examples_updated_at
+            ON cover_letter_examples (updated_at)
         """
     )
 

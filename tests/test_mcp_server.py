@@ -79,6 +79,39 @@ def test_mcp_stats_tool_returns_application_and_job_counts(
     assert stats["applications_by_status"]["applied"] == 1
 
 
+def test_mcp_material_tools_store_and_return_resume_and_cover_letters(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(tmp_path / "materials.sqlite3"))
+
+    empty_resume = mcp_server.get_master_resume()
+    stored_resume = mcp_server.set_master_resume(
+        "master.tex",
+        "\\documentclass{article}",
+    )
+    first_example = mcp_server.add_cover_letter_example(
+        "apple-cover.tex",
+        "Dear Apple,",
+    )
+    second_example = mcp_server.add_cover_letter_example(
+        "/tmp/stripe-cover.md",
+        "Dear Stripe,",
+    )
+    examples = mcp_server.list_cover_letter_examples()
+
+    assert empty_resume == {"master_resume": None}
+    assert stored_resume["master_resume"]["filename"] == "master.tex"
+    assert stored_resume["master_resume"]["content"] == "\\documentclass{article}"
+    assert first_example["cover_letter_example"]["filename"] == "apple-cover.tex"
+    assert second_example["cover_letter_example"]["filename"] == "stripe-cover.md"
+    assert [example["filename"] for example in examples] == [
+        "stripe-cover.md",
+        "apple-cover.tex",
+    ]
+    assert examples[0]["content"] == "Dear Stripe,"
+
+
 def test_mcp_config_tools_return_defaults_and_updates(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

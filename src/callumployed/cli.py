@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -14,14 +15,17 @@ from callumployed.data.models import (
 )
 from callumployed.data.repositories import (
     APPLICATION_STATUSES,
+    add_cover_letter_example,
     add_company,
     add_company_career_page,
     add_role,
     clear_roles,
     get_company,
+    get_master_resume,
     get_role,
     get_scan_run,
     get_tracking_stats,
+    list_cover_letter_examples,
     list_companies,
     list_company_career_pages,
     list_config_values,
@@ -40,6 +44,7 @@ from callumployed.data.repositories import (
     should_include_hardware_roles,
     should_require_software_keywords,
     update_role,
+    upsert_master_resume,
 )
 from callumployed.services.scan_workflow import rescan_role as run_rescan_role
 from callumployed.services.scan_workflow import scan_company as run_scan_company
@@ -56,12 +61,14 @@ roles_app = typer.Typer(help="Manage job roles.")
 scan_app = typer.Typer(help="Scan careers pages.")
 config_app = typer.Typer(help="Manage app-wide configuration.")
 browser_app = typer.Typer(help="Inspect managed browser profiles.")
+materials_app = typer.Typer(help="Manage resumes and cover letter examples.")
 
 app.add_typer(companies_app, name="companies")
 app.add_typer(roles_app, name="roles")
 app.add_typer(scan_app, name="scan")
 app.add_typer(config_app, name="config")
 app.add_typer(browser_app, name="browser")
+app.add_typer(materials_app, name="materials")
 
 
 @app.callback()
@@ -88,6 +95,77 @@ def serve_command(
     """Serve the local web tracker."""
     typer.echo(f"Serving callumployed at http://{host}:{port}")
     run_server(host=host, port=port)
+
+
+@materials_app.command("set-master-resume")
+def set_master_resume_command(
+    resume_path: Annotated[Path, typer.Argument(help="Path to the master .tex resume.")]
+) -> None:
+    """Set or replace the stored master resume from a .tex file."""
+    content = resume_path.read_text()
+    try:
+        with db.connect() as connection:
+            resume = upsert_master_resume(
+                connection,
+                filename=resume_path.name,
+                content=content,
+            )
+    except ValueError as error:
+        raise typer.BadParameter(str(error)) from error
+
+    typer.echo(f"Stored master resume: {resume.filename}")
+
+
+@materials_app.command("add-cover-letter-example")
+def add_cover_letter_example_command(
+    cover_letter_paths: Annotated[
+        list[Path],
+        typer.Argument(help="One or more cover letter example files."),
+    ],
+) -> None:
+    """Add one or more cover letter examples."""
+    if not cover_letter_paths:
+        raise typer.BadParameter("provide at least one cover letter example file")
+
+    stored_filenames: list[str] = []
+    try:
+        with db.connect() as connection:
+            for cover_letter_path in cover_letter_paths:
+                example = add_cover_letter_example(
+                    connection,
+                    filename=cover_letter_path.name,
+                    content=cover_letter_path.read_text(),
+                )
+                stored_filenames.append(example.filename)
+    except ValueError as error:
+        raise typer.BadParameter(str(error)) from error
+
+    typer.echo(
+        f"Stored {len(stored_filenames)} cover letter "
+        f"{'example' if len(stored_filenames) == 1 else 'examples'}: "
+        + ", ".join(stored_filenames)
+    )
+
+
+@materials_app.command("show")
+def show_materials_command() -> None:
+    """Show stored resume and cover letter example metadata."""
+    with db.connect() as connection:
+        resume = get_master_resume(connection)
+        examples = list_cover_letter_examples(connection)
+
+    if resume is None:
+        typer.echo("Master resume: none")
+    else:
+        typer.echo(f"Master resume: {resume.filename}")
+
+    if not examples:
+        typer.echo("Cover letter examples: none")
+        return
+
+    typer.echo(f"Cover letter examples: {len(examples)}")
+    for example in examples:
+        typer.echo(f"- {example.id}: {example.filename}")
 
 
 @companies_app.command("add")

@@ -56,6 +56,24 @@ class CompanyCareerPage(AppModel):
     updated_at: datetime | None = None
 
 
+class MasterResume(AppModel):
+    id: int = 1
+    filename: str
+    content: str
+    content_sha256: str
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class CoverLetterExample(AppModel):
+    id: int | None = None
+    filename: str
+    content: str
+    content_sha256: str
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
 class Role(AppModel):
     id: int | None = None
     company_id: int

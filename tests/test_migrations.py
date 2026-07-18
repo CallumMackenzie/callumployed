@@ -23,6 +23,7 @@ def test_initial_schema_creates_minimal_tracking_tables() -> None:
     assert {
         "companies",
         "app_config",
+        "cover_letter_examples",
         "company_career_pages",
         "roles",
         "scan_runs",

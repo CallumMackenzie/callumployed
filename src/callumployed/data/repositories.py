@@ -1,12 +1,16 @@
+import hashlib
 import json
+from pathlib import PurePath
 
 import turso
 
 from callumployed.data.models import (
     Company,
     CompanyCareerPage,
+    CoverLetterExample,
     Event,
     EventSource,
+    MasterResume,
     Role,
     RoleDiscoveryAttempt,
     RoleDiscoveryStatus,
@@ -31,6 +35,7 @@ APPLICATION_STATUSES = (
     RoleStatus.OFFER,
 )
 REVIEW_LATER_EVENT_TYPE = "review_later"
+MASTER_RESUME_ID = 1
 
 
 def _lastrowid(cursor: turso.Cursor) -> int:
@@ -129,6 +134,106 @@ def delete_config_value(connection: turso.Connection, key: str) -> None:
         (key,),
     )
     connection.commit()
+
+
+def get_master_resume(connection: turso.Connection) -> MasterResume | None:
+    row = connection.execute(
+        """
+        SELECT id, filename, content, content_sha256, created_at, updated_at
+        FROM master_resumes
+        WHERE id = ?
+        """,
+        (MASTER_RESUME_ID,),
+    ).fetchone()
+    if row is None:
+        return None
+    return MasterResume.model_validate(dict(row))
+
+
+def upsert_master_resume(
+    connection: turso.Connection,
+    *,
+    filename: str,
+    content: str,
+) -> MasterResume:
+    cleaned_filename = PurePath(filename).name.strip()
+    if not cleaned_filename.lower().endswith(".tex"):
+        raise ValueError("master resume must be a .tex file")
+    if not content.strip():
+        raise ValueError("master resume content cannot be empty")
+
+    content_sha256 = hashlib.sha256(content.encode()).hexdigest()
+    connection.execute(
+        """
+        INSERT INTO master_resumes (
+            id,
+            filename,
+            content,
+            content_sha256
+        )
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            filename = excluded.filename,
+            content = excluded.content,
+            content_sha256 = excluded.content_sha256,
+            updated_at = datetime('now')
+        """,
+        (MASTER_RESUME_ID, cleaned_filename, content, content_sha256),
+    )
+    connection.commit()
+    resume = get_master_resume(connection)
+    if resume is None:
+        raise RuntimeError("stored master resume could not be loaded")
+    return resume
+
+
+def list_cover_letter_examples(connection: turso.Connection) -> list[CoverLetterExample]:
+    rows = connection.execute(
+        """
+        SELECT id, filename, content, content_sha256, created_at, updated_at
+        FROM cover_letter_examples
+        ORDER BY updated_at DESC, id DESC
+        """
+    ).fetchall()
+    return [CoverLetterExample.model_validate(dict(row)) for row in rows]
+
+
+def add_cover_letter_example(
+    connection: turso.Connection,
+    *,
+    filename: str,
+    content: str,
+) -> CoverLetterExample:
+    cleaned_filename = PurePath(filename).name.strip()
+    if not cleaned_filename:
+        raise ValueError("cover letter example filename cannot be empty")
+    if not content.strip():
+        raise ValueError("cover letter example content cannot be empty")
+
+    content_sha256 = hashlib.sha256(content.encode()).hexdigest()
+    cursor = connection.execute(
+        """
+        INSERT INTO cover_letter_examples (
+            filename,
+            content,
+            content_sha256
+        )
+        VALUES (?, ?, ?)
+        """,
+        (cleaned_filename, content, content_sha256),
+    )
+    connection.commit()
+    row = connection.execute(
+        """
+        SELECT id, filename, content, content_sha256, created_at, updated_at
+        FROM cover_letter_examples
+        WHERE id = ?
+        """,
+        (_lastrowid(cursor),),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("stored cover letter example could not be loaded")
+    return CoverLetterExample.model_validate(dict(row))
 
 
 def set_include_graduate_degree_roles(connection: turso.Connection, enabled: bool) -> None:

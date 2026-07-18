@@ -208,6 +208,61 @@ def test_stats_command_counts_companies_jobs_and_applications(tmp_path: Path) ->
     assert "- interview: 0" in result.output
 
 
+def test_materials_commands_store_resume_and_cover_letter_examples(tmp_path: Path) -> None:
+    database = tmp_path / "materials.sqlite3"
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    resume_path = tmp_path / "master.tex"
+    first_cover_path = tmp_path / "apple-cover.tex"
+    second_cover_path = tmp_path / "stripe-cover.md"
+    resume_path.write_text("\\documentclass{article}")
+    first_cover_path.write_text("Dear Apple,")
+    second_cover_path.write_text("Dear Stripe,")
+
+    resume_result = runner.invoke(
+        app,
+        ["materials", "set-master-resume", str(resume_path)],
+        env=env,
+    )
+    examples_result = runner.invoke(
+        app,
+        [
+            "materials",
+            "add-cover-letter-example",
+            str(first_cover_path),
+            str(second_cover_path),
+        ],
+        env=env,
+    )
+    show_result = runner.invoke(app, ["materials", "show"], env=env)
+
+    assert resume_result.exit_code == 0
+    assert "Stored master resume: master.tex" in resume_result.output
+    assert examples_result.exit_code == 0
+    assert "Stored 2 cover letter examples: apple-cover.tex, stripe-cover.md" in (
+        examples_result.output
+    )
+    assert show_result.exit_code == 0
+    assert "Master resume: master.tex" in show_result.output
+    assert "Cover letter examples: 2" in show_result.output
+    assert "stripe-cover.md" in show_result.output
+
+
+def test_materials_set_master_resume_rejects_non_tex_file(tmp_path: Path) -> None:
+    database = tmp_path / "materials-reject.sqlite3"
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    resume_path = tmp_path / "resume.txt"
+    resume_path.write_text("not tex")
+
+    result = runner.invoke(
+        app,
+        ["materials", "set-master-resume", str(resume_path)],
+        env=env,
+    )
+
+    assert result.exit_code != 0
+    assert "master resume must be a .tex file" in result.output
+
+
 def test_companies_update_command_sets_scan_options(tmp_path: Path) -> None:
     database = tmp_path / "company-update.sqlite3"
     env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}

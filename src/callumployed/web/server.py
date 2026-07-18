@@ -10,12 +10,16 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from callumployed.data import db
-from callumployed.data.models import RoleStatus
+from callumployed.data.models import CoverLetterExample, MasterResume, RoleStatus
 from callumployed.data.repositories import (
+    add_cover_letter_example,
+    get_master_resume,
     get_tracking_stats,
+    list_cover_letter_examples,
     list_role_items,
     record_role_review_later,
     set_role_status,
+    upsert_master_resume,
 )
 
 STATIC_PACKAGE = "callumployed.web.static"
@@ -83,6 +87,12 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 query = query_values[0].strip() or None
                 self._send_json(build_tracker_payload(query=query))
                 return
+            if parsed_url.path == "/api/master-resume":
+                self._send_json(build_master_resume_payload())
+                return
+            if parsed_url.path == "/api/cover-letter-examples":
+                self._send_json(build_cover_letter_examples_payload())
+                return
             if parsed_url.path.startswith("/assets/"):
                 filename = PurePosixPath(parsed_url.path).name
                 content_type = _content_type_for(filename)
@@ -108,6 +118,12 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 and path_parts[3] == "review-later"
             ):
                 self._record_review_later(path_parts[2])
+                return
+            if len(path_parts) == 2 and path_parts == ["api", "master-resume"]:
+                self._upsert_master_resume()
+                return
+            if len(path_parts) == 2 and path_parts == ["api", "cover-letter-examples"]:
+                self._add_cover_letter_example()
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -147,6 +163,9 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             if payload is None:
                 return
             status_value = payload.get("status")
+            if not isinstance(status_value, str):
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role status")
+                return
             try:
                 status = RoleStatus(status_value)
             except ValueError:
@@ -196,6 +215,62 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
 
             self._send_json({"role": role.model_dump(mode="json")})
 
+        def _upsert_master_resume(self) -> None:
+            payload = self._read_json_body()
+            if payload is None:
+                return
+
+            filename = payload.get("filename")
+            content = payload.get("content")
+            if not isinstance(filename, str) or not isinstance(content, str):
+                self.send_error(HTTPStatus.BAD_REQUEST, "Expected filename and content")
+                return
+
+            try:
+                with db.connect() as connection:
+                    resume = upsert_master_resume(
+                        connection,
+                        filename=filename,
+                        content=content,
+                    )
+            except ValueError as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+
+            self._send_json({"master_resume": _master_resume_summary(resume)})
+
+        def _add_cover_letter_example(self) -> None:
+            payload = self._read_json_body()
+            if payload is None:
+                return
+
+            filename = payload.get("filename")
+            content = payload.get("content")
+            if not isinstance(filename, str) or not isinstance(content, str):
+                self.send_error(HTTPStatus.BAD_REQUEST, "Expected filename and content")
+                return
+
+            try:
+                with db.connect() as connection:
+                    example = add_cover_letter_example(
+                        connection,
+                        filename=filename,
+                        content=content,
+                    )
+                    examples = list_cover_letter_examples(connection)
+            except ValueError as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+
+            self._send_json(
+                {
+                    "cover_letter_example": _cover_letter_example_summary(example),
+                    "cover_letter_examples": [
+                        _cover_letter_example_summary(item) for item in examples
+                    ],
+                }
+            )
+
         def _send_static_file(self, filename: str, content_type: str) -> None:
             try:
                 body = resources.files(STATIC_PACKAGE).joinpath(filename).read_bytes()
@@ -209,6 +284,43 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             self.wfile.write(body)
 
     return CallumployedHandler
+
+
+def build_master_resume_payload() -> dict[str, Any]:
+    with db.connect() as connection:
+        resume = get_master_resume(connection)
+    return {"master_resume": _master_resume_summary(resume) if resume else None}
+
+
+def build_cover_letter_examples_payload() -> dict[str, Any]:
+    with db.connect() as connection:
+        examples = list_cover_letter_examples(connection)
+    return {
+        "cover_letter_examples": [
+            _cover_letter_example_summary(example) for example in examples
+        ]
+    }
+
+
+def _master_resume_summary(resume: MasterResume) -> dict[str, Any]:
+    return {
+        "filename": resume.filename,
+        "content_sha256": resume.content_sha256,
+        "content_bytes": len(resume.content.encode()),
+        "created_at": resume.created_at.isoformat() if resume.created_at else None,
+        "updated_at": resume.updated_at.isoformat() if resume.updated_at else None,
+    }
+
+
+def _cover_letter_example_summary(example: CoverLetterExample) -> dict[str, Any]:
+    return {
+        "id": example.id,
+        "filename": example.filename,
+        "content_sha256": example.content_sha256,
+        "content_bytes": len(example.content.encode()),
+        "created_at": example.created_at.isoformat() if example.created_at else None,
+        "updated_at": example.updated_at.isoformat() if example.updated_at else None,
+    }
 
 
 def run_server(host: str, port: int) -> None:

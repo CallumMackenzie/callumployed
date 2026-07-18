@@ -97,6 +97,54 @@ def add_company(
 
 
 @mcp.tool()
+def get_master_resume() -> dict[str, Any]:
+    """Return the stored master resume, including content."""
+    _ensure_initialized()
+    with db.connect() as connection:
+        resume = repo.get_master_resume(connection)
+    return {"master_resume": _to_json(resume)}
+
+
+@mcp.tool()
+def set_master_resume(filename: str, content: str) -> dict[str, Any]:
+    """Set or replace the stored master .tex resume."""
+    _ensure_initialized()
+    with db.connect() as connection:
+        resume = repo.upsert_master_resume(
+            connection,
+            filename=filename,
+            content=content,
+        )
+    return {"master_resume": _to_json(resume)}
+
+
+@mcp.tool()
+def list_cover_letter_examples() -> list[dict[str, Any]]:
+    """List stored cover letter examples, including content."""
+    _ensure_initialized()
+    with db.connect() as connection:
+        examples = repo.list_cover_letter_examples(connection)
+    return _to_json_object_list(examples)
+
+
+@mcp.tool()
+def add_cover_letter_example(filename: str, content: str) -> dict[str, Any]:
+    """Add a cover letter example."""
+    _ensure_initialized()
+    with db.connect() as connection:
+        example = repo.add_cover_letter_example(
+            connection,
+            filename=filename,
+            content=content,
+        )
+        examples = repo.list_cover_letter_examples(connection)
+    return {
+        "cover_letter_example": _to_json(example),
+        "cover_letter_examples": _to_json(examples),
+    }
+
+
+@mcp.tool()
 def update_company_career_pages(
     company_id: int,
     primary_career_page_url: str | None = None,

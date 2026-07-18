@@ -7,6 +7,13 @@ const searchBackdrop = document.querySelector("#search-backdrop");
 const searchForm = document.querySelector("#search-form");
 const searchInput = document.querySelector("#search-input");
 const closeSearchButton = document.querySelector("#close-search");
+const resumeMeta = document.querySelector("#resume-meta");
+const resumeUpload = document.querySelector("#resume-upload");
+const resumeUploadButton = document.querySelector("#resume-upload-button");
+const coverLetterMeta = document.querySelector("#cover-letter-meta");
+const coverLetterUpload = document.querySelector("#cover-letter-upload");
+const coverLetterUploadButton = document.querySelector("#cover-letter-upload-button");
+const coverLetterList = document.querySelector("#cover-letter-list");
 const reviewDiscoveredButton = document.querySelector("#review-discovered");
 const reviewView = document.querySelector("#review-view");
 const reviewHeading = document.querySelector("#review-heading");
@@ -21,6 +28,8 @@ const REVIEW_LATER_RECOMMENDATION_THRESHOLD = 3;
 
 let hideEmpty = true;
 let trackerData = null;
+let masterResume = null;
+let coverLetterExamples = [];
 let reviewQueue = [];
 
 function getActiveSearchQuery() {
@@ -102,6 +111,60 @@ function renderStats(stats) {
   statsEl.innerHTML = items
     .map(([label, value]) => `<dl class="stat"><dt>${escapeHtml(label)}</dt><dd>${value}</dd></dl>`)
     .join("");
+}
+
+function renderMasterResume(resume, message = "") {
+  masterResume = resume;
+  resumeUploadButton.textContent = resume ? "Replace" : "Upload";
+  if (message) {
+    resumeMeta.textContent = message;
+    return;
+  }
+  if (!resume) {
+    resumeMeta.textContent = "No resume uploaded";
+    return;
+  }
+  const updated = formatCompactDate(resume.updated_at);
+  const size = formatFileSize(resume.content_bytes);
+  resumeMeta.textContent = [resume.filename, size, updated].filter(Boolean).join(" | ");
+}
+
+function renderCoverLetterExamples(examples, message = "") {
+  coverLetterExamples = Array.isArray(examples) ? examples : [];
+  coverLetterUploadButton.textContent = coverLetterExamples.length > 0 ? "Add" : "Upload";
+  if (message) {
+    coverLetterMeta.textContent = message;
+  } else if (coverLetterExamples.length === 0) {
+    coverLetterMeta.textContent = "No examples uploaded";
+  } else {
+    coverLetterMeta.textContent = `${coverLetterExamples.length} ${coverLetterExamples.length === 1 ? "example" : "examples"} stored`;
+  }
+
+  const visibleExamples = coverLetterExamples.slice(0, 3);
+  const hiddenCount = Math.max(coverLetterExamples.length - visibleExamples.length, 0);
+  coverLetterList.innerHTML = visibleExamples
+    .map((example) => {
+      const size = formatFileSize(example.content_bytes);
+      return `
+        <li title="${escapeHtml(example.filename)}">
+          <span>${escapeHtml(example.filename)}</span>
+          <small>${escapeHtml(size)}</small>
+        </li>
+      `;
+    })
+    .join("");
+  if (hiddenCount > 0) {
+    coverLetterList.insertAdjacentHTML(
+      "beforeend",
+      `<li class="examples-more"><span>+${hiddenCount} more</span></li>`,
+    );
+  }
+}
+
+function formatFileSize(bytes) {
+  if (!Number.isFinite(bytes)) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  return `${Math.round(bytes / 1024)} KB`;
 }
 
 function renderTabs(statuses) {
@@ -235,6 +298,84 @@ async function loadTracker(query = "") {
   render(await response.json());
 }
 
+async function loadMasterResume() {
+  const response = await fetch("/api/master-resume");
+  if (!response.ok) throw new Error("Master resume request failed");
+  const payload = await response.json();
+  renderMasterResume(payload.master_resume);
+}
+
+async function loadCoverLetterExamples() {
+  const response = await fetch("/api/cover-letter-examples");
+  if (!response.ok) throw new Error("Cover letter examples request failed");
+  const payload = await response.json();
+  renderCoverLetterExamples(payload.cover_letter_examples);
+}
+
+async function uploadMasterResume(file) {
+  if (!file) return;
+  if (!file.name.toLowerCase().endsWith(".tex")) {
+    renderMasterResume(masterResume, "Resume must be a .tex file.");
+    return;
+  }
+
+  resumeUploadButton.disabled = true;
+  renderMasterResume(masterResume, "Uploading...");
+  try {
+    const content = await file.text();
+    const response = await fetch("/api/master-resume", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        filename: file.name,
+        content,
+      }),
+    });
+    if (!response.ok) throw new Error("Master resume upload failed");
+    const payload = await response.json();
+    renderMasterResume(payload.master_resume);
+  } catch {
+    renderMasterResume(masterResume, "Could not save resume.");
+  } finally {
+    resumeUpload.value = "";
+    resumeUploadButton.disabled = false;
+  }
+}
+
+async function uploadCoverLetterExamples(files) {
+  const selectedFiles = Array.from(files ?? []);
+  if (selectedFiles.length === 0) return;
+
+  coverLetterUploadButton.disabled = true;
+  renderCoverLetterExamples(
+    coverLetterExamples,
+    `Uploading ${selectedFiles.length} ${selectedFiles.length === 1 ? "example" : "examples"}...`,
+  );
+  try {
+    let latestExamples = coverLetterExamples;
+    for (const file of selectedFiles) {
+      const content = await file.text();
+      const response = await fetch("/api/cover-letter-examples", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          filename: file.name,
+          content,
+        }),
+      });
+      if (!response.ok) throw new Error("Cover letter example upload failed");
+      const payload = await response.json();
+      latestExamples = payload.cover_letter_examples;
+    }
+    renderCoverLetterExamples(latestExamples);
+  } catch {
+    renderCoverLetterExamples(coverLetterExamples, "Could not save every example.");
+  } finally {
+    coverLetterUpload.value = "";
+    coverLetterUploadButton.disabled = false;
+  }
+}
+
 searchForm.addEventListener("submit", (event) => {
   event.preventDefault();
   loadTracker(searchInput.value.trim());
@@ -258,6 +399,22 @@ searchInput.addEventListener("keydown", (event) => {
 closeSearchButton.addEventListener("click", closeSearchDialog);
 
 searchBackdrop.addEventListener("click", closeSearchDialog);
+
+resumeUploadButton.addEventListener("click", () => {
+  resumeUpload.click();
+});
+
+resumeUpload.addEventListener("change", () => {
+  uploadMasterResume(resumeUpload.files?.[0]);
+});
+
+coverLetterUploadButton.addEventListener("click", () => {
+  coverLetterUpload.click();
+});
+
+coverLetterUpload.addEventListener("change", () => {
+  uploadCoverLetterExamples(coverLetterUpload.files);
+});
 
 statusTabsEl.addEventListener("click", (event) => {
   const button = event.target.closest("[data-target]");
@@ -556,4 +713,12 @@ collapseEmptyButton.addEventListener("click", () => {
 
 loadTracker().catch(() => {
   statusListEl.innerHTML = '<p class="empty-copy">Could not load jobs.</p>';
+});
+
+loadMasterResume().catch(() => {
+  renderMasterResume(null, "Could not load resume.");
+});
+
+loadCoverLetterExamples().catch(() => {
+  renderCoverLetterExamples([], "Could not load cover letter examples.");
 });
