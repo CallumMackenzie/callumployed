@@ -78,6 +78,21 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
+function renderLinkIcon() {
+  return `
+    <svg class="role-link-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M7 17 17 7"></path>
+      <path d="M8 7h9v9"></path>
+    </svg>
+  `;
+}
+
+function renderRoleTitle(title, url, className) {
+  const label = `<span class="role-title-text">${escapeHtml(title)}</span>`;
+  if (!url) return `<span class="${className}">${label}</span>`;
+  return `<a class="${className}" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${label}${renderLinkIcon()}</a>`;
+}
+
 function renderStats(stats) {
   const items = [
     ["Companies", stats.companies_total],
@@ -109,7 +124,7 @@ function renderStatuses(statuses) {
                 <span class="job-chevron">></span>
                 <span class="job-identity">
                   <span class="job-company">[${escapeHtml(job.company_name)}]</span>
-                  <a class="job-title" href="${escapeHtml(job.role_url)}" target="_blank" rel="noreferrer">${escapeHtml(job.title)}</a>
+                  ${renderRoleTitle(job.title, job.role_url, "job-title")}
                 </span>
               </summary>
               <div class="job-detail">
@@ -349,23 +364,23 @@ function renderReviewRole(message = "") {
     ${reviewLaterMessage ? `<p class="review-message review-message-warning">${escapeHtml(reviewLaterMessage)}</p>` : ""}
     <div class="review-title-row">
       <p class="review-company">${escapeHtml(current.company_name)}</p>
-      <a class="review-role-title" href="${escapeHtml(current.role_url)}" target="_blank" rel="noreferrer">${escapeHtml(current.title)}</a>
+      ${renderRoleTitle(current.title, current.role_url, "review-role-title")}
     </div>
-    <dl class="review-details">
-      ${renderReviewDetail("Location", current.location)}
+    <dl class="review-details review-primary-details">
+      ${renderReviewDetail("Location", current.location, false, "review-location-detail")}
       ${renderReviewDetail("First", formatCompactDate(current.first_seen_at))}
       ${renderReviewDetail("Last", formatCompactDate(current.last_seen_at))}
-      ${renderReviewDetail("Notes", current.notes)}
     </dl>
     ${renderReviewDescription(current.description)}
     <dl class="review-details review-technical-details">
+      ${renderReviewDetail("Notes", current.notes, false, "review-wide-detail")}
       ${renderReviewDetail("Company ID", current.company_id)}
       ${renderReviewDetail("Role ID", current.id)}
       ${renderReviewDetail("Status", current.role_status)}
       ${renderReviewDetail("Posting ID", current.posting_id)}
       ${renderReviewDetail("Created", formatCompactDate(current.created_at))}
       ${renderReviewDetail("Updated", formatCompactDate(current.updated_at))}
-      ${renderReviewDetail("URL", current.role_url, true)}
+      ${renderReviewDetail("URL", current.role_url, true, "review-wide-detail")}
     </dl>
   `;
 }
@@ -376,13 +391,13 @@ function getReviewLaterRecommendation(role) {
   return `Role review has been postponed ${count} times. It is recommended to set it to disinterested.`;
 }
 
-function renderReviewDetail(label, value, isLink = false) {
+function renderReviewDetail(label, value, isLink = false, className = "") {
   if (!value) return "";
   const content = isLink
     ? `<a href="${escapeHtml(value)}" target="_blank" rel="noreferrer">${escapeHtml(value)}</a>`
     : escapeHtml(value);
   return `
-    <div class="review-detail">
+    <div class="review-detail ${escapeHtml(className)}">
       <dt>${escapeHtml(label)}</dt>
       <dd>${content}</dd>
     </div>

@@ -514,9 +514,29 @@ button:hover {
 
 .job-title {
   min-width: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
   overflow-wrap: anywhere;
   color: var(--text);
   font-weight: 800;
+}
+
+.role-title-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.role-link-icon {
+  width: 0.85em;
+  height: 0.85em;
+  flex: 0 0 auto;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+  opacity: 0.72;
 }
 
 .job-company {
@@ -696,6 +716,9 @@ button:hover {
 }
 
 .review-role-title {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 0.28em;
   color: var(--text);
   font-size: clamp(1.35rem, 3vw, 2.25rem);
   font-weight: 900;
@@ -703,22 +726,30 @@ button:hover {
   overflow-wrap: anywhere;
 }
 
+.review-role-title .role-link-icon {
+  margin-top: 0.08em;
+}
+
 .review-details {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
+  display: grid;
+  gap: 6px;
   margin: 0 0 12px;
+}
+
+.review-primary-details {
+  grid-template-columns: minmax(14rem, 1.4fr) repeat(2, minmax(8.5rem, 0.8fr));
+  align-items: stretch;
 }
 
 .review-detail {
   min-width: 0;
   display: flex;
   align-items: baseline;
-  gap: 5px;
+  gap: 6px;
   max-width: 100%;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  padding: 4px 6px;
+  padding: 6px 8px;
   background: var(--surface-strong);
 }
 
@@ -783,16 +814,23 @@ button:hover {
 }
 
 .review-technical-details {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   margin-bottom: 0;
-  padding-top: 0;
 }
 
 .review-technical-details .review-detail {
+  align-items: start;
   background: #f8fafb;
 }
 
-.review-technical-details .review-detail:last-child {
-  flex: 1 1 100%;
+.review-technical-details .review-wide-detail {
+  grid-column: 1 / -1;
+}
+
+.review-technical-details a {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .review-empty {
@@ -928,5 +966,14 @@ button:hover {
     min-height: 50px;
     padding-inline: 6px;
     font-size: 0.88rem;
+  }
+
+  .review-primary-details,
+  .review-technical-details {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .review-location-detail {
+    grid-column: 1 / -1;
   }
 }
