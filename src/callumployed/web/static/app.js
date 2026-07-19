@@ -335,6 +335,7 @@ function renderScanStatus(payload) {
 
   scanAllButton.disabled = scanning;
   scanAllButton.textContent = scanning ? "Scanning..." : "Scan roles";
+  scanStatusBar.hidden = !scanning;
   scanStatusBar.classList.toggle("scanning", scanning);
   scanStatusBar.classList.toggle("scan-error", !scanning && Boolean(payload?.error));
 
@@ -361,6 +362,7 @@ async function loadScanStatus() {
   const response = await fetch("/api/scan/status");
   if (response.status === 404) {
     scanAllButton.disabled = true;
+    scanStatusBar.hidden = true;
     scanStatusBar.classList.add("scan-error");
     scanStatusText.textContent = "Restart server to enable scanning";
     return;
@@ -384,6 +386,7 @@ async function startScanAll() {
     if (response.status === 404) {
       scanAllButton.disabled = true;
       scanAllButton.textContent = "Scan roles";
+      scanStatusBar.hidden = true;
       scanStatusBar.classList.add("scan-error");
       scanStatusText.textContent = "Restart server to enable scanning";
       return;
@@ -394,6 +397,7 @@ async function startScanAll() {
   } catch {
     scanAllButton.disabled = false;
     scanAllButton.textContent = "Scan roles";
+    scanStatusBar.hidden = true;
     scanStatusBar.classList.add("scan-error");
     scanStatusText.textContent = "Could not start scan";
   }

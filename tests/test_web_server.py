@@ -57,11 +57,15 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="expand-all"' not in markup
         assert 'id="collapse-all"' not in markup
         assert 'id="scan-all-button"' in markup
+        assert 'id="scan-summary"' in markup
         assert markup.index('id="review-discovered"') < markup.index('id="scan-all-button"')
+        assert markup.index('id="scan-all-button"') < markup.index('id="scan-summary"')
         assert markup.index('id="scan-all-button"') < markup.index('class="status-toolbar"')
         assert 'id="scan-status-bar"' in markup
-        assert "/assets/app.css?v=20260718-6" in markup
-        assert "/assets/app.js?v=20260718-6" in markup
+        assert 'id="scan-status-text"' in markup
+        assert markup.index('id="scan-summary"') < markup.index('id="scan-status-text"')
+        assert "/assets/app.css?v=20260718-7" in markup
+        assert "/assets/app.js?v=20260718-7" in markup
     finally:
         server.shutdown()
         thread.join(timeout=5)

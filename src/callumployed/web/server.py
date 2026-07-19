@@ -135,6 +135,8 @@ SCAN_COORDINATOR = ScanCoordinator()
 
 
 class LocalThreadingHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+
     def server_bind(self) -> None:
         self.socket.bind(self.server_address)
         host, port = self.socket.getsockname()[:2]

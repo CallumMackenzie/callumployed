@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>callumployed</title>
-    <link rel="stylesheet" href="/assets/app.css?v=20260718-6" />
+    <link rel="stylesheet" href="/assets/app.css?v=20260718-7" />
   </head>
   <body>
     <main class="shell">
@@ -56,6 +56,10 @@
       <section class="review-entry" aria-label="Discovered review">
         <button type="button" id="review-discovered">Review discovered</button>
         <button type="button" id="scan-all-button">Scan roles</button>
+        <div class="scan-summary" id="scan-summary" aria-live="polite">
+          <span id="scan-status-text">Scan idle</span>
+          <span class="scan-status-last" id="scan-last-time">Last scan: never</span>
+        </div>
       </section>
 
       <section class="status-toolbar" aria-label="Status navigation">
@@ -118,12 +122,10 @@
       </div>
     </section>
 
-    <aside class="scan-status-bar" id="scan-status-bar" aria-live="polite">
+    <aside class="scan-status-bar" id="scan-status-bar" aria-label="Scan running" hidden>
       <span class="scan-status-dot" aria-hidden="true"></span>
-      <span id="scan-status-text">Scan idle</span>
-      <span class="scan-status-last" id="scan-last-time">Last scan: never</span>
     </aside>
 
-    <script src="/assets/app.js?v=20260718-6" type="module"></script>
+    <script src="/assets/app.js?v=20260718-7" type="module"></script>
   </body>
 </html>
