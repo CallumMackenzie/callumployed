@@ -359,6 +359,12 @@ function renderScanStatus(payload) {
 
 async function loadScanStatus() {
   const response = await fetch("/api/scan/status");
+  if (response.status === 404) {
+    scanAllButton.disabled = true;
+    scanStatusBar.classList.add("scan-error");
+    scanStatusText.textContent = "Restart server to enable scanning";
+    return;
+  }
   if (!response.ok) throw new Error("Scan status request failed");
   renderScanStatus(await response.json());
 }
@@ -375,6 +381,13 @@ async function startScanAll() {
   scanAllButton.textContent = "Scanning...";
   try {
     const response = await fetch("/api/scan/all", { method: "POST" });
+    if (response.status === 404) {
+      scanAllButton.disabled = true;
+      scanAllButton.textContent = "Scan roles";
+      scanStatusBar.classList.add("scan-error");
+      scanStatusText.textContent = "Restart server to enable scanning";
+      return;
+    }
     if (!response.ok && response.status !== 409) throw new Error("Scan start failed");
     renderScanStatus(await response.json());
     startScanStatusPolling();
