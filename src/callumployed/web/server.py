@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
@@ -15,12 +19,16 @@ from callumployed.data.repositories import (
     add_cover_letter_example,
     get_master_resume,
     get_tracking_stats,
+    list_companies,
     list_cover_letter_examples,
     list_role_items,
+    list_scan_runs,
     record_role_review_later,
     set_role_status,
     upsert_master_resume,
 )
+from callumployed.services.scan_workflow import scan_company as run_scan_company
+from callumployed.webscraping.profile_manager import BrowserProfileManager
 
 STATIC_PACKAGE = "callumployed.web.static"
 STATUS_LABELS: dict[str, str] = {
@@ -36,6 +44,94 @@ STATUS_LABELS: dict[str, str] = {
     RoleStatus.CLOSED.value: "Closed",
     RoleStatus.ARCHIVED.value: "Archived",
 }
+
+
+@dataclass(frozen=True)
+class ScanCoordinatorSnapshot:
+    scanning: bool
+    started_at: datetime | None
+    finished_at: datetime | None
+    completed_companies: int
+    total_companies: int
+    failed_companies: int
+    error: str | None
+
+
+class ScanCoordinator:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._started_at: datetime | None = None
+        self._finished_at: datetime | None = None
+        self._completed_companies = 0
+        self._total_companies = 0
+        self._failed_companies = 0
+        self._error: str | None = None
+
+    def start(self) -> bool:
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return False
+            self._started_at = _now_utc()
+            self._finished_at = None
+            self._completed_companies = 0
+            self._total_companies = 0
+            self._failed_companies = 0
+            self._error = None
+            self._thread = threading.Thread(
+                target=self._run,
+                name="callumployed-scan-all",
+                daemon=True,
+            )
+            self._thread.start()
+            return True
+
+    def snapshot(self) -> ScanCoordinatorSnapshot:
+        with self._lock:
+            scanning = self._thread is not None and self._thread.is_alive()
+            return ScanCoordinatorSnapshot(
+                scanning=scanning,
+                started_at=self._started_at,
+                finished_at=self._finished_at,
+                completed_companies=self._completed_companies,
+                total_companies=self._total_companies,
+                failed_companies=self._failed_companies,
+                error=self._error,
+            )
+
+    def _run(self) -> None:
+        try:
+            asyncio.run(self._scan_all_companies())
+        except Exception as error:
+            with self._lock:
+                self._error = str(error)
+        finally:
+            with self._lock:
+                self._finished_at = _now_utc()
+
+    async def _scan_all_companies(self) -> None:
+        with db.connect() as connection:
+            companies = list_companies(connection)
+        with self._lock:
+            self._total_companies = len(companies)
+
+        browser_profile_manager = BrowserProfileManager()
+        for company in companies:
+            try:
+                await run_scan_company(
+                    company,
+                    browser_profile_manager=browser_profile_manager,
+                )
+            except Exception as error:
+                with self._lock:
+                    self._failed_companies += 1
+                    self._error = str(error)
+            finally:
+                with self._lock:
+                    self._completed_companies += 1
+
+
+SCAN_COORDINATOR = ScanCoordinator()
 
 
 class LocalThreadingHTTPServer(ThreadingHTTPServer):
@@ -87,6 +183,12 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 query = query_values[0].strip() or None
                 self._send_json(build_tracker_payload(query=query))
                 return
+            if parsed_url.path == "/api/scan/status":
+                self._send_json(build_scan_status_payload())
+                return
+            if parsed_url.path == "/api/application-materials":
+                self._send_json(build_application_materials_payload())
+                return
             if parsed_url.path == "/api/master-resume":
                 self._send_json(build_master_resume_payload())
                 return
@@ -125,6 +227,9 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             if len(path_parts) == 2 and path_parts == ["api", "cover-letter-examples"]:
                 self._add_cover_letter_example()
                 return
+            if len(path_parts) == 3 and path_parts == ["api", "scan", "all"]:
+                self._start_scan_all()
+                return
             self.send_error(HTTPStatus.NOT_FOUND)
 
         def log_message(self, format: str, *args: object) -> None:
@@ -133,6 +238,14 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
         def _send_json(self, payload: dict[str, Any]) -> None:
             body = json.dumps(payload).encode()
             self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _send_json_with_status(self, payload: dict[str, Any], status: HTTPStatus) -> None:
+            body = json.dumps(payload).encode()
+            self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -271,6 +384,11 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 }
             )
 
+        def _start_scan_all(self) -> None:
+            started = SCAN_COORDINATOR.start()
+            status = HTTPStatus.ACCEPTED if started else HTTPStatus.CONFLICT
+            self._send_json_with_status(build_scan_status_payload(), status)
+
         def _send_static_file(self, filename: str, content_type: str) -> None:
             try:
                 body = resources.files(STATIC_PACKAGE).joinpath(filename).read_bytes()
@@ -286,6 +404,37 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
     return CallumployedHandler
 
 
+def build_scan_status_payload() -> dict[str, Any]:
+    snapshot = SCAN_COORDINATOR.snapshot()
+    with db.connect() as connection:
+        latest_scan_runs = list_scan_runs(connection, limit=1)
+    latest_scan = latest_scan_runs[0] if latest_scan_runs else None
+    latest_finished_at = latest_scan.finished_at if latest_scan else None
+    last_scan_at = snapshot.finished_at or latest_finished_at
+    latest_scan_status = latest_scan.scan_status if latest_scan else None
+    return {
+        "scanning": snapshot.scanning,
+        "started_at": _datetime_or_none(snapshot.started_at),
+        "finished_at": _datetime_or_none(snapshot.finished_at),
+        "last_scan_at": _datetime_or_none(last_scan_at),
+        "completed_companies": snapshot.completed_companies,
+        "total_companies": snapshot.total_companies,
+        "failed_companies": snapshot.failed_companies,
+        "error": snapshot.error,
+        "latest_scan": (
+            {
+                "id": latest_scan.id,
+                "company_id": latest_scan.company_id,
+                "company_name": latest_scan.company_name,
+                "scan_status": latest_scan_status.value if latest_scan_status else None,
+                "finished_at": _datetime_or_none(latest_finished_at),
+            }
+            if latest_scan
+            else None
+        ),
+    }
+
+
 def build_master_resume_payload() -> dict[str, Any]:
     with db.connect() as connection:
         resume = get_master_resume(connection)
@@ -299,6 +448,30 @@ def build_cover_letter_examples_payload() -> dict[str, Any]:
         "cover_letter_examples": [
             _cover_letter_example_summary(example) for example in examples
         ]
+    }
+
+
+def build_application_materials_payload() -> dict[str, Any]:
+    with db.connect() as connection:
+        resume = get_master_resume(connection)
+        examples = list_cover_letter_examples(connection)
+    return _application_materials_payload(resume, examples)
+
+
+def _application_materials_payload(
+    resume: MasterResume | None,
+    examples: list[CoverLetterExample],
+) -> dict[str, Any]:
+    return {
+        "master_resume": _master_resume_summary(resume) if resume else None,
+        "cover_letter_examples": [
+            _cover_letter_example_summary(example) for example in examples
+        ],
+        "ui": {
+            "default_collapsed": resume is not None and len(examples) >= 1,
+            "has_master_resume": resume is not None,
+            "cover_letter_example_count": len(examples),
+        },
     }
 
 
@@ -321,6 +494,16 @@ def _cover_letter_example_summary(example: CoverLetterExample) -> dict[str, Any]
         "created_at": example.created_at.isoformat() if example.created_at else None,
         "updated_at": example.updated_at.isoformat() if example.updated_at else None,
     }
+
+
+def _now_utc() -> datetime:
+    return datetime.now(UTC)
+
+
+def _datetime_or_none(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    return value.isoformat()
 
 
 def run_server(host: str, port: int) -> None:

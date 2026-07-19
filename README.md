@@ -1,10 +1,10 @@
 # callumployed
 
-Local-first Python CLI for job-search automation.
+Local-first Python CLI, MCP server, and web tracker for job-search automation.
 
-The app will track target companies, scan career pages, manage roles and application
-lifecycles, prepare tailored application materials, and update application statuses
-from mailbox signals.
+The app tracks target companies, scans career pages, manages roles and application
+lifecycles, stores reusable application materials, and gives agents structured access
+to the same local data.
 
 ## Stack
 
@@ -82,6 +82,7 @@ Available MCP tools cover:
 
 - companies: add, update career pages, list, show
 - roles: add, list, show, update, set status
+- materials: get/set the master resume, list/add cover letter examples
 - stats: application and job counts by lifecycle status
 - config: show and update scan filters
 - scans: scan a URL, scan a company, list scan runs, show a scan run
@@ -104,6 +105,9 @@ Examples:
 ```bash
 callumployed stats
 callumployed serve
+callumployed materials show
+callumployed materials set-master-resume path/to/master.tex
+callumployed materials add-cover-letter-example path/to/example1.tex path/to/example2.md
 callumployed scan url https://example.com/careers
 callumployed scan company 1
 callumployed scan all
@@ -111,7 +115,34 @@ callumployed roles rescan 49
 ```
 
 `callumployed serve` starts a local web tracker at `http://127.0.0.1:8765`
-with overall stats, status panes, search, and collapsible job lists.
+with overall stats, status panes, search, compact application-material controls,
+and collapsible job lists.
+
+### Application materials
+
+Application materials are stored in the local database alongside the tracker data.
+The master resume is a single replaceable `.tex` document. Cover letter examples are
+an append-only collection, so users can upload as many prior examples as they want for
+future tailoring.
+
+CLI commands:
+
+```bash
+callumployed materials set-master-resume path/to/master.tex
+callumployed materials add-cover-letter-example path/to/example1.tex path/to/example2.md
+callumployed materials show
+```
+
+The web tracker exposes the same store through a compact application-materials bar:
+one control replaces the master resume, and another adds cover letter examples while
+showing recent uploaded filenames without expanding the whole tracker view.
+
+MCP tools expose the same data for agents:
+
+- `get_master_resume`
+- `set_master_resume`
+- `list_cover_letter_examples`
+- `add_cover_letter_example`
 
 ### Browser backend
 
@@ -206,6 +237,7 @@ Keep the MVP small:
 - Add/list companies
 - Scan saved/static career pages through deterministic extraction
 - Store discovered roles and lifecycle events
+- Store a master resume and reusable cover letter examples
 - List roles
 - Manually set status
 - Basic repository and CLI tests

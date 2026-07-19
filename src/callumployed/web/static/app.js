@@ -7,6 +7,10 @@ const searchBackdrop = document.querySelector("#search-backdrop");
 const searchForm = document.querySelector("#search-form");
 const searchInput = document.querySelector("#search-input");
 const closeSearchButton = document.querySelector("#close-search");
+const materialsPanel = document.querySelector("#materials-panel");
+const materialsToggle = document.querySelector("#materials-toggle");
+const materialsBody = document.querySelector("#materials-body");
+const materialsSummary = document.querySelector("#materials-summary");
 const resumeMeta = document.querySelector("#resume-meta");
 const resumeUpload = document.querySelector("#resume-upload");
 const resumeUploadButton = document.querySelector("#resume-upload-button");
@@ -20,8 +24,11 @@ const reviewHeading = document.querySelector("#review-heading");
 const reviewProgress = document.querySelector("#review-progress");
 const reviewCard = document.querySelector("#review-card");
 const closeReviewButton = document.querySelector("#close-review");
-const expandAllButton = document.querySelector("#expand-all");
-const collapseAllButton = document.querySelector("#collapse-all");
+const scanAllButton = document.querySelector("#scan-all-button");
+const scanStatusBar = document.querySelector("#scan-status-bar");
+const scanStatusText = document.querySelector("#scan-status-text");
+const scanLastTime = document.querySelector("#scan-last-time");
+const toggleAllButton = document.querySelector("#toggle-all");
 const collapseEmptyButton = document.querySelector("#collapse-empty");
 
 const REVIEW_LATER_RECOMMENDATION_THRESHOLD = 3;
@@ -31,6 +38,9 @@ let trackerData = null;
 let masterResume = null;
 let coverLetterExamples = [];
 let reviewQueue = [];
+let materialsInitialized = false;
+let scanStatusPoll = null;
+let wasScanning = false;
 
 function getActiveSearchQuery() {
   return trackerData?.query?.trim() ?? "";
@@ -161,6 +171,33 @@ function renderCoverLetterExamples(examples, message = "") {
   }
 }
 
+function renderApplicationMaterials(payload, options = {}) {
+  renderMasterResume(payload?.master_resume ?? null);
+  renderCoverLetterExamples(payload?.cover_letter_examples ?? []);
+  updateMaterialsSummary();
+  if (!materialsInitialized || options.applyDefaultCollapsed) {
+    setMaterialsCollapsed(Boolean(payload?.ui?.default_collapsed));
+    materialsInitialized = true;
+  }
+}
+
+function updateMaterialsSummary() {
+  const resumeText = masterResume ? "resume ready" : "no resume";
+  const exampleCount = coverLetterExamples.length;
+  const coverText =
+    exampleCount === 0
+      ? "no cover letters"
+      : `${exampleCount} cover ${exampleCount === 1 ? "letter" : "letters"}`;
+  materialsSummary.textContent = `${resumeText} | ${coverText}`;
+}
+
+function setMaterialsCollapsed(collapsed) {
+  materialsPanel.classList.toggle("collapsed", collapsed);
+  materialsToggle.setAttribute("aria-expanded", String(!collapsed));
+  materialsToggle.querySelector(".materials-chevron").textContent = collapsed ? ">" : "v";
+  materialsBody.hidden = collapsed;
+}
+
 function formatFileSize(bytes) {
   if (!Number.isFinite(bytes)) return "";
   if (bytes < 1024) return `${bytes} B`;
@@ -286,7 +323,67 @@ function render(data) {
   renderStats(data.stats);
   renderTabs(data.statuses);
   renderStatuses(data.statuses);
+  updateToggleAllButton();
   updateReviewButton(data.statuses);
+}
+
+function renderScanStatus(payload) {
+  const scanning = Boolean(payload?.scanning);
+  const completed = Number(payload?.completed_companies ?? 0);
+  const total = Number(payload?.total_companies ?? 0);
+  const failed = Number(payload?.failed_companies ?? 0);
+
+  scanAllButton.disabled = scanning;
+  scanAllButton.textContent = scanning ? "Scanning..." : "Scan roles";
+  scanStatusBar.classList.toggle("scanning", scanning);
+  scanStatusBar.classList.toggle("scan-error", !scanning && Boolean(payload?.error));
+
+  if (scanning) {
+    const progressText = total > 0 ? ` ${completed}/${total}` : "";
+    const failureText = failed > 0 ? `, ${failed} failed` : "";
+    scanStatusText.textContent = `Scanning roles${progressText}${failureText}`;
+  } else if (payload?.error) {
+    scanStatusText.textContent = "Last scan had errors";
+  } else {
+    scanStatusText.textContent = "Scan idle";
+  }
+
+  const lastScanAt = payload?.last_scan_at;
+  scanLastTime.textContent = lastScanAt ? `Last scan: ${formatCompactDate(lastScanAt)}` : "Last scan: never";
+
+  if (wasScanning && !scanning) {
+    loadTracker(getActiveSearchQuery()).catch(() => {});
+  }
+  wasScanning = scanning;
+}
+
+async function loadScanStatus() {
+  const response = await fetch("/api/scan/status");
+  if (!response.ok) throw new Error("Scan status request failed");
+  renderScanStatus(await response.json());
+}
+
+function startScanStatusPolling() {
+  if (scanStatusPoll !== null) return;
+  scanStatusPoll = window.setInterval(() => {
+    loadScanStatus().catch(() => {});
+  }, 3000);
+}
+
+async function startScanAll() {
+  scanAllButton.disabled = true;
+  scanAllButton.textContent = "Scanning...";
+  try {
+    const response = await fetch("/api/scan/all", { method: "POST" });
+    if (!response.ok && response.status !== 409) throw new Error("Scan start failed");
+    renderScanStatus(await response.json());
+    startScanStatusPolling();
+  } catch {
+    scanAllButton.disabled = false;
+    scanAllButton.textContent = "Scan roles";
+    scanStatusBar.classList.add("scan-error");
+    scanStatusText.textContent = "Could not start scan";
+  }
 }
 
 async function loadTracker(query = "") {
@@ -312,6 +409,13 @@ async function loadCoverLetterExamples() {
   renderCoverLetterExamples(payload.cover_letter_examples);
 }
 
+async function loadApplicationMaterials(options = {}) {
+  const response = await fetch("/api/application-materials");
+  if (!response.ok) throw new Error("Application materials request failed");
+  const payload = await response.json();
+  renderApplicationMaterials(payload, options);
+}
+
 async function uploadMasterResume(file) {
   if (!file) return;
   if (!file.name.toLowerCase().endsWith(".tex")) {
@@ -332,10 +436,10 @@ async function uploadMasterResume(file) {
       }),
     });
     if (!response.ok) throw new Error("Master resume upload failed");
-    const payload = await response.json();
-    renderMasterResume(payload.master_resume);
+    await loadApplicationMaterials();
   } catch {
     renderMasterResume(masterResume, "Could not save resume.");
+    updateMaterialsSummary();
   } finally {
     resumeUpload.value = "";
     resumeUploadButton.disabled = false;
@@ -352,7 +456,6 @@ async function uploadCoverLetterExamples(files) {
     `Uploading ${selectedFiles.length} ${selectedFiles.length === 1 ? "example" : "examples"}...`,
   );
   try {
-    let latestExamples = coverLetterExamples;
     for (const file of selectedFiles) {
       const content = await file.text();
       const response = await fetch("/api/cover-letter-examples", {
@@ -364,12 +467,11 @@ async function uploadCoverLetterExamples(files) {
         }),
       });
       if (!response.ok) throw new Error("Cover letter example upload failed");
-      const payload = await response.json();
-      latestExamples = payload.cover_letter_examples;
     }
-    renderCoverLetterExamples(latestExamples);
+    await loadApplicationMaterials();
   } catch {
     renderCoverLetterExamples(coverLetterExamples, "Could not save every example.");
+    updateMaterialsSummary();
   } finally {
     coverLetterUpload.value = "";
     coverLetterUploadButton.disabled = false;
@@ -416,6 +518,14 @@ coverLetterUpload.addEventListener("change", () => {
   uploadCoverLetterExamples(coverLetterUpload.files);
 });
 
+materialsToggle.addEventListener("click", () => {
+  setMaterialsCollapsed(materialsToggle.getAttribute("aria-expanded") === "true");
+});
+
+scanAllButton.addEventListener("click", () => {
+  startScanAll();
+});
+
 statusTabsEl.addEventListener("click", (event) => {
   const button = event.target.closest("[data-target]");
   if (!button) return;
@@ -439,6 +549,7 @@ statusListEl.addEventListener("click", (event) => {
   toggle.setAttribute("aria-expanded", String(!expanded));
   toggle.querySelector(".chevron").textContent = expanded ? ">" : "v";
   body.hidden = expanded;
+  updateToggleAllButton();
 });
 
 async function updateRoleStatus(button) {
@@ -473,8 +584,8 @@ async function updateRoleStatus(button) {
 function updateReviewButton(statuses) {
   const discovered = getDiscoveredJobs(statuses);
   reviewDiscoveredButton.disabled = discovered.length === 0;
-  reviewDiscoveredButton.textContent =
-    discovered.length === 0 ? "Review discovered" : `Review discovered (${discovered.length})`;
+  reviewDiscoveredButton.setAttribute("aria-label", "Review discovered");
+  reviewDiscoveredButton.innerHTML = '<span class="review-discovered-label">Review discovered</span>';
 }
 
 function getDiscoveredJobs(statuses = trackerData?.statuses ?? []) {
@@ -686,15 +797,27 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !reviewView.hidden) closeReviewView();
 });
 
-expandAllButton.addEventListener("click", () => {
+function statusPaneToggles() {
+  return Array.from(document.querySelectorAll(".pane-toggle"));
+}
+
+function hasExpandedStatusPane() {
+  return statusPaneToggles().some((toggle) => toggle.getAttribute("aria-expanded") === "true");
+}
+
+function updateToggleAllButton() {
+  toggleAllButton.textContent = hasExpandedStatusPane() ? "Collapse all" : "Expand all";
+}
+
+function expandAllStatusPanes() {
   document.querySelectorAll(".pane-toggle").forEach((toggle) => {
     toggle.setAttribute("aria-expanded", "true");
     toggle.querySelector(".chevron").textContent = "v";
     toggle.parentElement.querySelector(".pane-body").hidden = false;
   });
-});
+}
 
-collapseAllButton.addEventListener("click", () => {
+function collapseAllStatusPanes() {
   document.querySelectorAll(".job[open]").forEach((job) => {
     job.open = false;
   });
@@ -703,6 +826,15 @@ collapseAllButton.addEventListener("click", () => {
     toggle.querySelector(".chevron").textContent = ">";
     toggle.parentElement.querySelector(".pane-body").hidden = true;
   });
+}
+
+toggleAllButton.addEventListener("click", () => {
+  if (hasExpandedStatusPane()) {
+    collapseAllStatusPanes();
+  } else {
+    expandAllStatusPanes();
+  }
+  updateToggleAllButton();
 });
 
 collapseEmptyButton.addEventListener("click", () => {
@@ -715,10 +847,16 @@ loadTracker().catch(() => {
   statusListEl.innerHTML = '<p class="empty-copy">Could not load jobs.</p>';
 });
 
-loadMasterResume().catch(() => {
+loadApplicationMaterials({ applyDefaultCollapsed: true }).catch(() => {
   renderMasterResume(null, "Could not load resume.");
+  renderCoverLetterExamples([], "Could not load cover letter examples.");
+  updateMaterialsSummary();
 });
 
-loadCoverLetterExamples().catch(() => {
-  renderCoverLetterExamples([], "Could not load cover letter examples.");
-});
+loadScanStatus()
+  .then(() => {
+    startScanStatusPolling();
+  })
+  .catch(() => {
+    scanStatusText.textContent = "Could not load scan status";
+  });

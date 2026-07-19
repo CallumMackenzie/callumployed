@@ -1,6 +1,7 @@
+import asyncio
 import json
 from pathlib import Path
-from threading import Thread
+from threading import Event, Thread
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -27,6 +28,89 @@ def test_static_svg_assets_are_served_with_svg_content_type() -> None:
             assert response.headers["Content-Type"] == "image/svg+xml; charset=utf-8"
             assert response.read().startswith(b'<?xml version="1.0" encoding="UTF-8"?>')
     finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_index_serves_single_state_aware_status_toggle() -> None:
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        url = f"http://127.0.0.1:{port}/"
+
+        with urlopen(url, timeout=5) as response:
+            markup = response.read().decode()
+
+        assert 'id="toggle-all"' in markup
+        assert "Expand all" in markup
+        assert 'id="expand-all"' not in markup
+        assert 'id="collapse-all"' not in markup
+        assert 'id="scan-all-button"' in markup
+        assert markup.index('id="review-discovered"') < markup.index('id="scan-all-button"')
+        assert markup.index('id="scan-all-button"') < markup.index('class="status-toolbar"')
+        assert 'id="scan-status-bar"' in markup
+        assert "/assets/app.css?v=20260718-6" in markup
+        assert "/assets/app.js?v=20260718-6" in markup
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_scan_all_endpoint_runs_in_background_and_reports_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-scan-all.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+
+    scan_started = Event()
+    scan_release = Event()
+
+    async def fake_scan_company(*args: object, **kwargs: object) -> None:
+        scan_started.set()
+        await asyncio.to_thread(scan_release.wait, 2)
+
+    monkeypatch.setattr("callumployed.web.server.run_scan_company", fake_scan_company)
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        base_url = f"http://127.0.0.1:{port}"
+        request = Request(f"{base_url}/api/scan/all", data=b"{}", method="POST")
+
+        with urlopen(request, timeout=5) as response:
+            started_payload = json.loads(response.read().decode())
+
+        assert response.status == 202
+        assert started_payload["scanning"] is True
+        assert scan_started.wait(timeout=5)
+
+        with urlopen(f"{base_url}/api/scan/status", timeout=5) as response:
+            scanning_payload = json.loads(response.read().decode())
+        assert scanning_payload["scanning"] is True
+        assert scanning_payload["total_companies"] == 1
+
+        scan_release.set()
+        for _ in range(20):
+            with urlopen(f"{base_url}/api/scan/status", timeout=5) as response:
+                finished_payload = json.loads(response.read().decode())
+            if not finished_payload["scanning"]:
+                break
+            scan_release.wait(timeout=0.05)
+
+        assert finished_payload["scanning"] is False
+        assert finished_payload["completed_companies"] == 1
+        assert finished_payload["last_scan_at"] is not None
+    finally:
+        scan_release.set()
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
@@ -293,6 +377,67 @@ def test_cover_letter_examples_endpoint_uploads_multiple_examples(
             "stripe-cover.md",
             "apple-cover.tex",
         ]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_application_materials_endpoint_reports_default_collapsed_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-application-materials.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        base_url = f"http://127.0.0.1:{port}"
+
+        with urlopen(f"{base_url}/api/application-materials", timeout=5) as response:
+            empty_payload = json.loads(response.read().decode())
+        assert empty_payload["ui"]["default_collapsed"] is False
+        assert empty_payload["ui"]["has_master_resume"] is False
+        assert empty_payload["ui"]["cover_letter_example_count"] == 0
+
+        resume_request = Request(
+            f"{base_url}/api/master-resume",
+            data=json.dumps(
+                {
+                    "filename": "resume.tex",
+                    "content": "\\documentclass{article}",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(resume_request, timeout=5):
+            pass
+
+        with urlopen(f"{base_url}/api/application-materials", timeout=5) as response:
+            resume_only_payload = json.loads(response.read().decode())
+        assert resume_only_payload["ui"]["default_collapsed"] is False
+        assert resume_only_payload["ui"]["has_master_resume"] is True
+
+        cover_letter_request = Request(
+            f"{base_url}/api/cover-letter-examples",
+            data=json.dumps({"filename": "cover.md", "content": "Dear team,"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(cover_letter_request, timeout=5):
+            pass
+
+        with urlopen(f"{base_url}/api/application-materials", timeout=5) as response:
+            ready_payload = json.loads(response.read().decode())
+        assert ready_payload["ui"]["default_collapsed"] is True
+        assert ready_payload["ui"]["cover_letter_example_count"] == 1
+        assert ready_payload["master_resume"]["filename"] == "resume.tex"
+        assert ready_payload["cover_letter_examples"][0]["filename"] == "cover.md"
     finally:
         server.shutdown()
         thread.join(timeout=5)

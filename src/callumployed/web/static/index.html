@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>callumployed</title>
-    <link rel="stylesheet" href="/assets/app.css" />
+    <link rel="stylesheet" href="/assets/app.css?v=20260718-6" />
   </head>
   <body>
     <main class="shell">
@@ -20,34 +20,42 @@
 
       <section class="stats-grid" id="stats" aria-label="Overall stats"></section>
 
-      <section class="materials-panel" aria-label="Application materials">
-        <div class="material-row">
-          <div class="material-status">
-            <p class="material-label">Resume</p>
-            <p class="material-meta" id="resume-meta">No resume uploaded</p>
+      <section class="materials-panel" id="materials-panel" aria-label="Application materials">
+        <button class="materials-toggle" id="materials-toggle" type="button" aria-expanded="true">
+          <span class="materials-chevron">v</span>
+          <span class="materials-title">Application materials</span>
+          <span class="materials-summary" id="materials-summary">Resume + cover letters</span>
+        </button>
+        <div class="materials-body" id="materials-body">
+          <div class="material-row">
+            <div class="material-status">
+              <p class="material-label">Resume</p>
+              <p class="material-meta" id="resume-meta">No resume uploaded</p>
+            </div>
+            <input class="sr-only" id="resume-upload" type="file" accept=".tex,text/x-tex" />
+            <button type="button" id="resume-upload-button">Upload</button>
           </div>
-          <input class="sr-only" id="resume-upload" type="file" accept=".tex,text/x-tex" />
-          <button type="button" id="resume-upload-button">Upload</button>
-        </div>
-        <div class="material-row">
-          <div class="material-status">
-            <p class="material-label">Cover letters</p>
-            <p class="material-meta" id="cover-letter-meta">No examples uploaded</p>
-            <ul class="examples-list" id="cover-letter-list"></ul>
+          <div class="material-row">
+            <div class="material-status">
+              <p class="material-label">Cover letters</p>
+              <p class="material-meta" id="cover-letter-meta">No examples uploaded</p>
+              <ul class="examples-list" id="cover-letter-list"></ul>
+            </div>
+            <input
+              class="sr-only"
+              id="cover-letter-upload"
+              type="file"
+              accept=".tex,.txt,.md,text/plain,text/markdown,text/x-tex"
+              multiple
+            />
+            <button type="button" id="cover-letter-upload-button">Upload</button>
           </div>
-          <input
-            class="sr-only"
-            id="cover-letter-upload"
-            type="file"
-            accept=".tex,.txt,.md,text/plain,text/markdown,text/x-tex"
-            multiple
-          />
-          <button type="button" id="cover-letter-upload-button">Upload</button>
         </div>
       </section>
 
       <section class="review-entry" aria-label="Discovered review">
         <button type="button" id="review-discovered">Review discovered</button>
+        <button type="button" id="scan-all-button">Scan roles</button>
       </section>
 
       <section class="status-toolbar" aria-label="Status navigation">
@@ -65,8 +73,7 @@
               <path d="m13.5 8.5-5 5"></path>
             </svg>
           </button>
-          <button type="button" id="expand-all">Expand</button>
-          <button type="button" id="collapse-all">Collapse all</button>
+          <button type="button" id="toggle-all">Expand all</button>
           <button type="button" id="collapse-empty">Show empty</button>
         </div>
       </section>
@@ -111,6 +118,12 @@
       </div>
     </section>
 
-    <script src="/assets/app.js" type="module"></script>
+    <aside class="scan-status-bar" id="scan-status-bar" aria-live="polite">
+      <span class="scan-status-dot" aria-hidden="true"></span>
+      <span id="scan-status-text">Scan idle</span>
+      <span class="scan-status-last" id="scan-last-time">Last scan: never</span>
+    </aside>
+
+    <script src="/assets/app.js?v=20260718-6" type="module"></script>
   </body>
 </html>
