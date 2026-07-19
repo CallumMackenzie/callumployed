@@ -10,7 +10,15 @@ from typer.testing import CliRunner
 
 from callumployed.cli import app
 from callumployed.data import db
-from callumployed.web.server import LocalThreadingHTTPServer, build_tracker_payload, create_handler
+from callumployed.data.models import Company
+from callumployed.data.repositories import add_company, create_scan_run
+from callumployed.web.server import (
+    LocalThreadingHTTPServer,
+    ScanCoordinator,
+    build_scan_status_payload,
+    build_tracker_payload,
+    create_handler,
+)
 
 runner = CliRunner()
 
@@ -114,6 +122,26 @@ def test_scan_all_endpoint_runs_in_background_and_reports_status(
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+def test_scan_status_reports_persisted_started_time_for_interrupted_scan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-interrupted-scan.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr("callumployed.web.server.SCAN_COORDINATOR", ScanCoordinator())
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        company = add_company(connection, Company(name="Acme"))
+        assert company.id is not None
+        scan_run = create_scan_run(connection, company.id)
+
+    payload = build_scan_status_payload()
+
+    assert payload["last_scan_at"] == scan_run.started_at.isoformat()
+    assert payload["latest_scan"]["started_at"] == scan_run.started_at.isoformat()
+    assert payload["latest_scan"]["finished_at"] is None
 
 
 def test_tracker_payload_groups_roles_by_status(

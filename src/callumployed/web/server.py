@@ -409,8 +409,14 @@ def build_scan_status_payload() -> dict[str, Any]:
     with db.connect() as connection:
         latest_scan_runs = list_scan_runs(connection, limit=1)
     latest_scan = latest_scan_runs[0] if latest_scan_runs else None
+    latest_started_at = latest_scan.started_at if latest_scan else None
     latest_finished_at = latest_scan.finished_at if latest_scan else None
-    last_scan_at = snapshot.finished_at or latest_finished_at
+    last_scan_at = _latest_datetime(
+        snapshot.started_at if snapshot.scanning else None,
+        snapshot.finished_at,
+        latest_finished_at,
+        latest_started_at,
+    )
     latest_scan_status = latest_scan.scan_status if latest_scan else None
     return {
         "scanning": snapshot.scanning,
@@ -427,6 +433,7 @@ def build_scan_status_payload() -> dict[str, Any]:
                 "company_id": latest_scan.company_id,
                 "company_name": latest_scan.company_name,
                 "scan_status": latest_scan_status.value if latest_scan_status else None,
+                "started_at": _datetime_or_none(latest_started_at),
                 "finished_at": _datetime_or_none(latest_finished_at),
             }
             if latest_scan
@@ -504,6 +511,19 @@ def _datetime_or_none(value: datetime | None) -> str | None:
     if value is None:
         return None
     return value.isoformat()
+
+
+def _latest_datetime(*values: datetime | None) -> datetime | None:
+    present_values = [value for value in values if value is not None]
+    if not present_values:
+        return None
+    return max(present_values, key=_datetime_sort_key)
+
+
+def _datetime_sort_key(value: datetime) -> float:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.timestamp()
 
 
 def run_server(host: str, port: int) -> None:
