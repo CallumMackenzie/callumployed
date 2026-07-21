@@ -542,6 +542,33 @@ def test_parse_job_location_normalizes_geograpy_places(
         parse_job_location("Hybrid; Hybrid; Hybrid; Hybrid; Hybrid; In-Office")
         == "Hybrid; In-office"
     )
+    jane_street_nav_location = (
+        "S STREET VIEW PUZZLES DEPARTMENTS OPEN ROLES PROGRAMS; "
+        "EVENTS INTERNSHIPS INTERVIEWING Join Jane Street Open roles"
+    )
+    jane_street_context = (
+        "Accept All Reject All Software Engineer Internship, May-August "
+        "LOCATION New York DEPARTMENT Technology TEAM Software Engineering Apply"
+    )
+    assert (
+        parse_job_location(jane_street_nav_location, context_text=jane_street_context)
+        == "New York"
+    )
+    hrt_nav_location = (
+        "s Diversity & Inclusion Contact WHAT WE DO Tech Blog Liquidity Client "
+        "Market Making Ventures Disclosures CAREERS Job Openings Work at HRT Life "
+        "at HRT Student Opportunities AI & Machine Learning Talent Community "
+        "NORTH AMERICA New York City Chicago Austin Boulder Boston Seattle Miami"
+    )
+    hrt_context = (
+        "SKIP NAVIGATION AND JUMP TO CONTENT WHO WE ARE TRADE WITH US TECH BLOG "
+        "JOIN OUR TEAM About This Role \ue01d Austin | Chicago | New York | "
+        "Singapore \ue600 C++ | Python } Intern \ue608 Job ID: 570 # View All Positions"
+    )
+    assert (
+        parse_job_location(hrt_nav_location, context_text=hrt_context)
+        == "Austin; Chicago; New York; Singapore"
+    )
 
 
 def test_assess_role_page_extracts_structured_country_object_location() -> None:
@@ -664,10 +691,44 @@ def test_extract_job_description_dedupes_inline_repeated_sections() -> None:
 
     assert description is not None
     assert description.count("Consider before submitting an application") == 1
-    assert "## What You'll Do" in description
-    assert "## What You'll Bring" in description
+    assert "What You'll Do Build tools" in description
+    assert "What You'll Bring Proficiency" in description
+    assert "## What You'll Do" not in description
     assert "Benefits" not in description
     assert "Equal Opportunity" not in description
+
+
+def test_extract_job_description_formats_real_heading_sections_only() -> None:
+    soup = BeautifulSoup(
+        """
+        <main>
+          <div class="job-description">
+            <p>You will take responsibilities seriously in production systems.</p>
+            <h2>Responsibilities</h2>
+            <p>Build reliable services.</p>
+            <p>The requirements vary by team and product area.</p>
+            <h2>Requirements</h2>
+            <ul>
+              <li>Write clear software.</li>
+            </ul>
+          </div>
+        </main>
+        """,
+        "lxml",
+    )
+
+    description = extract_job_description(soup)
+
+    assert description == "\n".join(
+        [
+            "You will take responsibilities seriously in production systems.",
+            "## Responsibilities",
+            "Build reliable services.",
+            "The requirements vary by team and product area.",
+            "## Requirements",
+            "Write clear software.",
+        ]
+    )
 
 
 def test_assess_role_page_cleans_tesla_style_description() -> None:

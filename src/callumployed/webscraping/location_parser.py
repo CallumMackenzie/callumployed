@@ -19,18 +19,31 @@ REMOTE_PATTERN = re.compile(r"\bremote(?:ly)?\b", re.I)
 HYBRID_PATTERN = re.compile(r"\bhybrid\b", re.I)
 IN_OFFICE_PATTERN = re.compile(r"\bin[- ]?office\b", re.I)
 MULTIPLE_PATTERN = re.compile(r"\b(?:multiple|various)\s+locations\b", re.I)
-SEPARATOR_PATTERN = re.compile(r"\s*(?:;|/|\bor\b|\band\b)\s*", re.I)
+SEPARATOR_PATTERN = re.compile(r"\s*(?:;|\||/|\bor\b|\band\b)\s*", re.I)
 TRAILING_NOISE_PATTERN = re.compile(
     r"\s+(?:"
-    r"apply|compensation|job\s+description|job\s+type|qualifications|req\.?\s*id|"
-    r"requirements|responsibilities|what\s+to\s+expect|what\s+you(?:'|’)ll\s+do"
+    r"apply|compensation|department|employment\s+type|job\s+description|job\s+type|"
+    r"qualifications|req\.?\s*id|requirements|responsibilities|team|"
+    r"what\s+to\s+expect|what\s+you(?:'|’)ll\s+do"
     r")\b.*$",
     re.I,
 )
 SEARCH_FILTER_NOISE_PATTERN = re.compile(
     r"\b(?:state\s*[-:]\s*select|help\s+us\s+improve\s+our\s+website|"
-    r"privacy\s*&\s*legal)\b",
+    r"privacy\s*&\s*legal|skip\s+navigation|street\s+view\s+puzzles|"
+    r"departments\s+open\s+roles\s+programs|who\s+we\s+are\s+trade\s+with\s+us|"
+    r"diversity\s*&\s+inclusion\s+contact|north\s+america\s+new\s+york\s+city)\b",
     re.I,
+)
+LOCATION_CONTEXT_PATTERNS = (
+    re.compile(
+        r"\blocation\s+(.{2,140}?)(?=\s+(?:department|team|apply|share\b|$))",
+        re.I,
+    ),
+    re.compile(
+        r"\babout\s+this\s+role\s+[\ue000-\uf8ff]?\s*(.{2,140}?)(?=\s*[\ue000-\uf8ff]|\s+job\s+id\b|\s+#\s*view\b)",
+        re.I,
+    ),
 )
 COUNTRY_ALIASES = {
     "br": "Brazil",
@@ -54,7 +67,6 @@ REGION_ALIASES = {
     "ca": "CA",
     "california": "CA",
     "ny": "NY",
-    "new york": "NY",
     "wa": "WA",
     "washington": "WA",
 }
@@ -154,6 +166,13 @@ def _clean_location_text(text: str | None) -> str | None:
 
 
 def _location_phrase_from_context(text: str) -> str | None:
+    for pattern in LOCATION_CONTEXT_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            candidate = _clean_location_text(match.group(1))
+            if candidate:
+                return candidate
+
     match = LOCATION_SENTENCE_PATTERN.search(text)
     if not match:
         return None
@@ -200,6 +219,9 @@ def _looks_like_location_fragment(text: str) -> bool:
 
 
 def _normalize_location_fragment(text: str) -> str:
+    segments = [segment for segment in SEPARATOR_PATTERN.split(text) if segment.strip(" -|:;,")]
+    if len(segments) > 1:
+        return _join_location_parts(_normalize_place_name(segment) for segment in segments) or ""
     parts = _comma_parts(text)
     if len(parts) <= 1:
         return _normalize_place_name(text)

@@ -1524,6 +1524,108 @@ def test_refilter_collected_roles_does_not_use_source_url_as_intern_evidence(
     assert attempts[0].assessment_is_role is False
 
 
+def test_refilter_collected_roles_treats_early_talent_source_as_intern_intent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Cloudflare"))
+        if company.id is None:
+            raise AssertionError("company id missing")
+        career_page = add_company_career_page(
+            connection,
+            CompanyCareerPage(
+                company_id=company.id,
+                url="https://www.cloudflare.com/careers/jobs/?department=Early+Talent",
+            ),
+        )
+        scan_run = create_scan_run(connection, company.id)
+        if scan_run.id is None:
+            raise AssertionError("scan run id missing")
+        scan_page = add_scan_page(
+            connection,
+            scan_run.id,
+            CareersPageScanResult(
+                source_url=career_page.url,
+                final_url=career_page.url,
+                candidates_scanned=1,
+                confidence=ExtractionConfidence.HIGH,
+            ),
+            company_career_page_id=career_page.id,
+        )
+        if scan_page.id is None:
+            raise AssertionError("scan page id missing")
+        candidates = add_scan_candidates(
+            connection,
+            scan_page.id,
+            [
+                ScoredLinkCandidate(
+                    url=(
+                        "https://www.cloudflare.com/careers/jobs/"
+                        "distributed-systems-engineer/"
+                    ),
+                    source_url=career_page.url,
+                    text="Distributed Systems Engineer",
+                    confidence=0.9,
+                )
+            ],
+            CareersPageScanResult(source_url=career_page.url, final_url=career_page.url),
+        )
+        role = add_role(
+            connection,
+            Role(
+                company_id=company.id,
+                title="Distributed Systems Engineer",
+                role_url=(
+                    "https://www.cloudflare.com/careers/jobs/"
+                    "distributed-systems-engineer/"
+                ),
+            ),
+        )
+        if role.id is None:
+            raise AssertionError("role id missing")
+        add_role_discovery_attempt(
+            connection,
+            RoleDiscoveryAttempt(
+                scan_run_id=scan_run.id,
+                scan_candidate_id=candidates[0].id or 0,
+                company_id=company.id,
+                role_id=role.id,
+                url=role.role_url,
+                final_url=role.role_url,
+                title=role.title,
+                assessment_is_role=True,
+                assessment_confidence=0.95,
+                assessment_description="Build distributed systems.",
+                assessment_extraction_method="jobposting_structured_data",
+                assessment_reasons=["schema.org JobPosting structured data"],
+            ),
+        )
+
+    dry_run = scan_workflow.refilter_collected_roles(scan_run_id=scan_run.id)
+
+    assert dry_run["changed_attempts"] == 1
+    assert dry_run["attempts"][0]["action"] == "archive_role"
+    assert dry_run["attempts"][0]["reason"] == (
+        "intern keyword requirement filtered by source config"
+    )
+
+    applied = scan_workflow.refilter_collected_roles(scan_run_id=scan_run.id, apply=True)
+
+    assert applied["roles_archived"] == 1
+    with db.connect() as connection:
+        archived = get_role(connection, role.id)
+        attempts = list_role_discovery_attempts(connection, scan_run_id=scan_run.id)
+
+    assert archived.role_status is RoleStatus.ARCHIVED
+    assert attempts[0].assessment_is_role is False
+    assert attempts[0].assessment_rejection_reason == (
+        "intern keyword requirement filtered by source config"
+    )
+
+
 def test_refilter_collected_roles_refreshes_stored_location_and_description(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1613,6 +1715,110 @@ def test_refilter_collected_roles_refreshes_stored_location_and_description(
     assert refreshed_role.description == "Come build software."
     assert attempts[0].assessment_location == "Brazil"
     assert attempts[0].assessment_description == "Come build software."
+
+
+def test_refilter_collected_roles_recovers_location_from_stored_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+
+    bad_location = (
+        "S STREET VIEW PUZZLES DEPARTMENTS OPEN ROLES PROGRAMS; "
+        "EVENTS INTERNSHIPS INTERVIEWING Join Jane Street Open roles"
+    )
+    stored_context = (
+        "Accept All Reject All Software Engineer Internship, May-August "
+        "LOCATION New York DEPARTMENT Technology TEAM Software Engineering Apply"
+    )
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Jane Street"))
+        if company.id is None:
+            raise AssertionError("company id missing")
+        career_page = add_company_career_page(
+            connection,
+            CompanyCareerPage(
+                company_id=company.id,
+                url="https://www.janestreet.com/join-jane-street/open-roles/?type=internship",
+            ),
+        )
+        scan_run = create_scan_run(connection, company.id)
+        if scan_run.id is None:
+            raise AssertionError("scan run id missing")
+        scan_page = add_scan_page(
+            connection,
+            scan_run.id,
+            CareersPageScanResult(
+                source_url=career_page.url,
+                final_url=career_page.url,
+                candidates_scanned=1,
+                confidence=ExtractionConfidence.HIGH,
+            ),
+            company_career_page_id=career_page.id,
+        )
+        if scan_page.id is None:
+            raise AssertionError("scan page id missing")
+        candidates = add_scan_candidates(
+            connection,
+            scan_page.id,
+            [
+                ScoredLinkCandidate(
+                    url="https://www.janestreet.com/join-jane-street/position/8599644002/",
+                    source_url=career_page.url,
+                    text="Software Engineer Internship",
+                    confidence=0.9,
+                )
+            ],
+            CareersPageScanResult(source_url=career_page.url, final_url=career_page.url),
+        )
+        role = add_role(
+            connection,
+            Role(
+                company_id=company.id,
+                title="Software Engineer Internship",
+                role_url=(
+                    "https://www.janestreet.com/join-jane-street/"
+                    "position/8599644002/"
+                ),
+                location=bad_location,
+            ),
+        )
+        if role.id is None:
+            raise AssertionError("role id missing")
+        add_role_discovery_attempt(
+            connection,
+            RoleDiscoveryAttempt(
+                scan_run_id=scan_run.id,
+                scan_candidate_id=candidates[0].id or 0,
+                company_id=company.id,
+                role_id=role.id,
+                url=role.role_url,
+                final_url=role.role_url,
+                title=role.title,
+                assessment_is_role=True,
+                assessment_confidence=0.95,
+                assessment_location=bad_location,
+                assessment_description="Build software.",
+                assessment_extraction_method="html_heuristic",
+                assessment_reasons=["job-like page title"],
+                visible_text_excerpt=stored_context,
+            ),
+        )
+
+    dry_run = scan_workflow.refilter_collected_roles(scan_run_id=scan_run.id)
+
+    assert dry_run["changed_attempts"] == 1
+    assert dry_run["attempts"][0]["action"] == "refresh_fields"
+
+    applied = scan_workflow.refilter_collected_roles(scan_run_id=scan_run.id, apply=True)
+
+    assert applied["changed_attempts"] == 1
+    with db.connect() as connection:
+        refreshed_role = get_role(connection, role.id)
+        attempts = list_role_discovery_attempts(connection, scan_run_id=scan_run.id)
+    assert refreshed_role.location == "New York"
+    assert attempts[0].assessment_location == "New York"
 
 
 def test_scan_company_can_allow_non_software_keyword_roles_when_configured(

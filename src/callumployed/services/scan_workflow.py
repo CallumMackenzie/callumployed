@@ -100,7 +100,7 @@ SOFTWARE_KEYWORD_PATTERN = re.compile(
 )
 INTERN_INTENT_PATTERN = re.compile(
     r"\b(?:interns?|internships?|co[- ]?ops?|student|students|university|campus|"
-    r"new grad|new graduate)\b",
+    r"new grad|new graduate|early(?:[+\s_-]|%20)+talent)\b",
     re.I,
 )
 
@@ -718,8 +718,15 @@ def _assessment_from_stored_attempt(attempt: RoleDiscoveryAttempt) -> RolePageAs
     base_is_role = attempt.assessment_is_role is True or (
         attempt.assessment_rejection_reason in FILTER_REJECTION_REASONS
     )
-    location = _normalize_stored_location(attempt.assessment_location)
     description = clean_job_description(attempt.assessment_description)
+    location = _normalize_stored_location(
+        attempt.assessment_location,
+        context_text=" ".join(
+            part
+            for part in (attempt.visible_text_excerpt, description)
+            if part
+        ),
+    )
     return RolePageAssessment(
         is_role=base_is_role,
         is_closed=attempt.assessment_is_closed is True,
@@ -734,8 +741,14 @@ def _assessment_from_stored_attempt(attempt: RoleDiscoveryAttempt) -> RolePageAs
     )
 
 
-def _normalize_stored_location(location: str | None) -> str | None:
-    return parse_job_location(location) or location
+def _normalize_stored_location(
+    location: str | None,
+    *,
+    context_text: str | None = None,
+) -> str | None:
+    if location is None:
+        return None
+    return parse_job_location(location, context_text=context_text) or location
 
 
 def _base_assessment_reasons(reasons: list[str]) -> list[str]:

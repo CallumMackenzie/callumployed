@@ -66,6 +66,7 @@ NAV_NOISE_PATTERN = re.compile(
     re.I,
 )
 WHITESPACE_PATTERN = re.compile(r"[ \t\r\f\v]+")
+HEADING_MARKER = "__CALLUMPLOYED_HEADING__ "
 
 
 def extract_job_description(
@@ -108,12 +109,17 @@ def _text_from_element(element: Tag) -> str:
     for removable in element.select("script, style, noscript, svg, nav, footer, header"):
         removable.decompose()
     blocks: list[str] = []
-    for child in element.find_all(["h2", "h3", "h4", "p", "li", "div"], recursive=True):
-        if child.name == "div" and child.find(["h2", "h3", "h4", "p", "li"]):
+    heading_tags = {"h2", "h3", "h4", "h5", "h6"}
+    content_tags = [*heading_tags, "p", "li", "div"]
+    for child in element.find_all(content_tags, recursive=True):
+        if child.name == "div" and child.find(content_tags):
             continue
         text = child.get_text(" ", strip=True)
         if text:
-            blocks.append(text)
+            if child.name in heading_tags:
+                blocks.append(f"{HEADING_MARKER}{text}")
+            else:
+                blocks.append(text)
     if not blocks:
         return element.get_text("\n", strip=True)
     return "\n".join(blocks)
@@ -123,8 +129,8 @@ def _clean_description_text(text: str | None) -> str | None:
     if not text:
         return None
     soup = BeautifulSoup(text, "lxml")
-    plain_text = soup.get_text("\n", strip=True) if soup.find() else text
-    plain_text = _insert_section_breaks(plain_text.replace("\xa0", " "))
+    plain_text = _text_from_element(soup) if soup.find() else text
+    plain_text = plain_text.replace("\xa0", " ")
     lines = [_normalize_line(line) for line in re.split(r"[\n•]+", plain_text)]
     lines = [line for line in lines if line]
     lines = _split_oversized_lines(lines)
@@ -138,33 +144,18 @@ def _clean_description_text(text: str | None) -> str | None:
 
 
 def _normalize_line(line: str) -> str:
-    normalized = WHITESPACE_PATTERN.sub(" ", line).strip(" -|•·")
+    is_heading = line.startswith(HEADING_MARKER)
+    content = line[len(HEADING_MARKER) :] if is_heading else line
+    normalized = WHITESPACE_PATTERN.sub(" ", content).strip(" -|•·")
     normalized = re.sub(
         r"^(?:single\s+position|multiple\s+locations?)\s+",
         "",
         normalized,
         flags=re.I,
     )
+    if is_heading and normalized:
+        return f"{HEADING_MARKER}{normalized}"
     return normalized
-
-
-def _insert_section_breaks(text: str) -> str:
-    headings = [*CORE_SECTION_HEADINGS, *STOP_SECTION_HEADINGS, "benefits as a"]
-    result = text
-    for heading in sorted(headings, key=len, reverse=True):
-        result = re.sub(
-            rf"(?<!^)(?<!\n)\b({re.escape(heading)})\b",
-            r"\n\1",
-            result,
-            flags=re.I,
-        )
-        result = re.sub(
-            rf"\b({re.escape(heading)})\s+(?=[A-Z])",
-            r"\1\n",
-            result,
-            flags=re.I,
-        )
-    return result
 
 
 def _split_oversized_lines(lines: list[str]) -> list[str]:
@@ -219,6 +210,8 @@ def _description_start_index(lines: list[str]) -> int:
 
 
 def _is_core_heading(line: str) -> bool:
+    if not _has_heading_structure(line):
+        return False
     normalized = _heading_key(line)
     return any(
         normalized == heading or normalized.startswith(f"{heading}:")
@@ -228,11 +221,15 @@ def _is_core_heading(line: str) -> bool:
 
 def _format_markdown_heading(line: str) -> str:
     if _is_core_heading(line):
-        return f"## {line.strip(': ')}"
+        return f"## {_strip_heading_structure(line).strip(': ')}"
+    if _has_heading_structure(line):
+        return _strip_heading_structure(line)
     return line
 
 
 def _is_stop_heading(line: str) -> bool:
+    if not _has_heading_structure(line):
+        return False
     normalized = _heading_key(line)
     if normalized == "apply":
         return True
@@ -243,7 +240,18 @@ def _is_stop_heading(line: str) -> bool:
 
 
 def _heading_key(line: str) -> str:
+    line = _strip_heading_structure(line)
     return re.sub(r"\s+", " ", line).strip(": ").lower()
+
+
+def _has_heading_structure(line: str) -> bool:
+    return line.startswith(HEADING_MARKER) or line.lstrip().startswith("##")
+
+
+def _strip_heading_structure(line: str) -> str:
+    if line.startswith(HEADING_MARKER):
+        return line[len(HEADING_MARKER) :]
+    return re.sub(r"^#{1,6}\s*", "", line.strip())
 
 
 def _is_metadata_line(line: str) -> bool:
@@ -296,9 +304,9 @@ def _best_description(candidates: Iterable[str]) -> str | None:
 
 
 def _description_score(text: str) -> int:
-    lower = text.lower()
+    lines = text.splitlines()
     score = min(len(text), 4000)
-    score += 500 * sum(1 for heading in CORE_SECTION_HEADINGS if heading in lower)
-    score -= 400 * sum(1 for heading in STOP_SECTION_HEADINGS if heading in lower)
+    score += 500 * sum(1 for line in lines if _is_core_heading(line))
+    score -= 400 * sum(1 for line in lines if _is_stop_heading(line))
     score -= 800 * len(NOISE_PATTERN.findall(text))
     return score
