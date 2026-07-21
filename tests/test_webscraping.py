@@ -537,6 +537,38 @@ def test_parse_job_location_normalizes_geograpy_places(
         )
         is None
     )
+    assert parse_job_location("{'@type': 'Country', 'name': 'BR'}") == "Brazil"
+    assert (
+        parse_job_location("Hybrid; Hybrid; Hybrid; Hybrid; Hybrid; In-Office")
+        == "Hybrid; In-office"
+    )
+
+
+def test_assess_role_page_extracts_structured_country_object_location() -> None:
+    page = RenderedPageState(
+        url="https://apply.careers.microsoft.com/careers/job/1",
+        final_url="https://apply.careers.microsoft.com/careers/job/1",
+        title="Software Engineering INTERN",
+        html="""
+        <script type="application/ld+json">
+        {
+          "@context": "https://schema.org",
+          "@type": "JobPosting",
+          "title": "Software Engineering INTERN",
+          "description": "Single Position Come build software.",
+          "jobLocation": {
+            "@type": "Country",
+            "name": "BR"
+          }
+        }
+        </script>
+        """,
+    )
+
+    assessment = assess_role_page(page)
+
+    assert assessment.location == "Brazil"
+    assert assessment.description == "Come build software."
 
 
 def test_assess_role_page_extracts_location_from_job_text(
@@ -759,6 +791,66 @@ def test_assess_role_page_prefers_selected_link_title_hint_over_generic_h1() -> 
     assert assessment.title == "Backend Platform Intern"
     assert assessment.posting_id == "12345"
     assert "title: selected link text" in assessment.reasons
+
+
+def test_assess_role_page_cleans_job_card_title_hint_suffixes() -> None:
+    page = RenderedPageState(
+        url="https://www.jumptrading.com/hr/job?gh_jid=8002989",
+        final_url="https://www.jumptrading.com/hr/job?gh_jid=8002989",
+        title="job",
+        html="""
+        <section>Job description. Responsibilities. Requirements. Apply now.</section>
+        """,
+    )
+
+    assessment = assess_role_page(
+        page,
+        title_hints=("Campus Software Engineer (Intern) Chicago Apply",),
+    )
+
+    assert assessment.is_role is True
+    assert assessment.title == "Campus Software Engineer (Intern)"
+
+
+def test_assess_role_page_cleans_greenhouse_listing_card_title_hint() -> None:
+    page = RenderedPageState(
+        url="https://boards.greenhouse.io/cloudflare/jobs/8066589?gh_jid=8066589",
+        final_url="https://job-boards.greenhouse.io/cloudflare/jobs/8066589?gh_jid=8066589",
+        title="Job Application for Distributed Systems Engineer at Cloudflare",
+        html="""
+        <section>Job description. Responsibilities. Requirements. Apply now.</section>
+        """,
+    )
+
+    assessment = assess_role_page(
+        page,
+        title_hints=(
+            "Distributed Systems Engineer Engineering - Bengaluru, India "
+            "Posted Jul 16, 2026 View role",
+        ),
+    )
+
+    assert assessment.is_role is True
+    assert assessment.title == "Distributed Systems Engineer"
+
+
+def test_assess_role_page_cleans_jane_street_listing_card_title_hint() -> None:
+    page = RenderedPageState(
+        url="https://www.janestreet.com/join-jane-street/position/8599644002/",
+        final_url="https://www.janestreet.com/join-jane-street/position/8599644002/",
+        title="Software Engineer, New York :: Jane Street",
+        html="""
+        <section>Job description. Responsibilities. Requirements. Apply now.</section>
+        """,
+    )
+
+    assessment = assess_role_page(
+        page,
+        title_hints=("Software Engineer Internship New York Technology May-August",),
+    )
+
+    assert assessment.is_role is True
+    assert assessment.title == "Software Engineer Internship"
 
 
 def test_assess_role_page_rejects_generic_careers_listing() -> None:

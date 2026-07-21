@@ -139,6 +139,12 @@ def _clean_description_text(text: str | None) -> str | None:
 
 def _normalize_line(line: str) -> str:
     normalized = WHITESPACE_PATTERN.sub(" ", line).strip(" -|•·")
+    normalized = re.sub(
+        r"^(?:single\s+position|multiple\s+locations?)\s+",
+        "",
+        normalized,
+        flags=re.I,
+    )
     return normalized
 
 

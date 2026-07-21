@@ -64,8 +64,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-status-bar"' in markup
         assert 'id="scan-status-text"' in markup
         assert markup.index('id="scan-summary"') < markup.index('id="scan-status-text"')
-        assert "/assets/app.css?v=20260718-7" in markup
-        assert "/assets/app.js?v=20260718-7" in markup
+        assert "/assets/app.css?v=20260721-1" in markup
+        assert "/assets/app.js?v=20260721-1" in markup
     finally:
         server.shutdown()
         thread.join(timeout=5)

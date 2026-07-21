@@ -1023,6 +1023,7 @@ a:hover .role-link-icon {
 .job-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
   margin: 0 0 12px;
 }
@@ -1032,18 +1033,18 @@ a:hover .role-link-icon {
 }
 
 .job-actions-nowrap .job-action {
-  flex: 1 1 0;
+  flex: 0 1 auto;
   min-width: 0;
   white-space: nowrap;
 }
 
 .job-action {
-  min-width: 7.5rem;
-  padding: 8px 10px;
+  min-width: 0;
+  padding: 6px 9px;
   border-color: color-mix(in srgb, var(--bucket-line) 80%, white);
   background: linear-gradient(135deg, color-mix(in srgb, var(--bucket-bg) 82%, white), white);
   color: var(--bucket);
-  font-size: 0.86rem;
+  font-size: 0.8rem;
   font-weight: 900;
 }
 
@@ -1592,6 +1593,14 @@ a:hover .role-link-icon {
 
   .job-actions-nowrap {
     flex-wrap: wrap;
+  }
+
+  .job-actions {
+    justify-content: center;
+  }
+
+  .job-action {
+    flex: 0 1 auto;
   }
 
   .review-shell {

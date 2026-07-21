@@ -32,6 +32,7 @@ const toggleAllButton = document.querySelector("#toggle-all");
 const collapseEmptyButton = document.querySelector("#collapse-empty");
 
 const REVIEW_LATER_RECOMMENDATION_THRESHOLD = 3;
+const APPLICATION_STATUSES = new Set(["applied", "OA", "interview", "rejected", "offer"]);
 
 let hideEmpty = true;
 let trackerData = null;
@@ -216,42 +217,7 @@ function renderTabs(statuses) {
 function renderStatuses(statuses) {
   statusListEl.innerHTML = statuses
     .map((status) => {
-      const jobs = status.jobs
-        .map(
-          (job) => `
-            <details class="job">
-              <summary class="job-summary">
-                <span class="job-chevron">></span>
-                <span class="job-identity">
-                  <span class="job-company">[${escapeHtml(job.company_name)}]</span>
-                  ${renderRoleTitle(job.title, job.role_url, "job-title")}
-                </span>
-              </summary>
-              <div class="job-detail">
-                ${status.key === "discovered" ? renderDiscoveredActions(job) : ""}
-                ${status.key === "interested" ? renderInterestedActions(job) : ""}
-                ${status.key === "applied" ? renderAppliedActions(job) : ""}
-                ${status.key === "OA" ? renderOaActions(job) : ""}
-                ${status.key === "interview" ? renderInterviewActions(job) : ""}
-                <dl>
-                  ${
-                    job.location
-                      ? `<div>
-                          <dt>Location</dt>
-                          <dd>${escapeHtml(job.location)}</dd>
-                        </div>`
-                      : ""
-                  }
-                  <div>
-                    <dt>Updated</dt>
-                    <dd>${formatDate(job.updated_at)}</dd>
-                  </div>
-                </dl>
-              </div>
-            </details>
-          `,
-        )
-        .join("");
+      const jobs = status.jobs.map((job) => renderJob(job, status.key)).join("");
 
       return `
         <section class="status-pane ${status.count === 0 ? "empty" : ""} ${hideEmpty ? "hidden-empty" : ""}" id="status-${escapeHtml(status.key)}" data-bucket="${escapeHtml(status.key)}">
@@ -267,6 +233,41 @@ function renderStatuses(statuses) {
       `;
     })
     .join("");
+}
+
+function renderJob(job, statusKey) {
+  return `
+    <details class="job" data-role-id="${escapeHtml(job.id)}">
+      <summary class="job-summary">
+        <span class="job-chevron">></span>
+        <span class="job-identity">
+          <span class="job-company">[${escapeHtml(job.company_name)}]</span>
+          ${renderRoleTitle(job.title, job.role_url, "job-title")}
+        </span>
+      </summary>
+      <div class="job-detail">
+        ${statusKey === "discovered" ? renderDiscoveredActions(job) : ""}
+        ${statusKey === "interested" ? renderInterestedActions(job) : ""}
+        ${statusKey === "applied" ? renderAppliedActions(job) : ""}
+        ${statusKey === "OA" ? renderOaActions(job) : ""}
+        ${statusKey === "interview" ? renderInterviewActions(job) : ""}
+        <dl>
+          ${
+            job.location
+              ? `<div>
+                  <dt>Location</dt>
+                  <dd>${escapeHtml(job.location)}</dd>
+                </div>`
+              : ""
+          }
+          <div>
+            <dt>Updated</dt>
+            <dd>${formatDate(job.updated_at)}</dd>
+          </div>
+        </dl>
+      </div>
+    </details>
+  `;
 }
 
 function renderDiscoveredActions(job) {
@@ -574,6 +575,7 @@ async function updateRoleStatus(button) {
   if (!roleId || !status) return;
 
   const actions = button.closest(".job-actions");
+  const currentJobEl = button.closest(".job");
   actions.querySelectorAll("button").forEach((item) => {
     item.disabled = true;
   });
@@ -586,7 +588,8 @@ async function updateRoleStatus(button) {
       body: JSON.stringify({ status }),
     });
     if (!response.ok) throw new Error("Status update failed");
-    await loadTracker(getActiveSearchQuery());
+    const payload = await response.json();
+    applyRoleStatusUpdate(payload.role, currentJobEl);
   } catch {
     actions.querySelectorAll("button").forEach((item) => {
       item.disabled = false;
@@ -595,6 +598,111 @@ async function updateRoleStatus(button) {
       status === "disinterested"
         ? "Disinterested"
         : status.charAt(0).toUpperCase() + status.slice(1);
+  }
+}
+
+function applyRoleStatusUpdate(updatedRole, currentJobEl) {
+  if (!updatedRole || !trackerData) return;
+  const previousStatus = currentJobEl?.closest(".status-pane")?.dataset.bucket ?? updatedRole.role_status;
+  const nextStatus = updatedRole.role_status;
+  const movedRole = moveRoleInTrackerData(updatedRole, previousStatus, nextStatus);
+  updateStatusCounts(previousStatus, nextStatus);
+  updateApplicationStats(previousStatus, nextStatus);
+  updateReviewButton(trackerData.statuses);
+  moveRoleElement(currentJobEl, movedRole, previousStatus, nextStatus);
+  updateToggleAllButton();
+}
+
+function moveRoleInTrackerData(updatedRole, previousStatus, nextStatus) {
+  let movedRole = updatedRole;
+  trackerData.statuses.forEach((status) => {
+    const index = status.jobs.findIndex((job) => String(job.id) === String(updatedRole.id));
+    if (index === -1) return;
+    movedRole = { ...status.jobs[index], ...updatedRole };
+    status.jobs.splice(index, 1);
+    status.count = status.jobs.length;
+  });
+
+  const nextBucket = trackerData.statuses.find((status) => status.key === nextStatus);
+  if (nextBucket) {
+    nextBucket.jobs.unshift(movedRole);
+    nextBucket.count = nextBucket.jobs.length;
+  }
+
+  return movedRole;
+}
+
+function updateStatusCounts(previousStatus, nextStatus) {
+  trackerData.statuses.forEach((status) => {
+    const pane = document.querySelector(`#status-${CSS.escape(status.key)}`);
+    pane?.classList.toggle("empty", status.count === 0);
+    const paneCount = pane?.querySelector(".count");
+    if (paneCount) paneCount.textContent = status.count;
+
+    const tabCount = statusTabsEl.querySelector(`[data-bucket="${CSS.escape(status.key)}"] strong`);
+    if (tabCount) tabCount.textContent = status.count;
+  });
+
+  [previousStatus, nextStatus].forEach((status) => {
+    const pane = document.querySelector(`#status-${CSS.escape(status)}`);
+    refreshEmptyMessage(pane);
+  });
+}
+
+function updateApplicationStats(previousStatus, nextStatus) {
+  if (!trackerData.stats) return;
+  const wasApplication = APPLICATION_STATUSES.has(previousStatus);
+  const isApplication = APPLICATION_STATUSES.has(nextStatus);
+  if (wasApplication === isApplication) {
+    renderStats(trackerData.stats);
+    return;
+  }
+
+  trackerData.stats.applications_total =
+    Number(trackerData.stats.applications_total ?? 0) + (isApplication ? 1 : -1);
+  renderStats(trackerData.stats);
+}
+
+function moveRoleElement(currentJobEl, movedRole, previousStatus, nextStatus) {
+  const nextPane = document.querySelector(`#status-${CSS.escape(nextStatus)}`);
+  const nextBody = nextPane?.querySelector(".pane-body");
+  if (!currentJobEl || !nextPane || !nextBody) return;
+
+  currentJobEl.remove();
+  refreshEmptyMessage(document.querySelector(`#status-${CSS.escape(previousStatus)}`));
+
+  nextBody.hidden = false;
+  const nextToggle = nextPane.querySelector(".pane-toggle");
+  nextToggle?.setAttribute("aria-expanded", "true");
+  const chevron = nextToggle?.querySelector(".chevron");
+  if (chevron) chevron.textContent = "v";
+
+  let jobsEl = nextBody.querySelector(".jobs");
+  if (!jobsEl) {
+    nextBody.innerHTML = '<div class="jobs"></div>';
+    jobsEl = nextBody.querySelector(".jobs");
+  }
+  jobsEl.insertAdjacentHTML("afterbegin", renderJob(movedRole, nextStatus));
+  refreshEmptyMessage(nextPane);
+}
+
+function refreshEmptyMessage(pane) {
+  if (!pane) return;
+  const body = pane.querySelector(".pane-body");
+  if (!body) return;
+
+  const jobsEl = body.querySelector(".jobs");
+  const hasJobs = Boolean(jobsEl?.querySelector(".job"));
+  const emptyCopy = body.querySelector(".empty-copy");
+
+  if (hasJobs) {
+    emptyCopy?.remove();
+    return;
+  }
+
+  jobsEl?.remove();
+  if (!emptyCopy) {
+    body.insertAdjacentHTML("beforeend", '<p class="empty-copy">No jobs in this status.</p>');
   }
 }
 
@@ -771,10 +879,11 @@ async function handleReviewAction(action) {
   });
 
   try {
-    await updateRoleStatusById(current.id, action);
+    const updatedRole = await updateRoleStatusById(current.id, action);
     reviewQueue.shift();
     renderReviewRole(action === "interested" ? "Marked interested." : "Marked disinterested.");
-    await loadTracker(getActiveSearchQuery());
+    const currentJobEl = document.querySelector(`.job[data-role-id="${CSS.escape(String(current.id))}"]`);
+    applyRoleStatusUpdate(updatedRole, currentJobEl);
   } catch {
     buttons.forEach((button) => {
       button.disabled = false;
@@ -797,6 +906,8 @@ async function updateRoleStatusById(roleId, status) {
     body: JSON.stringify({ status }),
   });
   if (!response.ok) throw new Error("Status update failed");
+  const payload = await response.json();
+  return payload.role;
 }
 
 reviewDiscoveredButton.addEventListener("click", openReviewView);

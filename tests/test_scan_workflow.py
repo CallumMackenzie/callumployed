@@ -9,13 +9,19 @@ from callumployed.data.models import (
     Company,
     CompanyCareerPage,
     Role,
+    RoleDiscoveryAttempt,
     RoleDiscoveryStatus,
     RoleStatus,
+    ScanCandidate,
 )
 from callumployed.data.repositories import (
     add_company,
     add_company_career_page,
     add_role,
+    add_role_discovery_attempt,
+    add_scan_candidates,
+    add_scan_page,
+    create_scan_run,
     get_role,
     list_role_discovery_attempts,
     list_roles,
@@ -27,7 +33,14 @@ from callumployed.data.repositories import (
 )
 from callumployed.services import scan_workflow
 from callumployed.webscraping.errors import NavigationError
-from callumployed.webscraping.models import RenderedPageState
+from callumployed.webscraping.models import (
+    CareersPageScanResult,
+    DiscoveredJobLink,
+    ExtractionConfidence,
+    RenderedPageState,
+    RolePageAssessment,
+    ScoredLinkCandidate,
+)
 from callumployed.webscraping.profile_manager import BrowserProfileManager
 
 
@@ -1109,6 +1122,497 @@ def test_scan_company_requires_software_keywords_by_default(
         "Backend Engineering Internships",
         "Security Engineering Internships",
     }
+
+
+def test_scan_company_requires_intern_keywords_for_intern_source_url(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+
+    source_url = (
+        "https://apply.careers.microsoft.com/careers"
+        "?filter_profession=software+engineering&filter_seniority=Intern"
+    )
+
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+        **_render_options: object,
+    ) -> RenderedPageState:
+        if url == source_url:
+            return RenderedPageState(
+                url=url,
+                final_url=url,
+                title="Microsoft Careers",
+                html="""
+                <a href="/careers/job/software-engineering-intern-1">
+                  Software Engineering Intern
+                </a>
+                <a href="/careers/job/senior-data-center-technician-2">
+                  Senior Data Center Technician - Evening
+                </a>
+                """,
+            )
+        title = (
+            "Software Engineering Intern"
+            if "software-engineering-intern" in url
+            else "Senior Data Center Technician - Evening"
+        )
+        return RenderedPageState(
+            url=url,
+            final_url=url,
+            title=title,
+            html=f"""
+            <script type="application/ld+json">
+            {{
+              "@context": "https://schema.org",
+              "@type": "JobPosting",
+              "title": "{title}",
+              "description": "{title}."
+            }}
+            </script>
+            """,
+            visible_text=f"{title}.",
+        )
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Microsoft"))
+        if company.id is None:
+            raise AssertionError("company id missing")
+        add_company_career_page(
+            connection,
+            CompanyCareerPage(company_id=company.id, url=source_url),
+        )
+
+    scan = asyncio.run(
+        scan_workflow.scan_company(
+            company,
+            chat_model_factory=lambda _settings: EmptyStructuredModel(),
+        )
+    )
+
+    assert scan is not None
+    assert {link.text for link in scan["results"][0].links} == {
+        "Software Engineering Intern"
+    }
+    with db.connect() as connection:
+        roles = list_roles(connection)
+
+    assert {role.title for role in roles} == {"Software Engineering Intern"}
+
+
+def test_scan_company_allows_intern_source_role_when_listing_text_is_intern(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+
+    source_url = "https://example.com/careers?filter_seniority=Intern"
+
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+        **_render_options: object,
+    ) -> RenderedPageState:
+        if url == source_url:
+            return RenderedPageState(
+                url=url,
+                final_url=url,
+                title="Careers",
+                html="""
+                <a href="/jobs/software-engineering-intern-12345">
+                  Software Engineering Intern
+                </a>
+                """,
+            )
+        return RenderedPageState(
+            url=url,
+            final_url=url,
+            title="Software Engineer",
+            html="""
+            <script type="application/ld+json">
+            {
+              "@context": "https://schema.org",
+              "@type": "JobPosting",
+              "title": "Software Engineer",
+              "description": "Software engineering internship."
+            }
+            </script>
+            """,
+            visible_text="Software engineering internship.",
+        )
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Acme"))
+        if company.id is None:
+            raise AssertionError("company id missing")
+        add_company_career_page(
+            connection,
+            CompanyCareerPage(company_id=company.id, url=source_url),
+        )
+
+    scan = asyncio.run(
+        scan_workflow.scan_company(
+            company,
+            chat_model_factory=lambda _settings: EmptyStructuredModel(),
+        )
+    )
+
+    assert scan is not None
+    with db.connect() as connection:
+        roles = list_roles(connection)
+        attempts = list_role_discovery_attempts(connection)
+
+    assert {role.title for role in roles} == {"Software Engineer"}
+    assert len(attempts) == 1
+    assert attempts[0].title == "Software Engineer"
+    assert attempts[0].assessment_rejection_reason is None
+    assert "intern keyword evidence: selected link text" in attempts[0].assessment_reasons
+
+
+def test_intern_keyword_evidence_uses_role_url_not_source_url() -> None:
+    assessment = RolePageAssessment(
+        is_role=True,
+        confidence=0.95,
+        title="Software Engineer",
+        extraction_method="jobposting_structured_data",
+    )
+    candidate = ScanCandidate(
+        id=1,
+        scan_page_id=1,
+        url="https://example.com/jobs/software-engineering-intern-12345",
+        source_url="https://example.com/careers?filter_seniority=Intern",
+        text="Software Engineer",
+        confidence=0.9,
+        selected=True,
+    )
+    page = RenderedPageState(
+        url=candidate.url,
+        final_url=candidate.url,
+        title="Software Engineer",
+        html="",
+    )
+
+    assert (
+        scan_workflow._intern_keyword_evidence_source(assessment, candidate, page)
+        == "role URL"
+    )
+
+    candidate_without_role_evidence = candidate.model_copy(
+        update={"url": "https://example.com/jobs/software-engineer-12345"}
+    )
+    page_without_role_evidence = page.model_copy(
+        update={
+            "url": candidate_without_role_evidence.url,
+            "final_url": candidate_without_role_evidence.url,
+        }
+    )
+
+    assert (
+        scan_workflow._intern_keyword_evidence_source(
+            assessment,
+            candidate_without_role_evidence,
+            page_without_role_evidence,
+        )
+        is None
+    )
+
+
+def test_refilter_collected_roles_creates_role_from_selected_link_intern_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Acme"))
+        if company.id is None:
+            raise AssertionError("company id missing")
+        career_page = add_company_career_page(
+            connection,
+            CompanyCareerPage(
+                company_id=company.id,
+                url="https://example.com/careers?filter=intern",
+            ),
+        )
+        scan_run = create_scan_run(connection, company.id)
+        if scan_run.id is None:
+            raise AssertionError("scan run id missing")
+        scan_page = add_scan_page(
+            connection,
+            scan_run.id,
+            CareersPageScanResult(
+                source_url=career_page.url,
+                final_url=career_page.url,
+                candidates=[
+                    ScoredLinkCandidate(
+                        url="https://example.com/jobs/software-engineer",
+                        source_url=career_page.url,
+                        text="Software Engineering Intern",
+                        confidence=0.9,
+                    )
+                ],
+                links=[
+                    DiscoveredJobLink(
+                        url="https://example.com/jobs/software-engineer",
+                        source_url=career_page.url,
+                        text="Software Engineering Intern",
+                        confidence=0.9,
+                        discovery_method="heuristic",
+                    )
+                ],
+                candidates_scanned=1,
+                confidence=ExtractionConfidence.HIGH,
+            ),
+            company_career_page_id=career_page.id,
+        )
+        if scan_page.id is None:
+            raise AssertionError("scan page id missing")
+        candidates = add_scan_candidates(
+            connection,
+            scan_page.id,
+            [
+                ScoredLinkCandidate(
+                    url="https://example.com/jobs/software-engineer",
+                    source_url=career_page.url,
+                    text="Software Engineering Intern",
+                    confidence=0.9,
+                )
+            ],
+            CareersPageScanResult(
+                source_url=career_page.url,
+                final_url=career_page.url,
+                links=[
+                    DiscoveredJobLink(
+                        url="https://example.com/jobs/software-engineer",
+                        source_url=career_page.url,
+                        text="Software Engineering Intern",
+                        confidence=0.9,
+                        discovery_method="heuristic",
+                    )
+                ],
+            ),
+        )
+        add_role_discovery_attempt(
+            connection,
+            RoleDiscoveryAttempt(
+                scan_run_id=scan_run.id,
+                scan_candidate_id=candidates[0].id or 0,
+                company_id=company.id,
+                url="https://example.com/jobs/software-engineer",
+                final_url="https://example.com/jobs/software-engineer",
+                title="Software Engineer",
+                assessment_is_role=False,
+                assessment_confidence=0.95,
+                assessment_description="Software engineering internship.",
+                assessment_extraction_method="jobposting_structured_data",
+                assessment_rejection_reason=(
+                    "intern keyword requirement filtered by source config"
+                ),
+                assessment_reasons=[
+                    "schema.org JobPosting structured data",
+                    "intern keyword requirement",
+                ],
+            ),
+        )
+
+    dry_run = scan_workflow.refilter_collected_roles(scan_run_id=scan_run.id)
+
+    assert dry_run["dry_run"] is True
+    assert dry_run["changed_attempts"] == 1
+    assert dry_run["attempts"][0]["action"] == "create_role"
+    with db.connect() as connection:
+        assert list_roles(connection) == []
+
+    applied = scan_workflow.refilter_collected_roles(scan_run_id=scan_run.id, apply=True)
+
+    assert applied["roles_created"] == 1
+    with db.connect() as connection:
+        roles = list_roles(connection)
+        attempts = list_role_discovery_attempts(connection, scan_run_id=scan_run.id)
+
+    assert len(roles) == 1
+    assert roles[0].title == "Software Engineer"
+    assert attempts[0].assessment_is_role is True
+    assert attempts[0].role_id == roles[0].id
+    assert attempts[0].assessment_rejection_reason is None
+    assert "intern keyword evidence: selected link text" in attempts[0].assessment_reasons
+
+
+def test_refilter_collected_roles_does_not_use_source_url_as_intern_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Acme"))
+        if company.id is None:
+            raise AssertionError("company id missing")
+        career_page = add_company_career_page(
+            connection,
+            CompanyCareerPage(
+                company_id=company.id,
+                url="https://example.com/careers?filter=intern",
+            ),
+        )
+        scan_run = create_scan_run(connection, company.id)
+        if scan_run.id is None:
+            raise AssertionError("scan run id missing")
+        scan_page = add_scan_page(
+            connection,
+            scan_run.id,
+            CareersPageScanResult(
+                source_url=career_page.url,
+                final_url=career_page.url,
+                candidates_scanned=1,
+                confidence=ExtractionConfidence.HIGH,
+            ),
+            company_career_page_id=career_page.id,
+        )
+        if scan_page.id is None:
+            raise AssertionError("scan page id missing")
+        candidates = add_scan_candidates(
+            connection,
+            scan_page.id,
+            [
+                ScoredLinkCandidate(
+                    url="https://example.com/jobs/software-engineer",
+                    source_url=career_page.url,
+                    text="Software Engineer",
+                    confidence=0.9,
+                )
+            ],
+            CareersPageScanResult(source_url=career_page.url, final_url=career_page.url),
+        )
+        add_role_discovery_attempt(
+            connection,
+            RoleDiscoveryAttempt(
+                scan_run_id=scan_run.id,
+                scan_candidate_id=candidates[0].id or 0,
+                company_id=company.id,
+                url="https://example.com/jobs/software-engineer",
+                final_url="https://example.com/jobs/software-engineer",
+                title="Software Engineer",
+                assessment_is_role=False,
+                assessment_confidence=0.95,
+                assessment_description="Software engineering role.",
+                assessment_extraction_method="jobposting_structured_data",
+                assessment_rejection_reason=(
+                    "intern keyword requirement filtered by source config"
+                ),
+                assessment_reasons=[
+                    "schema.org JobPosting structured data",
+                    "intern keyword requirement",
+                ],
+            ),
+        )
+
+    applied = scan_workflow.refilter_collected_roles(scan_run_id=scan_run.id, apply=True)
+
+    assert applied["changed_attempts"] == 0
+    with db.connect() as connection:
+        assert list_roles(connection) == []
+        attempts = list_role_discovery_attempts(connection, scan_run_id=scan_run.id)
+    assert attempts[0].assessment_is_role is False
+
+
+def test_refilter_collected_roles_refreshes_stored_location_and_description(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Microsoft"))
+        if company.id is None:
+            raise AssertionError("company id missing")
+        career_page = add_company_career_page(
+            connection,
+            CompanyCareerPage(company_id=company.id, url="https://example.com/careers"),
+        )
+        scan_run = create_scan_run(connection, company.id)
+        if scan_run.id is None:
+            raise AssertionError("scan run id missing")
+        scan_page = add_scan_page(
+            connection,
+            scan_run.id,
+            CareersPageScanResult(
+                source_url=career_page.url,
+                final_url=career_page.url,
+                candidates_scanned=1,
+                confidence=ExtractionConfidence.HIGH,
+            ),
+            company_career_page_id=career_page.id,
+        )
+        if scan_page.id is None:
+            raise AssertionError("scan page id missing")
+        candidates = add_scan_candidates(
+            connection,
+            scan_page.id,
+            [
+                ScoredLinkCandidate(
+                    url="https://example.com/jobs/software-engineering-intern",
+                    source_url=career_page.url,
+                    text="Software Engineering INTERN",
+                    confidence=0.9,
+                )
+            ],
+            CareersPageScanResult(source_url=career_page.url, final_url=career_page.url),
+        )
+        role = add_role(
+            connection,
+            Role(
+                company_id=company.id,
+                title="Software Engineering INTERN",
+                role_url="https://example.com/jobs/software-engineering-intern",
+                location="{'@type': 'Country', 'name': 'BR'}",
+                description="Single Position Come build software.",
+            ),
+        )
+        if role.id is None:
+            raise AssertionError("role id missing")
+        add_role_discovery_attempt(
+            connection,
+            RoleDiscoveryAttempt(
+                scan_run_id=scan_run.id,
+                scan_candidate_id=candidates[0].id or 0,
+                company_id=company.id,
+                role_id=role.id,
+                url=role.role_url,
+                final_url=role.role_url,
+                title=role.title,
+                assessment_is_role=True,
+                assessment_confidence=0.95,
+                assessment_location="{'@type': 'Country', 'name': 'BR'}",
+                assessment_description="Single Position Come build software.",
+                assessment_extraction_method="jobposting_structured_data",
+                assessment_reasons=["schema.org JobPosting structured data"],
+            ),
+        )
+
+    dry_run = scan_workflow.refilter_collected_roles(scan_run_id=scan_run.id)
+
+    assert dry_run["changed_attempts"] == 1
+    assert dry_run["attempts"][0]["action"] == "refresh_fields"
+
+    applied = scan_workflow.refilter_collected_roles(scan_run_id=scan_run.id, apply=True)
+
+    assert applied["changed_attempts"] == 1
+    with db.connect() as connection:
+        refreshed_role = get_role(connection, role.id)
+        attempts = list_role_discovery_attempts(connection, scan_run_id=scan_run.id)
+    assert refreshed_role.location == "Brazil"
+    assert refreshed_role.description == "Come build software."
+    assert attempts[0].assessment_location == "Brazil"
+    assert attempts[0].assessment_description == "Come build software."
 
 
 def test_scan_company_can_allow_non_software_keyword_roles_when_configured(

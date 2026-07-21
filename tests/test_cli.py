@@ -1159,6 +1159,48 @@ def test_scan_history_and_show_optionally_includes_link_candidates(
     assert "Description: Software Engineering Intern Vancouver Apply now" in show_role_result.output
 
 
+def test_scan_refilter_command_reports_dry_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "callumployed.cli.refilter_collected_roles",
+        lambda **_kwargs: {
+            "scanned_attempts": 3,
+            "changed_attempts": 1,
+            "roles_created": 0,
+            "roles_archived": 0,
+            "protected_roles": 0,
+            "dry_run": True,
+            "attempts": [
+                {
+                    "attempt_id": 7,
+                    "company_id": 1,
+                    "role_id": None,
+                    "url": "https://example.com/jobs/software-engineer",
+                    "title": "Software Engineer",
+                    "previous_is_role": False,
+                    "new_is_role": True,
+                    "action": "create_role",
+                    "reason": None,
+                }
+            ],
+        },
+    )
+
+    result = runner.invoke(
+        app,
+        ["scan", "refilter", "--scan-run-id", "1"],
+        env={"CALLUMPLOYED_DATABASE_PATH": str(tmp_path / "scan-refilter.sqlite3")},
+    )
+
+    assert result.exit_code == 0
+    assert "Dry run: re-filtered 3 stored attempt(s)." in result.output
+    assert "Changed attempts: 1" in result.output
+    assert "Roles to create: 1" in result.output
+    assert "attempt #7: create_role; is_role False -> True" in result.output
+
+
 def test_company_career_page_commands_and_scan_multiple_pages(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

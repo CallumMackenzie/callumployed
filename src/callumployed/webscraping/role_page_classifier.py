@@ -97,6 +97,7 @@ ROLE_TITLE_TERMS = (
     "architect",
     "associate",
     "backend",
+    "coordinator",
     "data",
     "developer",
     "designer",
@@ -113,8 +114,10 @@ ROLE_TITLE_TERMS = (
     "scientist",
     "security",
     "software",
+    "specialist",
 )
 TITLE_NOISE_TERMS = (
+    "apply",
     "career",
     "careers",
     "cookie",
@@ -126,9 +129,44 @@ TITLE_NOISE_TERMS = (
     "search jobs",
     "sign in",
     "skip to main content",
+    "view role",
     "view all jobs",
 )
 TITLE_SEPARATOR_PATTERN = re.compile(r"\s+(?:[-|–—•·]|::)\s+")
+TITLE_ACTION_SUFFIX_PATTERN = re.compile(
+    r"\s+(?:apply(?:\s+now)?|view\s+role)\s*$",
+    re.I,
+)
+TITLE_POSTED_SUFFIX_PATTERN = re.compile(
+    r"\s+posted\s+[a-z]{3,9}\s+\d{1,2},\s+\d{4}\b.*$",
+    re.I,
+)
+TITLE_LOCATION_PATTERN = re.compile(
+    r"\b(?:"
+    r"amsterdam|austin|bengaluru|carrollton|chicago|hong kong|lisbon|london|"
+    r"mumbai|new york(?: city)?|singapore|shanghai|sydney|washington dc|"
+    r"ny|nyc|tx|us|united states|portugal|india"
+    r")\b",
+    re.I,
+)
+TITLE_SEASON_PATTERN = re.compile(
+    r"(?:fall|spring|summer|winter|may-august|june-september|flexible)\b",
+    re.I,
+)
+TITLE_DEPARTMENT_SUFFIXES = {
+    "business",
+    "design",
+    "engineering",
+    "finance",
+    "legal",
+    "marketing",
+    "operations",
+    "product",
+    "research",
+    "sales",
+    "security",
+    "technology",
+}
 
 @dataclass(frozen=True)
 class TitleCandidate:
@@ -436,8 +474,39 @@ def _clean_title(text: str | None) -> str | None:
     if cleaned is None:
         return None
     cleaned = re.sub(r"\s*\(\s*(?:m/f/d|f/m/d|m/w/d)\s*\)\s*$", "", cleaned, flags=re.I)
+    cleaned = TITLE_ACTION_SUFFIX_PATTERN.sub("", cleaned)
+    cleaned = TITLE_POSTED_SUFFIX_PATTERN.sub("", cleaned)
+    cleaned = _strip_title_listing_metadata(cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" -|–—•·")
     return cleaned or None
+
+
+def _strip_title_listing_metadata(title: str) -> str:
+    if " - " in title:
+        prefix, suffix = title.rsplit(" - ", 1)
+        prefix_words = prefix.split()
+        if (
+            len(prefix_words) >= 3
+            and TITLE_LOCATION_PATTERN.search(suffix)
+            and not _matching_terms(suffix, ROLE_TITLE_TERMS)
+        ):
+            if prefix_words[-1].lower() in TITLE_DEPARTMENT_SUFFIXES:
+                return " ".join(prefix_words[:-1]).strip()
+            return prefix
+
+    words = title.split()
+    for index in range(len(words) - 1, 1, -1):
+        suffix = " ".join(words[index:])
+        suffix_has_location = TITLE_LOCATION_PATTERN.search(suffix)
+        suffix_has_season = TITLE_SEASON_PATTERN.search(suffix)
+        if suffix_has_location or suffix_has_season:
+            candidate = " ".join(words[:index]).strip(" -|–—•·")
+            if (
+                _matching_terms(candidate, ROLE_TITLE_TERMS)
+                and (suffix_has_location or TITLE_LOCATION_PATTERN.search(candidate))
+            ):
+                return _strip_title_listing_metadata(candidate)
+    return title
 
 
 def _extract_dom_location(soup: BeautifulSoup, visible_text: str | None) -> str | None:
@@ -475,9 +544,12 @@ def _stringify_location(location: Any) -> str | None:
         parts = (
             address.get("addressLocality"),
             address.get("addressRegion"),
-            address.get("addressCountry"),
+            _stringify_location(address.get("addressCountry"))
+            or address.get("addressCountry"),
         )
         return _clean_text(", ".join(str(part) for part in parts if part))
+    if location.get("@type") == "Country" or location.get("type") == "Country":
+        return _first_string(location.get("name"))
     return _first_string(location.get("name"), location.get("address"))
 
 

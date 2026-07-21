@@ -1214,6 +1214,46 @@ def list_role_discovery_attempts(
     return [_role_discovery_attempt_from_row(row) for row in rows]
 
 
+def update_role_discovery_attempt_assessment(
+    connection: turso.Connection,
+    attempt_id: int,
+    *,
+    role_id: int | None,
+    assessment_is_role: bool,
+    assessment_confidence: float | None,
+    assessment_location: str | None,
+    assessment_description: str | None,
+    assessment_rejection_reason: str | None,
+    assessment_reasons: list[str],
+) -> RoleDiscoveryAttempt:
+    connection.execute(
+        """
+        UPDATE role_discovery_attempts
+        SET
+            role_id = ?,
+            assessment_is_role = ?,
+            assessment_confidence = ?,
+            assessment_location = ?,
+            assessment_description = ?,
+            assessment_rejection_reason = ?,
+            assessment_reasons_json = ?
+        WHERE id = ?
+        """,
+        (
+            role_id,
+            _optional_bool_to_int(assessment_is_role),
+            assessment_confidence,
+            assessment_location,
+            assessment_description,
+            assessment_rejection_reason,
+            json.dumps(assessment_reasons),
+            attempt_id,
+        ),
+    )
+    connection.commit()
+    return get_role_discovery_attempt(connection, attempt_id)
+
+
 def list_rejected_role_urls(connection: turso.Connection, company_id: int) -> set[str]:
     rows = connection.execute(
         """

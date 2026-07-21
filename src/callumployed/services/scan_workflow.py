@@ -33,8 +33,11 @@ from callumployed.data.repositories import (
     create_scan_run,
     finish_scan_run,
     get_company,
+    get_company_career_page,
     get_role,
     get_role_by_company_url,
+    get_scan_candidate,
+    get_scan_page,
     list_company_career_pages,
     list_rejected_role_urls,
     list_role_discovery_attempts,
@@ -44,6 +47,7 @@ from callumployed.data.repositories import (
     should_include_hardware_roles,
     should_require_software_keywords,
     update_role,
+    update_role_discovery_attempt_assessment,
 )
 from callumployed.webscraping import browser
 from callumployed.webscraping.classifier import (
@@ -53,8 +57,10 @@ from callumployed.webscraping.classifier import (
     select_ambiguous_candidates,
     select_heuristic_links,
 )
+from callumployed.webscraping.description_parser import clean_job_description
 from callumployed.webscraping.errors import NavigationError
 from callumployed.webscraping.extraction import extract_link_candidates
+from callumployed.webscraping.location_parser import parse_job_location
 from callumployed.webscraping.models import (
     CareersPageScanResult,
     DiscoveredJobLink,
@@ -90,6 +96,11 @@ SOFTWARE_KEYWORD_PATTERN = re.compile(
     r"security|devops|site reliability|sre|distributed systems|compiler|"
     r"programming|coding|automation|qa|quality assurance|test engineering"
     r")\b",
+    re.I,
+)
+INTERN_INTENT_PATTERN = re.compile(
+    r"\b(?:interns?|internships?|co[- ]?ops?|student|students|university|campus|"
+    r"new grad|new graduate)\b",
     re.I,
 )
 
@@ -138,6 +149,28 @@ class RoleRescanResult(TypedDict):
     role: Role
     assessment: RolePageAssessment
     final_url: str
+
+
+class RefilterAttemptResult(TypedDict):
+    attempt_id: int
+    company_id: int
+    role_id: int | None
+    url: str
+    title: str | None
+    previous_is_role: bool | None
+    new_is_role: bool
+    action: str
+    reason: str | None
+
+
+class RefilterCollectedRolesResult(TypedDict):
+    scanned_attempts: int
+    changed_attempts: int
+    roles_created: int
+    roles_archived: int
+    protected_roles: int
+    dry_run: bool
+    attempts: list[RefilterAttemptResult]
 
 
 async def render_page_node(state: ScanWorkflowState) -> dict[str, RenderedPageState]:
@@ -209,6 +242,12 @@ def build_result_node(state: ScanWorkflowState) -> dict[str, object]:
             link
             for link in links
             if _has_software_keyword(link.text, " ".join(link.reasons))
+        ]
+    if _requires_intern_keywords(state):
+        links = [
+            link
+            for link in links
+            if _has_intern_keyword(link.text)
         ]
     page = state["page"]
     result = CareersPageScanResult(
@@ -320,6 +359,40 @@ async def visit_discovered_links_node(state: ScanWorkflowState) -> dict[str, obj
                         ],
                     }
                 )
+            if (
+                assessment.is_role
+                and _requires_intern_keywords(state)
+                and _intern_keyword_evidence_source(assessment, candidate, page) is None
+            ):
+                assessment = assessment.model_copy(
+                    update={
+                        "is_role": False,
+                        "confidence": max(assessment.confidence, 0.8),
+                        "rejection_reason": "intern keyword requirement filtered by source config",
+                        "reasons": [
+                            *assessment.reasons,
+                            "intern keyword requirement",
+                        ],
+                    }
+                )
+            elif assessment.is_role and _requires_intern_keywords(state):
+                intern_evidence_source = _intern_keyword_evidence_source(
+                    assessment,
+                    candidate,
+                    page,
+                )
+                if (
+                    intern_evidence_source is not None
+                    and intern_evidence_source != "assessed title"
+                ):
+                    assessment = assessment.model_copy(
+                        update={
+                            "reasons": [
+                                *assessment.reasons,
+                                f"intern keyword evidence: {intern_evidence_source}",
+                            ],
+                        }
+                    )
             role = _create_or_get_assessed_role(
                 company_id=company.id,
                 role_url=candidate.url,
@@ -445,10 +518,261 @@ async def rescan_role(
     }
 
 
+FILTER_REJECTION_REASONS = {
+    "graduate-degree role filtered by app config",
+    "hardware-only role filtered by app config",
+    "software keyword requirement filtered by app config",
+    "intern keyword requirement filtered by source config",
+}
+
+
+def refilter_collected_roles(
+    *,
+    company_id: int | None = None,
+    scan_run_id: int | None = None,
+    apply: bool = False,
+) -> RefilterCollectedRolesResult:
+    """Replay current role filters against stored scan attempts without scraping."""
+    with db.connect() as connection:
+        include_graduate_degree_roles = should_include_graduate_degree_roles(connection)
+        include_hardware_roles = should_include_hardware_roles(connection)
+        require_software_keywords = should_require_software_keywords(connection)
+        attempts = list_role_discovery_attempts(connection, scan_run_id=scan_run_id)
+
+    filtered_attempts = [
+        attempt
+        for attempt in attempts
+        if attempt.status is RoleDiscoveryStatus.SUCCEEDED
+        and (company_id is None or attempt.company_id == company_id)
+    ]
+    results: list[RefilterAttemptResult] = []
+    roles_created = 0
+    roles_archived = 0
+    protected_roles = 0
+
+    for attempt in filtered_attempts:
+        if attempt.id is None:
+            continue
+        with db.connect() as connection:
+            candidate = get_scan_candidate(connection, attempt.scan_candidate_id)
+            scan_page = get_scan_page(connection, candidate.scan_page_id)
+            career_page = (
+                get_company_career_page(connection, scan_page.company_career_page_id)
+                if scan_page.company_career_page_id is not None
+                else None
+            )
+
+        assessment = _assessment_from_stored_attempt(attempt)
+        assessment = _apply_role_filters(
+            assessment,
+            include_graduate_degree_roles=include_graduate_degree_roles,
+            include_hardware_roles=include_hardware_roles,
+            require_software_keywords=require_software_keywords,
+        )
+        page = _stored_page_from_attempt(attempt)
+        if assessment.is_role and _stored_attempt_requires_intern_keywords(
+            scan_page,
+            career_page,
+        ):
+            intern_evidence_source = _intern_keyword_evidence_source(
+                assessment,
+                candidate,
+                page,
+            )
+            if intern_evidence_source is None:
+                assessment = assessment.model_copy(
+                    update={
+                        "is_role": False,
+                        "confidence": max(assessment.confidence, 0.8),
+                        "rejection_reason": "intern keyword requirement filtered by source config",
+                        "reasons": [
+                            *assessment.reasons,
+                            "intern keyword requirement",
+                        ],
+                    }
+                )
+            elif intern_evidence_source != "assessed title":
+                evidence_reason = f"intern keyword evidence: {intern_evidence_source}"
+                if evidence_reason not in assessment.reasons:
+                    assessment = assessment.model_copy(
+                        update={"reasons": [*assessment.reasons, evidence_reason]}
+                    )
+
+        action = "unchanged"
+        role_id = attempt.role_id
+        if assessment.is_role and role_id is None:
+            action = "create_role"
+            if apply:
+                role = _create_or_get_assessed_role(
+                    company_id=attempt.company_id,
+                    role_url=attempt.url,
+                    title=attempt.title,
+                    location=attempt.assessment_location,
+                    description=attempt.assessment_description,
+                    posting_id=attempt.assessment_posting_id,
+                    is_role=assessment.is_role,
+                    confidence=assessment.confidence,
+                )
+                role_id = role.id if role is not None else None
+                if role_id is not None:
+                    roles_created += 1
+        elif not assessment.is_role and role_id is not None:
+            with db.connect() as connection:
+                role = get_role(connection, role_id)
+            if role.role_status is RoleStatus.DISCOVERED:
+                action = "archive_role"
+                if apply:
+                    with db.connect() as connection:
+                        set_role_status(
+                            connection,
+                            role_id,
+                            RoleStatus.ARCHIVED,
+                            summary=(
+                                "Role archived after stored scan re-filter: "
+                                f"{assessment.rejection_reason or 'no longer passes filters'}."
+                            ),
+                            source=EventSource.SCAN,
+                        )
+                    roles_archived += 1
+            else:
+                action = "protected_role"
+                protected_roles += 1
+
+        changed = (
+            attempt.assessment_is_role != assessment.is_role
+            or attempt.assessment_rejection_reason != assessment.rejection_reason
+            or attempt.assessment_location != assessment.location
+            or attempt.assessment_description != assessment.description
+            or attempt.role_id != role_id
+        )
+        if changed and action == "unchanged":
+            action = "refresh_fields"
+        if role_id is not None and apply:
+            with db.connect() as connection:
+                role = get_role(connection, role_id)
+                if (
+                    (assessment.location is not None and role.location != assessment.location)
+                    or (
+                        assessment.description is not None
+                        and role.description != assessment.description
+                    )
+                ):
+                    update_role(
+                        connection,
+                        role_id,
+                        location=assessment.location,
+                        description=assessment.description,
+                    )
+        if changed and apply:
+            with db.connect() as connection:
+                update_role_discovery_attempt_assessment(
+                    connection,
+                    attempt.id,
+                    role_id=role_id,
+                    assessment_is_role=assessment.is_role,
+                    assessment_confidence=assessment.confidence,
+                    assessment_location=assessment.location,
+                    assessment_description=assessment.description,
+                    assessment_rejection_reason=assessment.rejection_reason,
+                    assessment_reasons=assessment.reasons,
+                )
+
+        if changed or action != "unchanged":
+            results.append(
+                {
+                    "attempt_id": attempt.id,
+                    "company_id": attempt.company_id,
+                    "role_id": role_id,
+                    "url": attempt.url,
+                    "title": attempt.title,
+                    "previous_is_role": attempt.assessment_is_role,
+                    "new_is_role": assessment.is_role,
+                    "action": action,
+                    "reason": assessment.rejection_reason,
+                }
+            )
+
+    return {
+        "scanned_attempts": len(filtered_attempts),
+        "changed_attempts": sum(
+            1
+            for result in results
+            if result["previous_is_role"] != result["new_is_role"]
+            or result["action"] in {"create_role", "archive_role", "refresh_fields"}
+        ),
+        "roles_created": roles_created,
+        "roles_archived": roles_archived,
+        "protected_roles": protected_roles,
+        "dry_run": not apply,
+        "attempts": results,
+    }
+
+
 def _role_url_redirected_to_listing(role_url: str, final_url: str) -> bool:
     original_path = urlparse(role_url).path.rstrip("/")
     final_path = urlparse(final_url).path.rstrip("/")
     return "/job/" in original_path and "/job/" not in final_path
+
+
+def _assessment_from_stored_attempt(attempt: RoleDiscoveryAttempt) -> RolePageAssessment:
+    base_is_role = attempt.assessment_is_role is True or (
+        attempt.assessment_rejection_reason in FILTER_REJECTION_REASONS
+    )
+    location = _normalize_stored_location(attempt.assessment_location)
+    description = clean_job_description(attempt.assessment_description)
+    return RolePageAssessment(
+        is_role=base_is_role,
+        is_closed=attempt.assessment_is_closed is True,
+        confidence=attempt.assessment_confidence or 0.0,
+        title=attempt.title,
+        location=location,
+        description=description,
+        posting_id=attempt.assessment_posting_id,
+        extraction_method=attempt.assessment_extraction_method or "html_heuristic",
+        rejection_reason=None if base_is_role else attempt.assessment_rejection_reason,
+        reasons=_base_assessment_reasons(attempt.assessment_reasons),
+    )
+
+
+def _normalize_stored_location(location: str | None) -> str | None:
+    return parse_job_location(location) or location
+
+
+def _base_assessment_reasons(reasons: list[str]) -> list[str]:
+    filtered_reasons = {
+        "graduate-degree role filter",
+        "hardware-only role filter",
+        "software keyword requirement",
+        "intern keyword requirement",
+    }
+    return [
+        reason
+        for reason in reasons
+        if reason not in filtered_reasons
+        and not reason.startswith("intern keyword evidence:")
+    ]
+
+
+def _stored_page_from_attempt(attempt: RoleDiscoveryAttempt) -> RenderedPageState:
+    return RenderedPageState(
+        url=attempt.url,
+        final_url=attempt.final_url or attempt.url,
+        title=attempt.title,
+        html="",
+        visible_text=attempt.visible_text_excerpt,
+    )
+
+
+def _stored_attempt_requires_intern_keywords(
+    scan_page: ScanPage,
+    career_page: CompanyCareerPage | None,
+) -> bool:
+    return _requires_intern_keywords(
+        {
+            "url": scan_page.source_url,
+            "career_page": career_page,
+        }
+    )
 
 
 def _role_rescan_event_summary(assessment: RolePageAssessment, role: Role) -> str:
@@ -603,6 +927,44 @@ def _is_hardware_only_role(title: str | None) -> bool:
 def _has_software_keyword(title: str | None, description: str | None) -> bool:
     text = " ".join(part for part in (title, description) if part)
     return bool(SOFTWARE_KEYWORD_PATTERN.search(text))
+
+
+def _has_intern_keyword(title: str | None) -> bool:
+    text = title or ""
+    return bool(INTERN_INTENT_PATTERN.search(text))
+
+
+def _intern_keyword_evidence_source(
+    assessment: RolePageAssessment,
+    candidate: ScanCandidate,
+    page: RenderedPageState,
+) -> str | None:
+    evidence = (
+        ("assessed title", assessment.title),
+        ("selected link text", candidate.text),
+        ("selected link title", candidate.title),
+        ("selected link aria-label", candidate.aria_label),
+        ("role URL", candidate.url),
+        ("final role URL", page.final_url),
+    )
+    for source, text in evidence:
+        if _has_intern_keyword(text):
+            return source
+    return None
+
+
+def _requires_intern_keywords(state: ScanWorkflowState) -> bool:
+    career_page = state.get("career_page")
+    text = " ".join(
+        part
+        for part in (
+            state.get("url"),
+            career_page.url if career_page is not None else None,
+            career_page.label if career_page is not None else None,
+        )
+        if part
+    )
+    return bool(INTERN_INTENT_PATTERN.search(text))
 
 
 def should_classify(state: ScanWorkflowState) -> Literal["classify", "skip"]:

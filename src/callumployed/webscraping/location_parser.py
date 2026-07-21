@@ -17,6 +17,7 @@ LOCATION_SENTENCE_PATTERN = re.compile(
 )
 REMOTE_PATTERN = re.compile(r"\bremote(?:ly)?\b", re.I)
 HYBRID_PATTERN = re.compile(r"\bhybrid\b", re.I)
+IN_OFFICE_PATTERN = re.compile(r"\bin[- ]?office\b", re.I)
 MULTIPLE_PATTERN = re.compile(r"\b(?:multiple|various)\s+locations\b", re.I)
 SEPARATOR_PATTERN = re.compile(r"\s*(?:;|/|\bor\b|\band\b)\s*", re.I)
 TRAILING_NOISE_PATTERN = re.compile(
@@ -32,6 +33,8 @@ SEARCH_FILTER_NOISE_PATTERN = re.compile(
     re.I,
 )
 COUNTRY_ALIASES = {
+    "br": "Brazil",
+    "brazil": "Brazil",
     "ca": "Canada",
     "canada": "Canada",
     "united states": "United States",
@@ -124,8 +127,9 @@ def _normalize_location_text(text: str | None) -> str | None:
     if modes and _looks_remote_only(cleaned):
         return _join_location_parts(modes)
 
-    if _looks_like_location_fragment(cleaned):
-        normalized_fragment = _normalize_location_fragment(cleaned)
+    location_fragment = _strip_work_modes(cleaned)
+    if _looks_like_location_fragment(location_fragment):
+        normalized_fragment = _normalize_location_fragment(location_fragment)
         return _join_location_parts([*modes, normalized_fragment])
     return _join_location_parts(modes)
 
@@ -134,6 +138,13 @@ def _clean_location_text(text: str | None) -> str | None:
     if not text:
         return None
     cleaned = re.sub(r"\s+", " ", text).strip(" -|:;,")
+    structured_country_match = re.search(
+        r"['\"]name['\"]\s*:\s*['\"]([^'\"]+)['\"]",
+        cleaned,
+        re.I,
+    )
+    if structured_country_match:
+        cleaned = structured_country_match.group(1)
     cleaned = LOCATION_LABEL_PATTERN.sub("", cleaned)
     cleaned = TRAILING_NOISE_PATTERN.sub("", cleaned)
     cleaned = cleaned.strip(" -|:;,")
@@ -162,13 +173,22 @@ def _work_modes(text: str) -> list[str]:
         modes.append("Remote")
     if HYBRID_PATTERN.search(text):
         modes.append("Hybrid")
+    if IN_OFFICE_PATTERN.search(text):
+        modes.append("In-office")
     return modes
 
 
 def _looks_remote_only(text: str) -> bool:
-    without_modes = REMOTE_PATTERN.sub("", HYBRID_PATTERN.sub("", text))
+    without_modes = _strip_work_modes(text)
     without_modes = re.sub(r"[-,;|/()\s]+", "", without_modes)
     return not without_modes
+
+
+def _strip_work_modes(text: str) -> str:
+    without_modes = REMOTE_PATTERN.sub("", text)
+    without_modes = HYBRID_PATTERN.sub("", without_modes)
+    without_modes = IN_OFFICE_PATTERN.sub("", without_modes)
+    return without_modes.strip(" -|:;,")
 
 
 def _looks_like_location_fragment(text: str) -> bool:
@@ -205,7 +225,7 @@ def _normalize_place_segment(segment: str, places: list[str]) -> str | None:
     cleaned = _clean_location_text(segment)
     if not cleaned:
         return None
-    cleaned = REMOTE_PATTERN.sub("", HYBRID_PATTERN.sub("", cleaned)).strip(" -|:;,")
+    cleaned = _strip_work_modes(cleaned)
     if not cleaned:
         return None
     lower = cleaned.lower()

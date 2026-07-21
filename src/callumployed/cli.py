@@ -15,9 +15,9 @@ from callumployed.data.models import (
 )
 from callumployed.data.repositories import (
     APPLICATION_STATUSES,
-    add_cover_letter_example,
     add_company,
     add_company_career_page,
+    add_cover_letter_example,
     add_role,
     clear_roles,
     get_company,
@@ -25,10 +25,10 @@ from callumployed.data.repositories import (
     get_role,
     get_scan_run,
     get_tracking_stats,
-    list_cover_letter_examples,
     list_companies,
     list_company_career_pages,
     list_config_values,
+    list_cover_letter_examples,
     list_role_discovery_attempts,
     list_role_events,
     list_role_items,
@@ -46,6 +46,7 @@ from callumployed.data.repositories import (
     update_role,
     upsert_master_resume,
 )
+from callumployed.services.scan_workflow import refilter_collected_roles
 from callumployed.services.scan_workflow import rescan_role as run_rescan_role
 from callumployed.services.scan_workflow import scan_company as run_scan_company
 from callumployed.services.scan_workflow import scan_url as run_scan_url
@@ -682,6 +683,61 @@ def scan_show_command(
                         typer.echo(f"  Excerpt: {attempt.visible_text_excerpt[:240]}")
                     if attempt.error:
                         typer.echo(f"  Error: {attempt.error}")
+
+
+@scan_app.command("refilter")
+def scan_refilter_command(
+    company_id: Annotated[
+        int | None,
+        typer.Option("--company-id", help="Only re-filter attempts for one company."),
+    ] = None,
+    scan_run_id: Annotated[
+        int | None,
+        typer.Option("--scan-run-id", help="Only re-filter one scan run."),
+    ] = None,
+    apply: Annotated[
+        bool,
+        typer.Option("--apply", help="Persist changed attempt classifications and role updates."),
+    ] = False,
+) -> None:
+    """Re-apply current scan filters to stored attempts without re-scraping."""
+    result = refilter_collected_roles(
+        company_id=company_id,
+        scan_run_id=scan_run_id,
+        apply=apply,
+    )
+
+    mode = "Applied" if apply else "Dry run"
+    create_count = (
+        result["roles_created"]
+        if apply
+        else sum(attempt["action"] == "create_role" for attempt in result["attempts"])
+    )
+    archive_count = (
+        result["roles_archived"]
+        if apply
+        else sum(attempt["action"] == "archive_role" for attempt in result["attempts"])
+    )
+    typer.echo(f"{mode}: re-filtered {result['scanned_attempts']} stored attempt(s).")
+    typer.echo(f"Changed attempts: {result['changed_attempts']}")
+    typer.echo(f"Roles {'created' if apply else 'to create'}: {create_count}")
+    typer.echo(f"Roles {'archived' if apply else 'to archive'}: {archive_count}")
+    if result["protected_roles"]:
+        typer.echo(f"Protected non-discovered roles: {result['protected_roles']}")
+    if not result["attempts"]:
+        typer.echo("No stored attempts would change.")
+        return
+
+    typer.echo("Changes:")
+    for attempt in result["attempts"]:
+        role = f" role #{attempt['role_id']}" if attempt["role_id"] is not None else ""
+        title = f" - {attempt['title']}" if attempt["title"] else ""
+        reason = f" ({attempt['reason']})" if attempt["reason"] else ""
+        typer.echo(
+            f"- attempt #{attempt['attempt_id']}: {attempt['action']}{role}; "
+            f"is_role {attempt['previous_is_role']} -> {attempt['new_is_role']}"
+            f"{reason}{title} <{attempt['url']}>"
+        )
 
 
 @roles_app.command("add")
