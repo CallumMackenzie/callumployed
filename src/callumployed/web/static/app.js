@@ -50,7 +50,7 @@ function getActiveSearchQuery() {
 function updateSearchButton() {
   const active = Boolean(getActiveSearchQuery());
   searchToggle.classList.toggle("search-active", active);
-  searchToggle.setAttribute("aria-label", active ? "Clear search" : "Search jobs");
+  searchToggle.setAttribute("aria-label", active ? "clear search" : "search jobs");
 }
 
 function openSearchDialog() {
@@ -74,7 +74,9 @@ function formatDate(value) {
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
-  }).format(new Date(value));
+  })
+    .format(new Date(value))
+    .toLocaleLowerCase();
 }
 
 function formatCompactDate(value) {
@@ -86,7 +88,8 @@ function formatCompactDate(value) {
     minute: "2-digit",
   })
     .format(new Date(value))
-    .replace(", ", " ");
+    .replace(", ", " ")
+    .toLocaleLowerCase();
 }
 
 function escapeHtml(value) {
@@ -96,6 +99,14 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function formatUiText(value) {
+  return String(value ?? "").toLocaleLowerCase();
+}
+
+function escapeUiText(value) {
+  return escapeHtml(formatUiText(value));
 }
 
 function renderLinkIcon() {
@@ -108,45 +119,45 @@ function renderLinkIcon() {
 }
 
 function renderRoleTitle(title, url, className) {
-  const label = `<span class="role-title-text">${escapeHtml(title)}</span>`;
+  const label = `<span class="role-title-text">${escapeUiText(title)}</span>`;
   if (!url) return `<span class="${className}">${label}</span>`;
   return `<a class="${className}" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${label}${renderLinkIcon()}</a>`;
 }
 
 function renderStats(stats) {
   const items = [
-    ["Companies", stats.companies_total],
-    ["Jobs", stats.jobs_total],
-    ["Applications", stats.applications_total],
+    ["companies", stats.companies_total],
+    ["jobs", stats.jobs_total],
+    ["applications", stats.applications_total],
   ];
   statsEl.innerHTML = items
-    .map(([label, value]) => `<dl class="stat"><dt>${escapeHtml(label)}</dt><dd>${value}</dd></dl>`)
+    .map(([label, value]) => `<dl class="stat"><dt>${escapeUiText(label)}</dt><dd>${value}</dd></dl>`)
     .join("");
 }
 
 function renderMasterResume(resume, message = "") {
   masterResume = resume;
-  resumeUploadButton.textContent = resume ? "Replace" : "Upload";
+  resumeUploadButton.textContent = resume ? "replace" : "upload";
   if (message) {
     resumeMeta.textContent = message;
     return;
   }
   if (!resume) {
-    resumeMeta.textContent = "No resume uploaded";
+    resumeMeta.textContent = "no resume uploaded";
     return;
   }
   const updated = formatCompactDate(resume.updated_at);
   const size = formatFileSize(resume.content_bytes);
-  resumeMeta.textContent = [resume.filename, size, updated].filter(Boolean).join(" | ");
+  resumeMeta.textContent = [formatUiText(resume.filename), size, updated].filter(Boolean).join(" | ");
 }
 
 function renderCoverLetterExamples(examples, message = "") {
   coverLetterExamples = Array.isArray(examples) ? examples : [];
-  coverLetterUploadButton.textContent = coverLetterExamples.length > 0 ? "Add" : "Upload";
+  coverLetterUploadButton.textContent = coverLetterExamples.length > 0 ? "add" : "upload";
   if (message) {
     coverLetterMeta.textContent = message;
   } else if (coverLetterExamples.length === 0) {
-    coverLetterMeta.textContent = "No examples uploaded";
+    coverLetterMeta.textContent = "no examples uploaded";
   } else {
     coverLetterMeta.textContent = `${coverLetterExamples.length} ${coverLetterExamples.length === 1 ? "example" : "examples"} stored`;
   }
@@ -157,8 +168,8 @@ function renderCoverLetterExamples(examples, message = "") {
     .map((example) => {
       const size = formatFileSize(example.content_bytes);
       return `
-        <li title="${escapeHtml(example.filename)}">
-          <span>${escapeHtml(example.filename)}</span>
+        <li title="${escapeUiText(example.filename)}">
+          <span>${escapeUiText(example.filename)}</span>
           <small>${escapeHtml(size)}</small>
         </li>
       `;
@@ -201,15 +212,15 @@ function setMaterialsCollapsed(collapsed) {
 
 function formatFileSize(bytes) {
   if (!Number.isFinite(bytes)) return "";
-  if (bytes < 1024) return `${bytes} B`;
-  return `${Math.round(bytes / 1024)} KB`;
+  if (bytes < 1024) return `${bytes} b`;
+  return `${Math.round(bytes / 1024)} kb`;
 }
 
 function renderTabs(statuses) {
   statusTabsEl.innerHTML = statuses
     .map(
       (status) =>
-        `<button class="status-tab" type="button" data-target="${escapeHtml(status.key)}" data-bucket="${escapeHtml(status.key)}">${escapeHtml(status.label)} <strong>${status.count}</strong></button>`,
+        `<button class="status-tab" type="button" data-target="${escapeHtml(status.key)}" data-bucket="${escapeHtml(status.key)}">${escapeUiText(status.label)} <strong>${status.count}</strong></button>`,
     )
     .join("");
 }
@@ -223,11 +234,11 @@ function renderStatuses(statuses) {
         <section class="status-pane ${status.count === 0 ? "empty" : ""} ${hideEmpty ? "hidden-empty" : ""}" id="status-${escapeHtml(status.key)}" data-bucket="${escapeHtml(status.key)}">
           <button class="pane-toggle" type="button" aria-expanded="false">
             <span class="chevron">></span>
-            <span class="pane-title">${escapeHtml(status.label)}</span>
+            <span class="pane-title">${escapeUiText(status.label)}</span>
             <span class="count">${status.count}</span>
           </button>
           <div class="pane-body" hidden>
-            ${jobs ? `<div class="jobs">${jobs}</div>` : `<p class="empty-copy">No jobs in this status.</p>`}
+            ${jobs ? `<div class="jobs">${jobs}</div>` : `<p class="empty-copy">no jobs in this status.</p>`}
           </div>
         </section>
       `;
@@ -241,7 +252,7 @@ function renderJob(job, statusKey) {
       <summary class="job-summary">
         <span class="job-chevron">></span>
         <span class="job-identity">
-          <span class="job-company">[${escapeHtml(job.company_name)}]</span>
+          <span class="job-company">[${escapeUiText(job.company_name)}]</span>
           ${renderRoleTitle(job.title, job.role_url, "job-title")}
         </span>
       </summary>
@@ -255,13 +266,13 @@ function renderJob(job, statusKey) {
           ${
             job.location
               ? `<div>
-                  <dt>Location</dt>
-                  <dd>${escapeHtml(job.location)}</dd>
+                  <dt>location</dt>
+                  <dd>${escapeUiText(job.location)}</dd>
                 </div>`
               : ""
           }
           <div>
-            <dt>Updated</dt>
+            <dt>updated</dt>
             <dd>${formatDate(job.updated_at)}</dd>
           </div>
         </dl>
@@ -272,47 +283,47 @@ function renderJob(job, statusKey) {
 
 function renderDiscoveredActions(job) {
   return `
-    <div class="job-actions job-actions-nowrap" aria-label="Discovered role actions">
-      <button class="job-action" type="button" data-role-id="${job.id}" data-status="interested">Interested</button>
-      <button class="job-action" type="button" data-role-id="${job.id}" data-status="disinterested">Disinterested</button>
-      <button class="job-action danger" type="button" data-role-id="${job.id}" data-status="closed">Closed</button>
+    <div class="job-actions job-actions-nowrap" aria-label="discovered role actions">
+      <button class="job-action" type="button" data-role-id="${job.id}" data-status="interested">interested</button>
+      <button class="job-action" type="button" data-role-id="${job.id}" data-status="disinterested">disinterested</button>
+      <button class="job-action danger" type="button" data-role-id="${job.id}" data-status="closed">closed</button>
     </div>
   `;
 }
 
 function renderInterestedActions(job) {
   return `
-    <div class="job-actions" aria-label="Interested role actions">
-      <button class="job-action" type="button" data-role-id="${job.id}" data-status="applied">Applied</button>
-      <button class="job-action" type="button" data-role-id="${job.id}" data-status="disinterested">Disinterested</button>
+    <div class="job-actions" aria-label="interested role actions">
+      <button class="job-action" type="button" data-role-id="${job.id}" data-status="applied">applied</button>
+      <button class="job-action" type="button" data-role-id="${job.id}" data-status="disinterested">disinterested</button>
     </div>
   `;
 }
 
 function renderAppliedActions(job) {
   return `
-    <div class="job-actions job-actions-nowrap" aria-label="Applied role actions">
-      <button class="job-action" type="button" data-role-id="${job.id}" data-status="OA">OA</button>
-      <button class="job-action" type="button" data-role-id="${job.id}" data-status="interview">Interview</button>
-      <button class="job-action danger" type="button" data-role-id="${job.id}" data-status="rejected">Rejected</button>
+    <div class="job-actions job-actions-nowrap" aria-label="applied role actions">
+      <button class="job-action" type="button" data-role-id="${job.id}" data-status="OA">oa</button>
+      <button class="job-action" type="button" data-role-id="${job.id}" data-status="interview">interview</button>
+      <button class="job-action danger" type="button" data-role-id="${job.id}" data-status="rejected">rejected</button>
     </div>
   `;
 }
 
 function renderOaActions(job) {
   return `
-    <div class="job-actions" aria-label="OA role actions">
-      <button class="job-action" type="button" data-role-id="${job.id}" data-status="interview">Interview</button>
-      <button class="job-action danger" type="button" data-role-id="${job.id}" data-status="rejected">Rejected</button>
+    <div class="job-actions" aria-label="oa role actions">
+      <button class="job-action" type="button" data-role-id="${job.id}" data-status="interview">interview</button>
+      <button class="job-action danger" type="button" data-role-id="${job.id}" data-status="rejected">rejected</button>
     </div>
   `;
 }
 
 function renderInterviewActions(job) {
   return `
-    <div class="job-actions" aria-label="Interview role actions">
-      <button class="job-action danger" type="button" data-role-id="${job.id}" data-status="rejected">Rejected</button>
-      <button class="job-action success" type="button" data-role-id="${job.id}" data-status="offer">Offer</button>
+    <div class="job-actions" aria-label="interview role actions">
+      <button class="job-action danger" type="button" data-role-id="${job.id}" data-status="rejected">rejected</button>
+      <button class="job-action success" type="button" data-role-id="${job.id}" data-status="offer">offer</button>
     </div>
   `;
 }
@@ -335,7 +346,7 @@ function renderScanStatus(payload) {
   const failed = Number(payload?.failed_companies ?? 0);
 
   scanAllButton.disabled = scanning;
-  scanAllButton.textContent = scanning ? "Scanning..." : "Scan roles";
+  scanAllButton.textContent = scanning ? "scanning..." : "scan roles";
   scanStatusBar.hidden = !scanning;
   scanStatusBar.classList.toggle("scanning", scanning);
   scanStatusBar.classList.toggle("scan-error", !scanning && Boolean(payload?.error));
@@ -343,15 +354,15 @@ function renderScanStatus(payload) {
   if (scanning) {
     const progressText = total > 0 ? ` ${completed}/${total}` : "";
     const failureText = failed > 0 ? `, ${failed} failed` : "";
-    scanStatusText.textContent = `Scanning roles${progressText}${failureText}`;
+    scanStatusText.textContent = `scanning roles${progressText}${failureText}`;
   } else if (payload?.error) {
-    scanStatusText.textContent = "Last scan had errors";
+    scanStatusText.textContent = "last scan had errors";
   } else {
-    scanStatusText.textContent = "Scan idle";
+    scanStatusText.textContent = "scan idle";
   }
 
   const lastScanAt = payload?.last_scan_at;
-  scanLastTime.textContent = lastScanAt ? `Last scan: ${formatCompactDate(lastScanAt)}` : "Last scan: never";
+  scanLastTime.textContent = lastScanAt ? `last scan: ${formatCompactDate(lastScanAt)}` : "last scan: never";
 
   if (wasScanning && !scanning) {
     loadTracker(getActiveSearchQuery()).catch(() => {});
@@ -365,7 +376,7 @@ async function loadScanStatus() {
     scanAllButton.disabled = true;
     scanStatusBar.hidden = true;
     scanStatusBar.classList.add("scan-error");
-    scanStatusText.textContent = "Restart server to enable scanning";
+    scanStatusText.textContent = "restart server to enable scanning";
     return;
   }
   if (!response.ok) throw new Error("Scan status request failed");
@@ -381,15 +392,15 @@ function startScanStatusPolling() {
 
 async function startScanAll() {
   scanAllButton.disabled = true;
-  scanAllButton.textContent = "Scanning...";
+  scanAllButton.textContent = "scanning...";
   try {
     const response = await fetch("/api/scan/all", { method: "POST" });
     if (response.status === 404) {
       scanAllButton.disabled = true;
-      scanAllButton.textContent = "Scan roles";
+      scanAllButton.textContent = "scan roles";
       scanStatusBar.hidden = true;
       scanStatusBar.classList.add("scan-error");
-      scanStatusText.textContent = "Restart server to enable scanning";
+      scanStatusText.textContent = "restart server to enable scanning";
       return;
     }
     if (!response.ok && response.status !== 409) throw new Error("Scan start failed");
@@ -397,15 +408,15 @@ async function startScanAll() {
     startScanStatusPolling();
   } catch {
     scanAllButton.disabled = false;
-    scanAllButton.textContent = "Scan roles";
+    scanAllButton.textContent = "scan roles";
     scanStatusBar.hidden = true;
     scanStatusBar.classList.add("scan-error");
-    scanStatusText.textContent = "Could not start scan";
+    scanStatusText.textContent = "could not start scan";
   }
 }
 
 async function loadTracker(query = "") {
-  statusListEl.innerHTML = '<p class="empty-copy">Loading jobs...</p>';
+  statusListEl.innerHTML = '<p class="empty-copy">loading jobs...</p>';
   const params = new URLSearchParams();
   if (query) params.set("q", query);
   const response = await fetch(`/api/tracker?${params.toString()}`);
@@ -437,12 +448,12 @@ async function loadApplicationMaterials(options = {}) {
 async function uploadMasterResume(file) {
   if (!file) return;
   if (!file.name.toLowerCase().endsWith(".tex")) {
-    renderMasterResume(masterResume, "Resume must be a .tex file.");
+    renderMasterResume(masterResume, "resume must be a .tex file.");
     return;
   }
 
   resumeUploadButton.disabled = true;
-  renderMasterResume(masterResume, "Uploading...");
+  renderMasterResume(masterResume, "uploading...");
   try {
     const content = await file.text();
     const response = await fetch("/api/master-resume", {
@@ -456,7 +467,7 @@ async function uploadMasterResume(file) {
     if (!response.ok) throw new Error("Master resume upload failed");
     await loadApplicationMaterials();
   } catch {
-    renderMasterResume(masterResume, "Could not save resume.");
+    renderMasterResume(masterResume, "could not save resume.");
     updateMaterialsSummary();
   } finally {
     resumeUpload.value = "";
@@ -471,7 +482,7 @@ async function uploadCoverLetterExamples(files) {
   coverLetterUploadButton.disabled = true;
   renderCoverLetterExamples(
     coverLetterExamples,
-    `Uploading ${selectedFiles.length} ${selectedFiles.length === 1 ? "example" : "examples"}...`,
+    `uploading ${selectedFiles.length} ${selectedFiles.length === 1 ? "example" : "examples"}...`,
   );
   try {
     for (const file of selectedFiles) {
@@ -488,7 +499,7 @@ async function uploadCoverLetterExamples(files) {
     }
     await loadApplicationMaterials();
   } catch {
-    renderCoverLetterExamples(coverLetterExamples, "Could not save every example.");
+    renderCoverLetterExamples(coverLetterExamples, "could not save every example.");
     updateMaterialsSummary();
   } finally {
     coverLetterUpload.value = "";
@@ -579,7 +590,7 @@ async function updateRoleStatus(button) {
   actions.querySelectorAll("button").forEach((item) => {
     item.disabled = true;
   });
-  button.textContent = "Updating...";
+  button.textContent = "updating...";
 
   try {
     const response = await fetch(`/api/roles/${encodeURIComponent(roleId)}/status`, {
@@ -596,8 +607,8 @@ async function updateRoleStatus(button) {
     });
     button.textContent =
       status === "disinterested"
-        ? "Disinterested"
-        : status.charAt(0).toUpperCase() + status.slice(1);
+        ? "disinterested"
+        : status.toLowerCase();
   }
 }
 
@@ -702,15 +713,15 @@ function refreshEmptyMessage(pane) {
 
   jobsEl?.remove();
   if (!emptyCopy) {
-    body.insertAdjacentHTML("beforeend", '<p class="empty-copy">No jobs in this status.</p>');
+    body.insertAdjacentHTML("beforeend", '<p class="empty-copy">no jobs in this status.</p>');
   }
 }
 
 function updateReviewButton(statuses) {
   const discovered = getDiscoveredJobs(statuses);
   reviewDiscoveredButton.disabled = discovered.length === 0;
-  reviewDiscoveredButton.setAttribute("aria-label", "Review discovered");
-  reviewDiscoveredButton.innerHTML = '<span class="review-discovered-label">Review discovered</span>';
+  reviewDiscoveredButton.setAttribute("aria-label", "review discovered");
+  reviewDiscoveredButton.innerHTML = '<span class="review-discovered-label">review discovered</span>';
 }
 
 function getDiscoveredJobs(statuses = trackerData?.statuses ?? []) {
@@ -734,7 +745,7 @@ function renderReviewRole(message = "") {
   const current = reviewQueue[0];
   const total = reviewQueue.length;
   const reviewLaterMessage = current ? getReviewLaterRecommendation(current) : "";
-  reviewHeading.textContent = total > 0 ? "Review queue" : "Review complete";
+  reviewHeading.textContent = total > 0 ? "review queue" : "review complete";
   reviewProgress.textContent =
     total > 0 ? `${total} discovered ${total === 1 ? "role" : "roles"} in queue` : "";
 
@@ -745,8 +756,8 @@ function renderReviewRole(message = "") {
   if (!current) {
     reviewCard.innerHTML = `
       <div class="review-empty">
-        <h3>No discovered jobs left.</h3>
-        <p>Everything in this queue has been handled or moved out of discovered.</p>
+        <h3>no discovered jobs left.</h3>
+        <p>everything in this queue has been handled or moved out of discovered.</p>
       </div>
     `;
     return;
@@ -756,24 +767,24 @@ function renderReviewRole(message = "") {
     ${message ? `<p class="review-message">${escapeHtml(message)}</p>` : ""}
     ${reviewLaterMessage ? `<p class="review-message review-message-warning">${escapeHtml(reviewLaterMessage)}</p>` : ""}
     <div class="review-title-row">
-      <p class="review-company">${escapeHtml(current.company_name)}</p>
+      <p class="review-company">${escapeUiText(current.company_name)}</p>
       ${renderRoleTitle(current.title, current.role_url, "review-role-title")}
     </div>
     <dl class="review-details review-primary-details">
-      ${renderReviewDetail("Location", current.location, false, "review-location-detail")}
-      ${renderReviewDetail("First", formatCompactDate(current.first_seen_at))}
-      ${renderReviewDetail("Last", formatCompactDate(current.last_seen_at))}
+      ${renderReviewDetail("location", current.location, false, "review-location-detail")}
+      ${renderReviewDetail("first", formatCompactDate(current.first_seen_at))}
+      ${renderReviewDetail("last", formatCompactDate(current.last_seen_at))}
     </dl>
     ${renderReviewDescription(current.description)}
     <dl class="review-details review-technical-details">
-      ${renderReviewDetail("Notes", current.notes, false, "review-wide-detail")}
-      ${renderReviewDetail("Company ID", current.company_id)}
-      ${renderReviewDetail("Role ID", current.id)}
-      ${renderReviewDetail("Status", current.role_status)}
-      ${renderReviewDetail("Posting ID", current.posting_id)}
-      ${renderReviewDetail("Created", formatCompactDate(current.created_at))}
-      ${renderReviewDetail("Updated", formatCompactDate(current.updated_at))}
-      ${renderReviewDetail("URL", current.role_url, true, "review-wide-detail")}
+      ${renderReviewDetail("notes", current.notes, false, "review-wide-detail")}
+      ${renderReviewDetail("company id", current.company_id)}
+      ${renderReviewDetail("role id", current.id)}
+      ${renderReviewDetail("status", current.role_status)}
+      ${renderReviewDetail("posting id", current.posting_id)}
+      ${renderReviewDetail("created", formatCompactDate(current.created_at))}
+      ${renderReviewDetail("updated", formatCompactDate(current.updated_at))}
+      ${renderReviewDetail("url", current.role_url, true, "review-wide-detail")}
     </dl>
   `;
 }
@@ -781,17 +792,17 @@ function renderReviewRole(message = "") {
 function getReviewLaterRecommendation(role) {
   const count = Number(role.review_later_count ?? 0);
   if (count <= REVIEW_LATER_RECOMMENDATION_THRESHOLD) return "";
-  return `Role review has been postponed ${count} times. It is recommended to set it to disinterested.`;
+  return `role review has been postponed ${count} times. it is recommended to set it to disinterested.`;
 }
 
 function renderReviewDetail(label, value, isLink = false, className = "") {
   if (!value) return "";
   const content = isLink
-    ? `<a href="${escapeHtml(value)}" target="_blank" rel="noreferrer">${escapeHtml(value)}</a>`
-    : escapeHtml(value);
+    ? `<a href="${escapeHtml(value)}" target="_blank" rel="noreferrer">${escapeUiText(value)}</a>`
+    : escapeUiText(value);
   return `
     <div class="review-detail ${escapeHtml(className)}">
-      <dt>${escapeHtml(label)}</dt>
+      <dt>${escapeUiText(label)}</dt>
       <dd>${content}</dd>
     </div>
   `;
@@ -801,7 +812,7 @@ function renderReviewDescription(value) {
   if (!value) return "";
   return `
     <div class="review-detail review-description">
-      <dt>Description</dt>
+      <dt>description</dt>
       <dd>${renderDescriptionMarkdown(value)}</dd>
     </div>
   `;
@@ -825,18 +836,18 @@ function renderDescriptionMarkdown(value) {
     const heading = line.match(/^#{2,3}\s+(.+)$/);
     if (heading) {
       flushList();
-      blocks.push(`<h3>${escapeHtml(heading[1])}</h3>`);
+      blocks.push(`<h3>${escapeUiText(heading[1])}</h3>`);
       return;
     }
 
     const bullet = line.match(/^[-*]\s+(.+)$/);
     if (bullet) {
-      listItems.push(escapeHtml(bullet[1]));
+      listItems.push(escapeUiText(bullet[1]));
       return;
     }
 
     flushList();
-    blocks.push(`<p>${escapeHtml(line)}</p>`);
+    blocks.push(`<p>${escapeUiText(line)}</p>`);
   });
   flushList();
   return blocks.join("");
@@ -857,12 +868,12 @@ async function handleReviewAction(action) {
       current.review_later_count = Number(current.review_later_count ?? 0) + 1;
       if (reviewQueue.length > 1) {
         reviewQueue.push(reviewQueue.shift());
-        renderReviewRole("Moved to the back of the queue.");
+        renderReviewRole("moved to the back of the queue.");
       } else {
-        renderReviewRole("Only one role is in the queue.");
+        renderReviewRole("only one role is in the queue.");
       }
     } catch {
-      renderReviewRole("Could not postpone that role. Try again.");
+      renderReviewRole("could not postpone that role. try again.");
     } finally {
       reviewView.querySelectorAll(".review-action").forEach((button) => {
         button.disabled = reviewQueue.length === 0;
@@ -881,14 +892,14 @@ async function handleReviewAction(action) {
   try {
     const updatedRole = await updateRoleStatusById(current.id, action);
     reviewQueue.shift();
-    renderReviewRole(action === "interested" ? "Marked interested." : "Marked disinterested.");
+    renderReviewRole(action === "interested" ? "marked interested." : "marked disinterested.");
     const currentJobEl = document.querySelector(`.job[data-role-id="${CSS.escape(String(current.id))}"]`);
     applyRoleStatusUpdate(updatedRole, currentJobEl);
   } catch {
     buttons.forEach((button) => {
       button.disabled = false;
     });
-    renderReviewRole("Could not update that role. Try again.");
+    renderReviewRole("could not update that role. try again.");
   }
 }
 
@@ -934,7 +945,7 @@ function hasExpandedStatusPane() {
 }
 
 function updateToggleAllButton() {
-  toggleAllButton.textContent = hasExpandedStatusPane() ? "Collapse all" : "Expand all";
+  toggleAllButton.textContent = hasExpandedStatusPane() ? "collapse all" : "expand all";
 }
 
 function expandAllStatusPanes() {
@@ -967,17 +978,17 @@ toggleAllButton.addEventListener("click", () => {
 
 collapseEmptyButton.addEventListener("click", () => {
   hideEmpty = !hideEmpty;
-  collapseEmptyButton.textContent = hideEmpty ? "Show empty" : "Hide empty";
+  collapseEmptyButton.textContent = hideEmpty ? "show empty" : "hide empty";
   if (trackerData) renderStatuses(trackerData.statuses);
 });
 
 loadTracker().catch(() => {
-  statusListEl.innerHTML = '<p class="empty-copy">Could not load jobs.</p>';
+  statusListEl.innerHTML = '<p class="empty-copy">could not load jobs.</p>';
 });
 
 loadApplicationMaterials({ applyDefaultCollapsed: true }).catch(() => {
-  renderMasterResume(null, "Could not load resume.");
-  renderCoverLetterExamples([], "Could not load cover letter examples.");
+  renderMasterResume(null, "could not load resume.");
+  renderCoverLetterExamples([], "could not load cover letter examples.");
   updateMaterialsSummary();
 });
 
@@ -986,5 +997,5 @@ loadScanStatus()
     startScanStatusPolling();
   })
   .catch(() => {
-    scanStatusText.textContent = "Could not load scan status";
+    scanStatusText.textContent = "could not load scan status";
   });

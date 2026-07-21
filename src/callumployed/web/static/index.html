@@ -4,41 +4,41 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>callumployed</title>
-    <link rel="stylesheet" href="/assets/app.css?v=20260721-1" />
+    <link rel="stylesheet" href="/assets/app.css?v=20260721-3" />
   </head>
   <body>
     <main class="shell">
       <header class="topbar">
         <div class="brand-lockup">
-          <img class="brand-logo" src="/assets/camackenzie-logo.svg" alt="Callum Mackenzie" />
+          <img class="brand-logo" src="/assets/camackenzie-logo.svg" alt="callum mackenzie" />
           <div>
             <p class="eyebrow">callumployed</p>
-            <h1>Job tracker</h1>
+            <h1>job tracker</h1>
           </div>
         </div>
       </header>
 
-      <section class="stats-grid" id="stats" aria-label="Overall stats"></section>
+      <section class="stats-grid" id="stats" aria-label="overall stats"></section>
 
-      <section class="materials-panel" id="materials-panel" aria-label="Application materials">
+      <section class="materials-panel" id="materials-panel" aria-label="application materials">
         <button class="materials-toggle" id="materials-toggle" type="button" aria-expanded="true">
           <span class="materials-chevron">v</span>
-          <span class="materials-title">Application materials</span>
-          <span class="materials-summary" id="materials-summary">Resume + cover letters</span>
+          <span class="materials-title">application materials</span>
+          <span class="materials-summary" id="materials-summary">resume + cover letters</span>
         </button>
         <div class="materials-body" id="materials-body">
           <div class="material-row">
             <div class="material-status">
-              <p class="material-label">Resume</p>
-              <p class="material-meta" id="resume-meta">No resume uploaded</p>
+              <p class="material-label">resume</p>
+              <p class="material-meta" id="resume-meta">no resume uploaded</p>
             </div>
             <input class="sr-only" id="resume-upload" type="file" accept=".tex,text/x-tex" />
-            <button type="button" id="resume-upload-button">Upload</button>
+            <button type="button" id="resume-upload-button">upload</button>
           </div>
           <div class="material-row">
             <div class="material-status">
-              <p class="material-label">Cover letters</p>
-              <p class="material-meta" id="cover-letter-meta">No examples uploaded</p>
+              <p class="material-label">cover letters</p>
+              <p class="material-meta" id="cover-letter-meta">no examples uploaded</p>
               <ul class="examples-list" id="cover-letter-list"></ul>
             </div>
             <input
@@ -48,24 +48,24 @@
               accept=".tex,.txt,.md,text/plain,text/markdown,text/x-tex"
               multiple
             />
-            <button type="button" id="cover-letter-upload-button">Upload</button>
+            <button type="button" id="cover-letter-upload-button">upload</button>
           </div>
         </div>
       </section>
 
-      <section class="review-entry" aria-label="Discovered review">
-        <button type="button" id="review-discovered">Review discovered</button>
-        <button type="button" id="scan-all-button">Scan roles</button>
+      <section class="review-entry" aria-label="discovered review">
+        <button type="button" id="review-discovered">review discovered</button>
+        <button type="button" id="scan-all-button">scan roles</button>
         <div class="scan-summary" id="scan-summary" aria-live="polite">
-          <span id="scan-status-text">Scan idle</span>
-          <span class="scan-status-last" id="scan-last-time">Last scan: never</span>
+          <span id="scan-status-text">scan idle</span>
+          <span class="scan-status-last" id="scan-last-time">last scan: never</span>
         </div>
       </section>
 
-      <section class="status-toolbar" aria-label="Status navigation">
+      <section class="status-toolbar" aria-label="status navigation">
         <div class="status-tabs" id="status-tabs"></div>
         <div class="view-actions">
-          <button class="search-toggle" id="search-toggle" type="button" aria-haspopup="dialog" aria-label="Search jobs">
+          <button class="search-toggle" id="search-toggle" type="button" aria-haspopup="dialog" aria-label="search jobs">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <circle cx="11" cy="11" r="7"></circle>
               <path d="m16.5 16.5 4 4"></path>
@@ -77,8 +77,8 @@
               <path d="m13.5 8.5-5 5"></path>
             </svg>
           </button>
-          <button type="button" id="toggle-all">Expand all</button>
-          <button type="button" id="collapse-empty">Show empty</button>
+          <button type="button" id="toggle-all">expand all</button>
+          <button type="button" id="collapse-empty">show empty</button>
         </div>
       </section>
 
@@ -86,46 +86,46 @@
     </main>
 
     <section class="search-dialog" id="search-dialog" aria-labelledby="search-heading" hidden>
-      <button class="search-backdrop" id="search-backdrop" type="button" aria-label="Close search"></button>
+      <button class="search-backdrop" id="search-backdrop" type="button" aria-label="close search"></button>
       <div class="search-panel" role="dialog" aria-modal="true">
         <header class="search-header">
           <div>
             <p class="eyebrow">tracker search</p>
-            <h2 id="search-heading">Search jobs</h2>
+            <h2 id="search-heading">search jobs</h2>
           </div>
-          <button type="button" id="close-search">Close</button>
+          <button type="button" id="close-search">close</button>
         </header>
         <form class="search" id="search-form" hidden>
-          <label class="sr-only" for="search-input">Search jobs</label>
-          <input id="search-input" name="q" type="search" placeholder="Search company, title, status" />
-          <button type="submit">Search</button>
+          <label class="sr-only" for="search-input">search jobs</label>
+          <input id="search-input" name="q" type="search" placeholder="search company, title, status" />
+          <button type="submit">search</button>
         </form>
       </div>
     </section>
 
-    <section class="review-view" id="review-view" aria-label="Discovered job review" hidden>
+    <section class="review-view" id="review-view" aria-label="discovered job review" hidden>
       <div class="review-shell">
         <header class="review-header">
           <div>
             <p class="eyebrow">discovered review</p>
-            <h2 id="review-heading">Review queue</h2>
+            <h2 id="review-heading">review queue</h2>
           </div>
-          <button type="button" id="close-review">Close</button>
+          <button type="button" id="close-review">close</button>
         </header>
         <div class="review-progress" id="review-progress"></div>
         <article class="review-card" id="review-card"></article>
       </div>
-      <div class="review-actions" aria-label="Review actions">
-        <button class="review-action danger" type="button" data-review-action="disinterested">Disinterested</button>
-        <button class="review-action" type="button" data-review-action="later">Look later</button>
-        <button class="review-action success" type="button" data-review-action="interested">Interested</button>
+      <div class="review-actions" aria-label="review actions">
+        <button class="review-action danger" type="button" data-review-action="disinterested">disinterested</button>
+        <button class="review-action" type="button" data-review-action="later">look later</button>
+        <button class="review-action success" type="button" data-review-action="interested">interested</button>
       </div>
     </section>
 
-    <aside class="scan-status-bar" id="scan-status-bar" aria-label="Scan running" hidden>
+    <aside class="scan-status-bar" id="scan-status-bar" aria-label="scan running" hidden>
       <span class="scan-status-dot" aria-hidden="true"></span>
     </aside>
 
-    <script src="/assets/app.js?v=20260721-1" type="module"></script>
+    <script src="/assets/app.js?v=20260721-3" type="module"></script>
   </body>
 </html>

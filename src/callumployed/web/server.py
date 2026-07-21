@@ -32,17 +32,17 @@ from callumployed.webscraping.profile_manager import BrowserProfileManager
 
 STATIC_PACKAGE = "callumployed.web.static"
 STATUS_LABELS: dict[str, str] = {
-    RoleStatus.DISCOVERED.value: "Discovered",
-    RoleStatus.INTERESTED.value: "Interested",
-    RoleStatus.DISINTERESTED.value: "Disinterested",
-    RoleStatus.PREPARED.value: "Prepared",
-    RoleStatus.APPLIED.value: "Applied",
-    RoleStatus.OA.value: "OA",
-    RoleStatus.INTERVIEW.value: "Interview",
-    RoleStatus.REJECTED.value: "Rejected",
-    RoleStatus.OFFER.value: "Offer",
-    RoleStatus.CLOSED.value: "Closed",
-    RoleStatus.ARCHIVED.value: "Archived",
+    RoleStatus.DISCOVERED.value: "discovered",
+    RoleStatus.INTERESTED.value: "interested",
+    RoleStatus.DISINTERESTED.value: "disinterested",
+    RoleStatus.PREPARED.value: "prepared",
+    RoleStatus.APPLIED.value: "applied",
+    RoleStatus.OA.value: "oa",
+    RoleStatus.INTERVIEW.value: "interview",
+    RoleStatus.REJECTED.value: "rejected",
+    RoleStatus.OFFER.value: "offer",
+    RoleStatus.CLOSED.value: "closed",
+    RoleStatus.ARCHIVED.value: "archived",
 }
 
 

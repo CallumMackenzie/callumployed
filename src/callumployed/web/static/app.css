@@ -50,6 +50,7 @@ body {
     linear-gradient(245deg, rgb(95 43 216 / 0.18), transparent 30%),
     linear-gradient(180deg, #ffffff 0%, #f4faf6 44%, #ffffff 100%);
   color: var(--text);
+  text-transform: lowercase;
 }
 
 body::before {
@@ -194,7 +195,7 @@ summary:focus-visible {
   font-size: 0.78rem;
   font-weight: 900;
   letter-spacing: 0;
-  text-transform: uppercase;
+  text-transform: lowercase;
 }
 
 h1,
@@ -406,7 +407,7 @@ h1 {
   color: var(--muted);
   font-size: 0.72rem;
   font-weight: 800;
-  text-transform: uppercase;
+  text-transform: lowercase;
 }
 
 .stat dd {
@@ -604,7 +605,7 @@ h1 {
   color: var(--green);
   font-size: 0.72rem;
   font-weight: 900;
-  text-transform: uppercase;
+  text-transform: lowercase;
 }
 
 .material-meta {
@@ -1088,7 +1089,7 @@ a:hover .role-link-icon {
   color: var(--bucket);
   font-size: 0.72rem;
   font-weight: 900;
-  text-transform: uppercase;
+  text-transform: lowercase;
 }
 
 .job-detail dd {
@@ -1190,7 +1191,7 @@ a:hover .role-link-icon {
   color: var(--green);
   font-size: 0.8rem;
   font-weight: 900;
-  text-transform: uppercase;
+  text-transform: lowercase;
 }
 
 .review-role-title {
@@ -1266,7 +1267,7 @@ a:hover .role-link-icon {
   color: var(--muted);
   font-size: 0.58rem;
   font-weight: 900;
-  text-transform: uppercase;
+  text-transform: lowercase;
 }
 
 .review-detail dd {
