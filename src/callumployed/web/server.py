@@ -17,14 +17,25 @@ from callumployed.data import db
 from callumployed.data.models import CoverLetterExample, MasterResume, RoleStatus
 from callumployed.data.repositories import (
     add_cover_letter_example,
+    get_location_filter,
     get_master_resume,
     get_tracking_stats,
     list_companies,
+    list_config_values,
     list_cover_letter_examples,
     list_role_items,
     list_scan_runs,
     record_role_review_later,
+    set_include_graduate_degree_roles,
+    set_include_hardware_roles,
+    set_internship_mode,
+    set_location_filter,
+    set_require_software_keywords,
     set_role_status,
+    should_include_graduate_degree_roles,
+    should_include_hardware_roles,
+    should_require_software_keywords,
+    should_use_internship_mode,
     upsert_master_resume,
 )
 from callumployed.services.scan_workflow import scan_company as run_scan_company
@@ -191,6 +202,9 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             if parsed_url.path == "/api/application-materials":
                 self._send_json(build_application_materials_payload())
                 return
+            if parsed_url.path == "/api/config":
+                self._send_json(build_config_payload())
+                return
             if parsed_url.path == "/api/master-resume":
                 self._send_json(build_master_resume_payload())
                 return
@@ -231,6 +245,9 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
             if len(path_parts) == 3 and path_parts == ["api", "scan", "all"]:
                 self._start_scan_all()
+                return
+            if len(path_parts) == 2 and path_parts == ["api", "config"]:
+                self._update_config()
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -391,6 +408,74 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             status = HTTPStatus.ACCEPTED if started else HTTPStatus.CONFLICT
             self._send_json_with_status(build_scan_status_payload(), status)
 
+        def _update_config(self) -> None:
+            payload = self._read_json_body()
+            if payload is None:
+                return
+
+            allowed_keys = {
+                "include_graduate_degree_roles",
+                "include_hardware_roles",
+                "internship_mode",
+                "location_filter",
+                "require_software_keywords",
+            }
+            invalid_keys = sorted(set(payload) - allowed_keys)
+            if invalid_keys:
+                self.send_error(
+                    HTTPStatus.BAD_REQUEST,
+                    f"Unsupported config values: {', '.join(invalid_keys)}",
+                )
+                return
+            if not payload:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Expected at least one config value")
+                return
+            bool_keys = {
+                "include_graduate_degree_roles",
+                "include_hardware_roles",
+                "internship_mode",
+                "require_software_keywords",
+            }
+            if not all(
+                isinstance(value, bool) if key in bool_keys else isinstance(value, str)
+                for key, value in payload.items()
+            ):
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid config value type")
+                return
+
+            try:
+                with db.connect() as connection:
+                    if "include_graduate_degree_roles" in payload:
+                        set_include_graduate_degree_roles(
+                            connection,
+                            payload["include_graduate_degree_roles"],
+                        )
+                    if "include_hardware_roles" in payload:
+                        set_include_hardware_roles(
+                            connection,
+                            payload["include_hardware_roles"],
+                        )
+                    if "require_software_keywords" in payload:
+                        set_require_software_keywords(
+                            connection,
+                            payload["require_software_keywords"],
+                        )
+                    if "internship_mode" in payload:
+                        set_internship_mode(
+                            connection,
+                            payload["internship_mode"],
+                        )
+                    if "location_filter" in payload:
+                        set_location_filter(
+                            connection,
+                            payload["location_filter"],
+                        )
+            except ValueError as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+
+            self._send_json(build_config_payload())
+
         def _send_static_file(self, filename: str, content_type: str) -> None:
             try:
                 body = resources.files(STATIC_PACKAGE).joinpath(filename).read_bytes()
@@ -441,6 +526,80 @@ def build_scan_status_payload() -> dict[str, Any]:
             if latest_scan
             else None
         ),
+    }
+
+
+def build_config_payload() -> dict[str, Any]:
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        values = list_config_values(connection)
+        include_graduate_degree_roles = should_include_graduate_degree_roles(connection)
+        include_hardware_roles = should_include_hardware_roles(connection)
+        require_software_keywords = should_require_software_keywords(connection)
+        internship_mode = should_use_internship_mode(connection)
+        location_filter = get_location_filter(connection)
+    return {
+        "values": values,
+        "settings": [
+            {
+                "key": "include_graduate_degree_roles",
+                "label": "graduate-degree roles",
+                "description": "include roles that require or strongly prefer a graduate degree",
+                "control": "toggle",
+                "value": include_graduate_degree_roles,
+                "default": False,
+                "editable": True,
+            },
+            {
+                "key": "include_hardware_roles",
+                "label": "hardware roles",
+                "description": "include hardware, embedded, fpga, and silicon-heavy roles",
+                "control": "toggle",
+                "value": include_hardware_roles,
+                "default": False,
+                "editable": True,
+            },
+            {
+                "key": "require_software_keywords",
+                "label": "software keywords",
+                "description": "reject roles without software-oriented keywords",
+                "control": "toggle",
+                "value": require_software_keywords,
+                "default": True,
+                "editable": True,
+            },
+            {
+                "key": "internship_mode",
+                "label": "internship mode",
+                "description": (
+                    "for internship-focused source pages, require intern evidence "
+                    "before tracking roles"
+                ),
+                "control": "toggle",
+                "value": internship_mode,
+                "default": True,
+                "editable": True,
+            },
+            {
+                "key": "location_filter",
+                "label": "location filter",
+                "description": (
+                    "only applies while scanning; existing roles are unaffected "
+                    "unless re-filtered"
+                ),
+                "control": "select",
+                "value": location_filter,
+                "default": "all",
+                "editable": True,
+                "options": [
+                    {"value": "canada", "label": "Canada"},
+                    {"value": "usa", "label": "USA"},
+                    {"value": "north_america", "label": "North America"},
+                    {"value": "international", "label": "International"},
+                    {"value": "all", "label": "All"},
+                ],
+            },
+        ],
     }
 
 

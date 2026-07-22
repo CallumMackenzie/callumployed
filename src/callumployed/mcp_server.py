@@ -69,6 +69,8 @@ def _config_payload() -> dict[str, Any]:
             ),
             "include_hardware_roles": repo.should_include_hardware_roles(connection),
             "require_software_keywords": repo.should_require_software_keywords(connection),
+            "internship_mode": repo.should_use_internship_mode(connection),
+            "location_filter": repo.get_location_filter(connection),
         }
     return payload
 
@@ -351,12 +353,16 @@ def update_config(
     include_graduate_degree_roles: bool | None = None,
     include_hardware_roles: bool | None = None,
     require_software_keywords: bool | None = None,
+    internship_mode: bool | None = None,
+    location_filter: str | None = None,
 ) -> dict[str, Any]:
     """Update app-wide scan filtering configuration."""
     if (
         include_graduate_degree_roles is None
         and include_hardware_roles is None
         and require_software_keywords is None
+        and internship_mode is None
+        and location_filter is None
     ):
         raise ValueError("provide at least one config value to update")
 
@@ -368,6 +374,10 @@ def update_config(
             repo.set_include_hardware_roles(connection, include_hardware_roles)
         if require_software_keywords is not None:
             repo.set_require_software_keywords(connection, require_software_keywords)
+        if internship_mode is not None:
+            repo.set_internship_mode(connection, internship_mode)
+        if location_filter is not None:
+            repo.set_location_filter(connection, location_filter)
     return _config_payload()
 
 

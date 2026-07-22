@@ -27,6 +27,9 @@ from callumployed.webscraping.models import CareersPageScanResult, ScoredLinkCan
 INCLUDE_GRADUATE_DEGREE_ROLES_CONFIG_KEY = "include_graduate_degree_roles"
 INCLUDE_HARDWARE_ROLES_CONFIG_KEY = "include_hardware_roles"
 REQUIRE_SOFTWARE_KEYWORDS_CONFIG_KEY = "require_software_keywords"
+INTERNSHIP_MODE_CONFIG_KEY = "internship_mode"
+LOCATION_FILTER_CONFIG_KEY = "location_filter"
+LOCATION_FILTER_VALUES = {"all", "canada", "usa", "north_america", "international"}
 APPLICATION_STATUSES = (
     RoleStatus.APPLIED,
     RoleStatus.OA,
@@ -279,6 +282,39 @@ def should_require_software_keywords(connection: turso.Connection) -> bool:
     if value is None:
         return True
     return value.lower() in {"1", "true", "yes", "on"}
+
+
+def set_internship_mode(connection: turso.Connection, enabled: bool) -> None:
+    set_config_value(
+        connection,
+        INTERNSHIP_MODE_CONFIG_KEY,
+        "true" if enabled else "false",
+    )
+
+
+def should_use_internship_mode(connection: turso.Connection) -> bool:
+    value = get_config_value(connection, INTERNSHIP_MODE_CONFIG_KEY)
+    if value is None:
+        return True
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+def set_location_filter(connection: turso.Connection, value: str) -> None:
+    cleaned_value = value.strip().lower().replace("-", "_")
+    if cleaned_value not in LOCATION_FILTER_VALUES:
+        expected_values = ", ".join(sorted(LOCATION_FILTER_VALUES))
+        raise ValueError(f"location_filter must be one of: {expected_values}")
+    set_config_value(connection, LOCATION_FILTER_CONFIG_KEY, cleaned_value)
+
+
+def get_location_filter(connection: turso.Connection) -> str:
+    value = get_config_value(connection, LOCATION_FILTER_CONFIG_KEY)
+    if value is None:
+        return "all"
+    cleaned_value = value.strip().lower().replace("-", "_")
+    if cleaned_value not in LOCATION_FILTER_VALUES:
+        return "all"
+    return cleaned_value
 
 
 def get_company(connection: turso.Connection, company_id: int) -> Company:

@@ -389,6 +389,8 @@ def test_config_show_prints_defaults(tmp_path: Path) -> None:
         "include_graduate_degree_roles: false (default)\n"
         "include_hardware_roles: false (default)\n"
         "require_software_keywords: true (default)\n"
+        "internship_mode: true (default)\n"
+        "location_filter: all (default)\n"
     )
 
 
@@ -498,6 +500,55 @@ def test_config_software_keyword_requirement_commands(tmp_path: Path) -> None:
     assert "Software keyword requirement enabled." in require_result.output
     assert show_require_result.exit_code == 0
     assert "require_software_keywords: true" in show_require_result.output
+
+
+def test_config_internship_mode_commands(tmp_path: Path) -> None:
+    database = tmp_path / "config-internship-mode.sqlite3"
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+
+    default_result = runner.invoke(app, ["config", "show"], env=env)
+    disable_result = runner.invoke(app, ["config", "disable-internship-mode"], env=env)
+    show_disabled_result = runner.invoke(app, ["config", "show"], env=env)
+    enable_result = runner.invoke(app, ["config", "enable-internship-mode"], env=env)
+    show_enabled_result = runner.invoke(app, ["config", "show"], env=env)
+
+    assert default_result.exit_code == 0
+    assert "internship_mode: true (default)" in default_result.output
+    assert disable_result.exit_code == 0
+    assert "Internship mode disabled." in disable_result.output
+    assert show_disabled_result.exit_code == 0
+    assert "internship_mode: false" in show_disabled_result.output
+    assert enable_result.exit_code == 0
+    assert "Internship mode enabled." in enable_result.output
+    assert show_enabled_result.exit_code == 0
+    assert "internship_mode: true" in show_enabled_result.output
+
+
+def test_config_location_filter_command(tmp_path: Path) -> None:
+    database = tmp_path / "config-location-filter.sqlite3"
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+
+    default_result = runner.invoke(app, ["config", "show"], env=env)
+    set_result = runner.invoke(
+        app,
+        ["config", "set-location-filter", "north-america"],
+        env=env,
+    )
+    show_result = runner.invoke(app, ["config", "show"], env=env)
+    invalid_result = runner.invoke(
+        app,
+        ["config", "set-location-filter", "mars"],
+        env=env,
+    )
+
+    assert default_result.exit_code == 0
+    assert "location_filter: all (default)" in default_result.output
+    assert set_result.exit_code == 0
+    assert "Location filter set to north_america." in set_result.output
+    assert show_result.exit_code == 0
+    assert "location_filter: north_america" in show_result.output
+    assert invalid_result.exit_code != 0
+    assert "location_filter must be one of" in invalid_result.output
 
 
 def test_roles_show_and_update_commands(tmp_path: Path) -> None:

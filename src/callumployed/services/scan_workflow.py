@@ -34,6 +34,7 @@ from callumployed.data.repositories import (
     finish_scan_run,
     get_company,
     get_company_career_page,
+    get_location_filter,
     get_role,
     get_role_by_company_url,
     get_scan_candidate,
@@ -46,6 +47,7 @@ from callumployed.data.repositories import (
     should_include_graduate_degree_roles,
     should_include_hardware_roles,
     should_require_software_keywords,
+    should_use_internship_mode,
     update_role,
     update_role_discovery_attempt_assessment,
 )
@@ -103,6 +105,24 @@ INTERN_INTENT_PATTERN = re.compile(
     r"new grad|new graduate|early(?:[+\s_-]|%20)+talent)\b",
     re.I,
 )
+CANADA_LOCATION_PATTERN = re.compile(
+    r"\b(?:canada|vancouver|calgary|toronto|waterloo|ottawa|montreal|montr[eé]al|"
+    r"british columbia|ontario|quebec|bc|on|qc)\b",
+    re.I,
+)
+USA_LOCATION_PATTERN = re.compile(
+    r"\b(?:united states|usa|u\.s\.a\.|u\.s\.|us|new york|nyc|chicago|"
+    r"palo alto|san francisco|san mateo|santa clara|santa clarita|"
+    r"mountain view|menlo park|los gatos|austin|bellevue|carrollton|"
+    r"fremont|miami|california|texas|washington|ca|ny|il|tx|wa|fl)\b",
+    re.I,
+)
+INTERNATIONAL_LOCATION_PATTERN = re.compile(
+    r"\b(?:brazil|london|amsterdam|netherlands|the netherlands|singapore|"
+    r"hong kong|shanghai|sydney|mumbai|india|china|australia|uk|"
+    r"united kingdom)\b",
+    re.I,
+)
 
 
 class ScanWorkflowState(TypedDict, total=False):
@@ -114,6 +134,8 @@ class ScanWorkflowState(TypedDict, total=False):
     include_graduate_degree_roles: bool
     include_hardware_roles: bool
     require_software_keywords: bool
+    internship_mode: bool
+    location_filter: str
     existing_posting_urls: set[str]
     rejected_role_urls: set[str]
     retry_rejected_roles: bool
@@ -142,6 +164,8 @@ class CompanyScanResult(TypedDict):
     include_graduate_degree_roles: bool
     include_hardware_roles: bool
     require_software_keywords: bool
+    internship_mode: bool
+    location_filter: str
 
 
 class RoleRescanResult(TypedDict):
@@ -243,7 +267,7 @@ def build_result_node(state: ScanWorkflowState) -> dict[str, object]:
             for link in links
             if _has_software_keyword(link.text, " ".join(link.reasons))
         ]
-    if _requires_intern_keywords(state):
+    if state.get("internship_mode", True) and _requires_intern_keywords(state):
         links = [
             link
             for link in links
@@ -361,6 +385,25 @@ async def visit_discovered_links_node(state: ScanWorkflowState) -> dict[str, obj
                 )
             if (
                 assessment.is_role
+                and not _location_matches_filter(
+                    assessment.location,
+                    state.get("location_filter", "all"),
+                )
+            ):
+                assessment = assessment.model_copy(
+                    update={
+                        "is_role": False,
+                        "confidence": max(assessment.confidence, 0.8),
+                        "rejection_reason": "location filtered by app config",
+                        "reasons": [
+                            *assessment.reasons,
+                            "location filter",
+                        ],
+                    }
+                )
+            if (
+                assessment.is_role
+                and state.get("internship_mode", True)
                 and _requires_intern_keywords(state)
                 and _intern_keyword_evidence_source(assessment, candidate, page) is None
             ):
@@ -375,7 +418,11 @@ async def visit_discovered_links_node(state: ScanWorkflowState) -> dict[str, obj
                         ],
                     }
                 )
-            elif assessment.is_role and _requires_intern_keywords(state):
+            elif (
+                assessment.is_role
+                and state.get("internship_mode", True)
+                and _requires_intern_keywords(state)
+            ):
                 intern_evidence_source = _intern_keyword_evidence_source(
                     assessment,
                     candidate,
@@ -523,6 +570,7 @@ FILTER_REJECTION_REASONS = {
     "hardware-only role filtered by app config",
     "software keyword requirement filtered by app config",
     "intern keyword requirement filtered by source config",
+    "location filtered by app config",
 }
 
 
@@ -537,6 +585,8 @@ def refilter_collected_roles(
         include_graduate_degree_roles = should_include_graduate_degree_roles(connection)
         include_hardware_roles = should_include_hardware_roles(connection)
         require_software_keywords = should_require_software_keywords(connection)
+        internship_mode = should_use_internship_mode(connection)
+        location_filter = get_location_filter(connection)
         attempts = list_role_discovery_attempts(connection, scan_run_id=scan_run_id)
 
     filtered_attempts = [
@@ -568,11 +618,13 @@ def refilter_collected_roles(
             include_graduate_degree_roles=include_graduate_degree_roles,
             include_hardware_roles=include_hardware_roles,
             require_software_keywords=require_software_keywords,
+            location_filter=location_filter,
         )
         page = _stored_page_from_attempt(attempt)
         if assessment.is_role and _stored_attempt_requires_intern_keywords(
             scan_page,
             career_page,
+            internship_mode=internship_mode,
         ):
             intern_evidence_source = _intern_keyword_evidence_source(
                 assessment,
@@ -779,8 +831,10 @@ def _stored_page_from_attempt(attempt: RoleDiscoveryAttempt) -> RenderedPageStat
 def _stored_attempt_requires_intern_keywords(
     scan_page: ScanPage,
     career_page: CompanyCareerPage | None,
+    *,
+    internship_mode: bool = True,
 ) -> bool:
-    return _requires_intern_keywords(
+    return internship_mode and _requires_intern_keywords(
         {
             "url": scan_page.source_url,
             "career_page": career_page,
@@ -872,6 +926,7 @@ def _apply_role_filters(
     include_graduate_degree_roles: bool,
     include_hardware_roles: bool,
     require_software_keywords: bool,
+    location_filter: str = "all",
 ) -> RolePageAssessment:
     if (
         assessment.is_role
@@ -921,7 +976,54 @@ def _apply_role_filters(
                 ],
             }
         )
+    if assessment.is_role and not _location_matches_filter(
+        assessment.location,
+        location_filter,
+    ):
+        return assessment.model_copy(
+            update={
+                "is_role": False,
+                "confidence": max(assessment.confidence, 0.8),
+                "rejection_reason": "location filtered by app config",
+                "reasons": [
+                    *assessment.reasons,
+                    "location filter",
+                ],
+            }
+        )
     return assessment
+
+
+def _location_matches_filter(location: str | None, location_filter: str) -> bool:
+    normalized_filter = location_filter.strip().lower().replace("-", "_")
+    if normalized_filter == "all":
+        return True
+
+    categories = _location_categories(location)
+    if not categories:
+        return False
+    if normalized_filter == "canada":
+        return "canada" in categories
+    if normalized_filter == "usa":
+        return "usa" in categories
+    if normalized_filter == "north_america":
+        return bool(categories & {"canada", "usa"})
+    if normalized_filter == "international":
+        return "international" in categories
+    return True
+
+
+def _location_categories(location: str | None) -> set[str]:
+    if not location:
+        return set()
+    categories: set[str] = set()
+    if CANADA_LOCATION_PATTERN.search(location):
+        categories.add("canada")
+    if USA_LOCATION_PATTERN.search(location):
+        categories.add("usa")
+    if INTERNATIONAL_LOCATION_PATTERN.search(location):
+        categories.add("international")
+    return categories
 
 
 def _is_graduate_degree_role(title: str | None, description: str | None) -> bool:
@@ -1052,6 +1154,8 @@ async def scan_career_page(
     include_graduate_degree_roles: bool = False,
     include_hardware_roles: bool = False,
     require_software_keywords: bool = True,
+    internship_mode: bool = True,
+    location_filter: str = "all",
     existing_posting_urls: set[str] | None = None,
     rejected_role_urls: set[str] | None = None,
     retry_rejected_roles: bool = False,
@@ -1071,6 +1175,8 @@ async def scan_career_page(
                 "include_graduate_degree_roles": include_graduate_degree_roles,
                 "include_hardware_roles": include_hardware_roles,
                 "require_software_keywords": require_software_keywords,
+                "internship_mode": internship_mode,
+                "location_filter": location_filter,
                 "existing_posting_urls": existing_posting_urls or set(),
                 "rejected_role_urls": (
                     set() if retry_rejected_roles else rejected_role_urls or set()
@@ -1107,6 +1213,8 @@ async def scan_company(
         include_graduate_degree_roles = should_include_graduate_degree_roles(connection)
         include_hardware_roles = should_include_hardware_roles(connection)
         require_software_keywords = should_require_software_keywords(connection)
+        internship_mode = should_use_internship_mode(connection)
+        location_filter = get_location_filter(connection)
 
     if not career_pages:
         return None
@@ -1128,6 +1236,8 @@ async def scan_company(
                 include_graduate_degree_roles=include_graduate_degree_roles,
                 include_hardware_roles=include_hardware_roles,
                 require_software_keywords=require_software_keywords,
+                internship_mode=internship_mode,
+                location_filter=location_filter,
                 existing_posting_urls=existing_posting_urls,
                 rejected_role_urls=rejected_role_urls,
                 retry_rejected_roles=retry_rejected_roles,
@@ -1156,6 +1266,8 @@ async def scan_company(
         "include_graduate_degree_roles": include_graduate_degree_roles,
         "include_hardware_roles": include_hardware_roles,
         "require_software_keywords": require_software_keywords,
+        "internship_mode": internship_mode,
+        "location_filter": location_filter,
     }
 
 

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>callumployed</title>
-    <link rel="stylesheet" href="/assets/app.css?v=20260721-3" />
+    <link rel="stylesheet" href="/assets/app.css?v=20260721-6" />
   </head>
   <body>
     <main class="shell">
@@ -16,6 +16,12 @@
             <h1>job tracker</h1>
           </div>
         </div>
+        <button class="settings-open" id="settings-open" type="button" aria-label="open settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"></path>
+            <path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.06.06a2.1 2.1 0 0 1-2.97 2.97l-.06-.06a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.08 1.65v.18a2.1 2.1 0 0 1-4.2 0v-.1a1.8 1.8 0 0 0-1.17-1.69 1.8 1.8 0 0 0-1.98.36l-.06.06a2.1 2.1 0 0 1-2.97-2.97l.06-.06a1.8 1.8 0 0 0 .36-1.98 1.8 1.8 0 0 0-1.65-1.08h-.18a2.1 2.1 0 0 1 0-4.2h.1a1.8 1.8 0 0 0 1.69-1.17 1.8 1.8 0 0 0-.36-1.98l-.06-.06a2.1 2.1 0 0 1 2.97-2.97l.06.06a1.8 1.8 0 0 0 1.98.36h.08a1.8 1.8 0 0 0 1.08-1.65v-.18a2.1 2.1 0 0 1 4.2 0v.1a1.8 1.8 0 0 0 1.08 1.65 1.8 1.8 0 0 0 1.98-.36l.06-.06a2.1 2.1 0 0 1 2.97 2.97l-.06.06a1.8 1.8 0 0 0-.36 1.98v.08a1.8 1.8 0 0 0 1.65 1.08h.18a2.1 2.1 0 0 1 0 4.2h-.1a1.8 1.8 0 0 0-1.65 1.08Z"></path>
+          </svg>
+        </button>
       </header>
 
       <section class="stats-grid" id="stats" aria-label="overall stats"></section>
@@ -126,6 +132,22 @@
       <span class="scan-status-dot" aria-hidden="true"></span>
     </aside>
 
-    <script src="/assets/app.js?v=20260721-3" type="module"></script>
+    <section class="settings-view" id="settings-view" aria-label="settings" hidden>
+      <div class="settings-shell">
+        <header class="settings-header">
+          <div>
+            <p class="eyebrow">callumployed</p>
+            <h2 id="settings-heading">settings</h2>
+          </div>
+          <button type="button" id="settings-close">close</button>
+        </header>
+        <div class="settings-status" id="settings-status" role="status" aria-live="polite"></div>
+        <form class="settings-form" id="settings-form">
+          <div class="settings-options" id="settings-options"></div>
+        </form>
+      </div>
+    </section>
+
+    <script src="/assets/app.js?v=20260721-6" type="module"></script>
   </body>
 </html>

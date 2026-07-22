@@ -124,18 +124,26 @@ def test_mcp_config_tools_return_defaults_and_updates(
         "include_graduate_degree_roles": False,
         "include_hardware_roles": False,
         "require_software_keywords": True,
+        "internship_mode": True,
+        "location_filter": "all",
     }
 
     updated = mcp_server.update_config(
         include_graduate_degree_roles=True,
         require_software_keywords=False,
+        internship_mode=False,
+        location_filter="canada",
     )
 
     assert updated["include_graduate_degree_roles"] is True
     assert updated["include_hardware_roles"] is False
     assert updated["require_software_keywords"] is False
+    assert updated["internship_mode"] is False
+    assert updated["location_filter"] == "canada"
     assert updated["values"] == {
         "include_graduate_degree_roles": "true",
+        "internship_mode": "false",
+        "location_filter": "canada",
         "require_software_keywords": "false",
     }
 

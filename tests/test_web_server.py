@@ -15,6 +15,7 @@ from callumployed.data.repositories import add_company, create_scan_run
 from callumployed.web.server import (
     LocalThreadingHTTPServer,
     ScanCoordinator,
+    build_config_payload,
     build_scan_status_payload,
     build_tracker_payload,
     create_handler,
@@ -64,8 +65,138 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-status-bar"' in markup
         assert 'id="scan-status-text"' in markup
         assert markup.index('id="scan-summary"') < markup.index('id="scan-status-text"')
-        assert "/assets/app.css?v=20260721-3" in markup
-        assert "/assets/app.js?v=20260721-3" in markup
+        assert 'id="settings-open"' in markup
+        assert 'aria-label="open settings"' in markup
+        assert 'id="settings-view"' in markup
+        assert 'id="settings-options"' in markup
+        assert "/assets/app.css?v=20260721-6" in markup
+        assert "/assets/app.js?v=20260721-6" in markup
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_config_payload_returns_current_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "web-config.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+
+    defaults = build_config_payload()
+
+    assert defaults["values"] == {}
+    assert defaults["settings"] == [
+        {
+            "key": "include_graduate_degree_roles",
+            "label": "graduate-degree roles",
+            "description": "include roles that require or strongly prefer a graduate degree",
+            "control": "toggle",
+            "value": False,
+            "default": False,
+            "editable": True,
+        },
+        {
+            "key": "include_hardware_roles",
+            "label": "hardware roles",
+            "description": "include hardware, embedded, fpga, and silicon-heavy roles",
+            "control": "toggle",
+            "value": False,
+            "default": False,
+            "editable": True,
+        },
+        {
+            "key": "require_software_keywords",
+            "label": "software keywords",
+            "description": "reject roles without software-oriented keywords",
+            "control": "toggle",
+            "value": True,
+            "default": True,
+            "editable": True,
+        },
+        {
+            "key": "internship_mode",
+            "label": "internship mode",
+            "description": (
+                "for internship-focused source pages, require intern evidence "
+                "before tracking roles"
+            ),
+            "control": "toggle",
+            "value": True,
+            "default": True,
+            "editable": True,
+        },
+        {
+            "key": "location_filter",
+            "label": "location filter",
+            "description": (
+                "only applies while scanning; existing roles are unaffected "
+                "unless re-filtered"
+            ),
+            "control": "select",
+            "value": "all",
+            "default": "all",
+            "editable": True,
+            "options": [
+                {"value": "canada", "label": "Canada"},
+                {"value": "usa", "label": "USA"},
+                {"value": "north_america", "label": "North America"},
+                {"value": "international", "label": "International"},
+                {"value": "all", "label": "All"},
+            ],
+        },
+    ]
+
+
+def test_config_endpoint_updates_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "web-config-endpoint.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        base_url = f"http://127.0.0.1:{port}"
+
+        with urlopen(f"{base_url}/api/config", timeout=5) as response:
+            defaults = json.loads(response.read().decode())
+
+        request = Request(
+            f"{base_url}/api/config",
+            data=json.dumps(
+                {
+                    "include_graduate_degree_roles": True,
+                    "require_software_keywords": False,
+                    "internship_mode": False,
+                    "location_filter": "north_america",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=5) as response:
+            updated = json.loads(response.read().decode())
+
+        assert response.status == 200
+        assert defaults["settings"][0]["value"] is False
+        assert updated["values"] == {
+            "include_graduate_degree_roles": "true",
+            "internship_mode": "false",
+            "location_filter": "north_america",
+            "require_software_keywords": "false",
+        }
+        setting_values = {setting["key"]: setting["value"] for setting in updated["settings"]}
+        assert setting_values == {
+            "include_graduate_degree_roles": True,
+            "include_hardware_roles": False,
+            "require_software_keywords": False,
+            "internship_mode": False,
+            "location_filter": "north_america",
+        }
     finally:
         server.shutdown()
         thread.join(timeout=5)

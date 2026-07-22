@@ -21,6 +21,7 @@ from callumployed.data.repositories import (
     add_role,
     clear_roles,
     get_company,
+    get_location_filter,
     get_master_resume,
     get_role,
     get_scan_run,
@@ -37,12 +38,15 @@ from callumployed.data.repositories import (
     list_scan_runs,
     set_include_graduate_degree_roles,
     set_include_hardware_roles,
+    set_internship_mode,
+    set_location_filter,
     set_primary_company_career_page_url,
     set_require_software_keywords,
     set_role_status,
     should_include_graduate_degree_roles,
     should_include_hardware_roles,
     should_require_software_keywords,
+    should_use_internship_mode,
     update_role,
     upsert_master_resume,
 )
@@ -342,6 +346,42 @@ def allow_non_software_keywords_command() -> None:
     typer.echo("Software keyword requirement disabled.")
 
 
+@config_app.command("enable-internship-mode")
+def enable_internship_mode_command() -> None:
+    """Require intern evidence on internship-focused source pages."""
+    with db.connect() as connection:
+        set_internship_mode(connection, True)
+
+    typer.echo("Internship mode enabled.")
+
+
+@config_app.command("disable-internship-mode")
+def disable_internship_mode_command() -> None:
+    """Do not require intern evidence on internship-focused source pages."""
+    with db.connect() as connection:
+        set_internship_mode(connection, False)
+
+    typer.echo("Internship mode disabled.")
+
+
+@config_app.command("set-location-filter")
+def set_location_filter_command(
+    location_filter: Annotated[
+        str,
+        typer.Argument(help="One of: all, canada, usa, north_america, international."),
+    ],
+) -> None:
+    """Set the location filter for newly scanned or re-filtered roles."""
+    try:
+        with db.connect() as connection:
+            set_location_filter(connection, location_filter)
+            saved_location_filter = get_location_filter(connection)
+    except ValueError as error:
+        raise typer.BadParameter(str(error)) from error
+
+    typer.echo(f"Location filter set to {saved_location_filter}.")
+
+
 @config_app.command("show")
 def show_config_command() -> None:
     """Show app-wide configuration."""
@@ -350,12 +390,16 @@ def show_config_command() -> None:
         include_graduate_degree_roles = should_include_graduate_degree_roles(connection)
         include_hardware_roles = should_include_hardware_roles(connection)
         require_software_keywords = should_require_software_keywords(connection)
+        internship_mode = should_use_internship_mode(connection)
+        location_filter = get_location_filter(connection)
 
     if not values:
         typer.echo("No app config set.")
         typer.echo("include_graduate_degree_roles: false (default)")
         typer.echo("include_hardware_roles: false (default)")
         typer.echo("require_software_keywords: true (default)")
+        typer.echo("internship_mode: true (default)")
+        typer.echo("location_filter: all (default)")
         return
 
     for key, value in values.items():
@@ -375,6 +419,13 @@ def show_config_command() -> None:
             "require_software_keywords: "
             f"{str(require_software_keywords).lower()} (default)"
         )
+    if "internship_mode" not in values:
+        typer.echo(
+            "internship_mode: "
+            f"{str(internship_mode).lower()} (default)"
+        )
+    if "location_filter" not in values:
+        typer.echo(f"location_filter: {location_filter} (default)")
 
 
 @browser_app.command("profiles")

@@ -29,6 +29,8 @@ from callumployed.data.repositories import (
     list_scan_pages,
     set_include_graduate_degree_roles,
     set_include_hardware_roles,
+    set_internship_mode,
+    set_location_filter,
     set_require_software_keywords,
 )
 from callumployed.services import scan_workflow
@@ -1124,6 +1126,98 @@ def test_scan_company_requires_software_keywords_by_default(
     }
 
 
+def test_scan_company_filters_locations_by_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+        **_render_options: object,
+    ) -> RenderedPageState:
+        if url.endswith("/careers"):
+            return RenderedPageState(
+                url=url,
+                final_url=url,
+                title="Careers",
+                html="""
+                <a href="/jobs/software-engineer-montreal">Software Engineer Canada</a>
+                <a href="/jobs/software-engineer-palo-alto">Software Engineer USA</a>
+                """,
+            )
+        is_canada = "montreal" in url
+        title = "Software Engineer Canada" if is_canada else "Software Engineer USA"
+        location_json = (
+            '{"@type":"Place","address":{"addressLocality":"Montréal",'
+            '"addressRegion":"QC","addressCountry":"Canada"}}'
+            if is_canada
+            else '{"@type":"Place","address":{"addressLocality":"Palo Alto",'
+            '"addressRegion":"CA","addressCountry":"United States"}}'
+        )
+        return RenderedPageState(
+            url=url,
+            final_url=url,
+            title=title,
+            html=f"""
+            <script type="application/ld+json">
+            {{
+              "@context": "https://schema.org",
+              "@type": "JobPosting",
+              "title": "{title}",
+              "description": "Build software systems.",
+              "jobLocation": {location_json}
+            }}
+            </script>
+            """,
+            visible_text="Build software systems.",
+        )
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Acme"))
+        if company.id is None:
+            raise AssertionError("company id missing")
+        add_company_career_page(
+            connection,
+            CompanyCareerPage(company_id=company.id, url="https://example.com/careers"),
+        )
+        set_location_filter(connection, "canada")
+
+    scan = asyncio.run(
+        scan_workflow.scan_company(
+            company,
+            chat_model_factory=lambda _settings: EmptyStructuredModel(),
+        )
+    )
+
+    assert scan is not None
+    assert scan["location_filter"] == "canada"
+    with db.connect() as connection:
+        roles = list_roles(connection)
+        attempts = list_role_discovery_attempts(connection)
+
+    assert {role.title for role in roles} == {"Software Engineer Canada"}
+    rejected_attempts = [
+        attempt
+        for attempt in attempts
+        if attempt.assessment_rejection_reason == "location filtered by app config"
+    ]
+    assert len(rejected_attempts) == 1
+    assert rejected_attempts[0].title == "Software Engineer USA"
+    assert "location filter" in rejected_attempts[0].assessment_reasons
+
+
+def test_location_filter_treats_calgary_as_canada() -> None:
+    assert scan_workflow._location_matches_filter("Calgary, AB", "canada")
+    assert scan_workflow._location_matches_filter("Calgary, AB", "north_america")
+    assert not scan_workflow._location_matches_filter("Calgary, AB", "usa")
+    assert not scan_workflow._location_matches_filter("Calgary, AB", "international")
+
+
 def test_scan_company_requires_intern_keywords_for_intern_source_url(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1203,6 +1297,75 @@ def test_scan_company_requires_intern_keywords_for_intern_source_url(
         roles = list_roles(connection)
 
     assert {role.title for role in roles} == {"Software Engineering Intern"}
+
+
+def test_scan_company_can_disable_internship_mode_for_intern_source_url(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+
+    source_url = "https://example.com/careers?filter_seniority=Intern"
+
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+        **_render_options: object,
+    ) -> RenderedPageState:
+        if url == source_url:
+            return RenderedPageState(
+                url=url,
+                final_url=url,
+                title="Careers",
+                html='<a href="/jobs/software-engineer-12345">Software Engineer</a>',
+            )
+        return RenderedPageState(
+            url=url,
+            final_url=url,
+            title="Software Engineer",
+            html="""
+            <script type="application/ld+json">
+            {
+              "@context": "https://schema.org",
+              "@type": "JobPosting",
+              "title": "Software Engineer",
+              "description": "Build software systems."
+            }
+            </script>
+            """,
+            visible_text="Build software systems.",
+        )
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Acme"))
+        if company.id is None:
+            raise AssertionError("company id missing")
+        add_company_career_page(
+            connection,
+            CompanyCareerPage(company_id=company.id, url=source_url),
+        )
+        set_internship_mode(connection, False)
+
+    scan = asyncio.run(
+        scan_workflow.scan_company(
+            company,
+            chat_model_factory=lambda _settings: EmptyStructuredModel(),
+        )
+    )
+
+    assert scan is not None
+    assert {link.text for link in scan["results"][0].links} == {"Software Engineer"}
+    assert scan["internship_mode"] is False
+    with db.connect() as connection:
+        roles = list_roles(connection)
+        attempts = list_role_discovery_attempts(connection)
+
+    assert {role.title for role in roles} == {"Software Engineer"}
+    assert len(attempts) == 1
+    assert attempts[0].assessment_rejection_reason is None
 
 
 def test_scan_company_allows_intern_source_role_when_listing_text_is_intern(

@@ -30,6 +30,12 @@ const scanStatusText = document.querySelector("#scan-status-text");
 const scanLastTime = document.querySelector("#scan-last-time");
 const toggleAllButton = document.querySelector("#toggle-all");
 const collapseEmptyButton = document.querySelector("#collapse-empty");
+const settingsOpenButton = document.querySelector("#settings-open");
+const settingsView = document.querySelector("#settings-view");
+const settingsCloseButton = document.querySelector("#settings-close");
+const settingsStatus = document.querySelector("#settings-status");
+const settingsForm = document.querySelector("#settings-form");
+const settingsOptions = document.querySelector("#settings-options");
 
 const REVIEW_LATER_RECOMMENDATION_THRESHOLD = 3;
 const APPLICATION_STATUSES = new Set(["applied", "OA", "interview", "rejected", "offer"]);
@@ -42,6 +48,7 @@ let reviewQueue = [];
 let materialsInitialized = false;
 let scanStatusPoll = null;
 let wasScanning = false;
+let settingsData = null;
 
 function getActiveSearchQuery() {
   return trackerData?.query?.trim() ?? "";
@@ -368,6 +375,141 @@ function renderScanStatus(payload) {
     loadTracker(getActiveSearchQuery()).catch(() => {});
   }
   wasScanning = scanning;
+}
+
+function renderSettings(payload, message = "") {
+  settingsData = payload;
+  const settings = Array.isArray(payload?.settings) ? payload.settings : [];
+  settingsStatus.textContent = message;
+  settingsStatus.classList.toggle("is-empty", !message);
+  settingsOptions.innerHTML = settings
+    .map((setting) => renderSettingOption(setting))
+    .join("");
+}
+
+function renderSettingOption(setting) {
+  if (setting.control === "select" && setting.editable !== false) {
+    return renderSelectSettingOption(setting);
+  }
+  if (setting.control !== "toggle" || setting.editable === false) {
+    return renderComputedSettingOption(setting);
+  }
+  const checked = setting.value ? "checked" : "";
+  const defaultText = setting.default ? "on by default" : "off by default";
+  return `
+    <label class="setting-option">
+      <span class="setting-copy">
+        <span class="setting-label">${escapeUiText(setting.label)}</span>
+        <span class="setting-description">${escapeUiText(setting.description)}</span>
+        <span class="setting-default">${escapeUiText(defaultText)}</span>
+      </span>
+      <span class="setting-switch">
+        <input type="checkbox" name="${escapeHtml(setting.key)}" ${checked} />
+        <span aria-hidden="true"></span>
+      </span>
+    </label>
+  `;
+}
+
+function renderSelectSettingOption(setting) {
+  const options = Array.isArray(setting.options) ? setting.options : [];
+  const defaultText = `default: ${formatUiText(setting.default)}`;
+  return `
+    <label class="setting-option">
+      <span class="setting-copy">
+        <span class="setting-label">${escapeUiText(setting.label)}</span>
+        <span class="setting-description">${escapeUiText(setting.description)}</span>
+        <span class="setting-default">${escapeUiText(defaultText)}</span>
+      </span>
+      <select class="setting-select" name="${escapeHtml(setting.key)}">
+        ${options
+          .map((option) => {
+            const selected = option.value === setting.value ? "selected" : "";
+            return `<option value="${escapeHtml(option.value)}" ${selected}>${escapeUiText(option.label)}</option>`;
+          })
+          .join("")}
+      </select>
+    </label>
+  `;
+}
+
+function renderComputedSettingOption(setting) {
+  const defaultText = setting.default ? "on by default" : "off by default";
+  const valueText = setting.value ? "automatic" : "off";
+  return `
+    <div class="setting-option setting-option-readonly">
+      <span class="setting-copy">
+        <span class="setting-label">${escapeUiText(setting.label)}</span>
+        <span class="setting-description">${escapeUiText(setting.description)}</span>
+        <span class="setting-default">${escapeUiText(defaultText)}</span>
+      </span>
+      <span class="setting-badge">${escapeUiText(valueText)}</span>
+    </div>
+  `;
+}
+
+function setSettingsDisabled(disabled) {
+  settingsForm.querySelectorAll("input, select").forEach((input) => {
+    input.disabled = disabled;
+  });
+}
+
+async function openSettingsView() {
+  settingsView.hidden = false;
+  document.body.classList.add("settings-open");
+  settingsCloseButton.focus();
+  if (settingsData) {
+    renderSettings(settingsData);
+  } else {
+    settingsStatus.textContent = "loading settings...";
+    settingsStatus.classList.remove("is-empty");
+    settingsOptions.innerHTML = "";
+  }
+  try {
+    await loadSettings();
+  } catch {
+    settingsStatus.textContent = "could not load settings.";
+  }
+}
+
+function closeSettingsView() {
+  settingsView.hidden = true;
+  document.body.classList.remove("settings-open");
+  settingsOpenButton.focus();
+}
+
+async function loadSettings() {
+  const response = await fetch("/api/config");
+  if (!response.ok) throw new Error("Config request failed");
+  renderSettings(await response.json());
+}
+
+async function saveSetting(control) {
+  const key = control.name;
+  if (!key) return;
+  const previousValue = control.type === "checkbox" ? !control.checked : settingsData?.settings
+    ?.find((setting) => setting.key === key)?.value;
+  const nextValue = control.type === "checkbox" ? control.checked : control.value;
+  setSettingsDisabled(true);
+  settingsStatus.textContent = "saving settings...";
+  settingsStatus.classList.remove("is-empty");
+  try {
+    const response = await fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ [key]: nextValue }),
+    });
+    if (!response.ok) throw new Error("Config update failed");
+    renderSettings(await response.json(), "settings saved.");
+  } catch {
+    if (control.type === "checkbox") {
+      control.checked = previousValue;
+    } else if (previousValue !== undefined) {
+      control.value = previousValue;
+    }
+    settingsStatus.textContent = "could not save settings.";
+    setSettingsDisabled(false);
+  }
 }
 
 async function loadScanStatus() {
@@ -934,6 +1076,7 @@ reviewView.addEventListener("click", (event) => {
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !searchDialog.hidden) closeSearchDialog();
   if (event.key === "Escape" && !reviewView.hidden) closeReviewView();
+  if (event.key === "Escape" && !settingsView.hidden) closeSettingsView();
 });
 
 function statusPaneToggles() {
@@ -980,6 +1123,16 @@ collapseEmptyButton.addEventListener("click", () => {
   hideEmpty = !hideEmpty;
   collapseEmptyButton.textContent = hideEmpty ? "show empty" : "hide empty";
   if (trackerData) renderStatuses(trackerData.statuses);
+});
+
+settingsOpenButton.addEventListener("click", openSettingsView);
+
+settingsCloseButton.addEventListener("click", closeSettingsView);
+
+settingsForm.addEventListener("change", (event) => {
+  const control = event.target.closest('input[type="checkbox"], select');
+  if (!control) return;
+  saveSetting(control);
 });
 
 loadTracker().catch(() => {

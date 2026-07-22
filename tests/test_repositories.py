@@ -11,9 +11,9 @@ from callumployed.data.models import (
     ScanStatus,
 )
 from callumployed.data.repositories import (
-    add_cover_letter_example,
     add_company,
     add_company_career_page,
+    add_cover_letter_example,
     add_role,
     add_role_discovery_attempt,
     add_scan_candidates,
@@ -22,11 +22,12 @@ from callumployed.data.repositories import (
     create_scan_run,
     finish_scan_run,
     get_event,
+    get_location_filter,
     get_master_resume,
-    list_cover_letter_examples,
     list_companies,
     list_company_career_pages,
     list_config_values,
+    list_cover_letter_examples,
     list_role_discovery_attempts,
     list_role_events,
     list_role_items,
@@ -37,12 +38,15 @@ from callumployed.data.repositories import (
     record_role_review_later,
     set_include_graduate_degree_roles,
     set_include_hardware_roles,
+    set_internship_mode,
+    set_location_filter,
     set_primary_company_career_page_url,
     set_require_software_keywords,
     set_role_status,
     should_include_graduate_degree_roles,
     should_include_hardware_roles,
     should_require_software_keywords,
+    should_use_internship_mode,
     update_role,
     upsert_master_resume,
 )
@@ -113,6 +117,35 @@ def test_config_repository_requires_software_keywords_by_default() -> None:
     set_require_software_keywords(connection, True)
     assert should_require_software_keywords(connection) is True
     assert list_config_values(connection) == {"require_software_keywords": "true"}
+
+
+def test_config_repository_uses_internship_mode_by_default() -> None:
+    connection = db.connect(":memory:")
+    db.run_migrations(connection)
+
+    assert should_use_internship_mode(connection) is True
+
+    set_internship_mode(connection, False)
+    assert should_use_internship_mode(connection) is False
+    assert list_config_values(connection) == {"internship_mode": "false"}
+
+    set_internship_mode(connection, True)
+    assert should_use_internship_mode(connection) is True
+    assert list_config_values(connection) == {"internship_mode": "true"}
+
+
+def test_config_repository_uses_all_location_filter_by_default() -> None:
+    connection = db.connect(":memory:")
+    db.run_migrations(connection)
+
+    assert get_location_filter(connection) == "all"
+
+    set_location_filter(connection, "north-america")
+    assert get_location_filter(connection) == "north_america"
+    assert list_config_values(connection) == {"location_filter": "north_america"}
+
+    with pytest.raises(ValueError, match="location_filter must be one of"):
+        set_location_filter(connection, "mars")
 
 
 def test_company_repository_tracks_multiple_career_pages() -> None:
