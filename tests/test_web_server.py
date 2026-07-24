@@ -69,8 +69,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'aria-label="open settings"' in markup
         assert 'id="settings-view"' in markup
         assert 'id="settings-options"' in markup
-        assert "/assets/app.css?v=20260721-6" in markup
-        assert "/assets/app.js?v=20260721-6" in markup
+        assert "/assets/app.css?v=20260724-1" in markup
+        assert "/assets/app.js?v=20260724-1" in markup
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -767,7 +767,7 @@ def test_tracker_status_endpoint_moves_interested_role(
     assert target["count"] == 1
 
 
-@pytest.mark.parametrize("status", ["interview", "rejected"])
+@pytest.mark.parametrize("status", ["interview", "disinterested", "rejected"])
 def test_tracker_status_endpoint_moves_oa_role(
     status: str,
     tmp_path: Path,

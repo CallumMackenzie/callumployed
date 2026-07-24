@@ -319,8 +319,9 @@ function renderAppliedActions(job) {
 
 function renderOaActions(job) {
   return `
-    <div class="job-actions" aria-label="oa role actions">
+    <div class="job-actions job-actions-nowrap" aria-label="oa role actions">
       <button class="job-action" type="button" data-role-id="${job.id}" data-status="interview">interview</button>
+      <button class="job-action" type="button" data-role-id="${job.id}" data-status="disinterested">disinterested</button>
       <button class="job-action danger" type="button" data-role-id="${job.id}" data-status="rejected">rejected</button>
     </div>
   `;
