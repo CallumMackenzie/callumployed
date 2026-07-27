@@ -11,6 +11,7 @@ from zipfile import ZipFile
 import pytest
 from typer.testing import CliRunner
 
+import callumployed.web.server as web_server
 from callumployed.cli import app
 from callumployed.data import db
 from callumployed.data.models import Company
@@ -82,8 +83,14 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="expand-all"' not in markup
         assert 'id="collapse-all"' not in markup
         assert 'id="scan-all-button"' in markup
+        assert 'id="prep-interested"' in markup
+        assert 'id="prep-view"' in markup
+        assert 'id="resume-resource-upload"' in markup
+        assert 'id="resume-resource-upload-button"' in markup
+        assert 'id="resume-resource-list"' in markup
         assert 'id="scan-summary"' in markup
-        assert markup.index('id="review-discovered"') < markup.index('id="scan-all-button"')
+        assert markup.index('id="review-discovered"') < markup.index('id="prep-interested"')
+        assert markup.index('id="prep-interested"') < markup.index('id="scan-all-button"')
         assert markup.index('id="scan-all-button"') < markup.index('id="scan-summary"')
         assert markup.index('id="scan-all-button"') < markup.index('class="status-toolbar"')
         assert 'id="scan-status-bar"' in markup
@@ -95,14 +102,331 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="settings-options"' in markup
         assert 'id="stats"' in markup
         assert 'class="stats-grid"' in markup
+        assert 'id="toolbar-summary"' in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
         assert "/assets/app.css?v=20260727-4" in markup
-        assert "/assets/app.js?v=20260727-5" in markup
+        assert "/assets/app.js?v=20260727-9" in markup
     finally:
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+def test_prep_analysis_endpoint_reports_resume_fit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-prep-analysis.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(
+        web_server,
+        "_prepared_resumes_root",
+        lambda: tmp_path / "prepared-resumes",
+    )
+    monkeypatch.setattr(
+        web_server,
+        "_resume_resources_root",
+        lambda: tmp_path / "resume-resources",
+    )
+    monkeypatch.setattr(
+        web_server,
+        "evaluate_resume_feedback",
+        lambda **_: (_ for _ in ()).throw(RuntimeError("no test LLM")),
+    )
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Backend Intern", "https://example.com/jobs/backend"],
+        env=env,
+    )
+    with db.connect() as connection:
+        connection.execute(
+            """
+            UPDATE roles
+            SET description = 'Python distributed systems data platform work'
+            WHERE id = 1
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO master_resumes (id, filename, content, content_sha256)
+            VALUES (1, 'resume.tex', 'Python systems backend projects', 'abc')
+            """
+        )
+        connection.commit()
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        with urlopen(f"http://127.0.0.1:{port}/api/roles/1/prep-analysis", timeout=5) as response:
+            payload = json.loads(response.read().decode())
+
+        assert response.status == 200
+        assert payload["analysis"]["role_id"] == 1
+        assert payload["analysis"]["verdict"] == "tweak"
+        assert "overview" in payload["analysis"]
+        assert "python" in payload["analysis"]["matched_terms"]
+        assert payload["analysis"]["feedback_items"]
+        titles = [item["title"] for item in payload["analysis"]["feedback_items"]]
+        assert any(title.startswith("change wording to align with posting") for title in titles)
+        assert any(title.startswith("add skills matching the posting") for title in titles)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_prep_feedback_acceptance_updates_role_resume_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-prep-feedback.sqlite3"
+    resume_root = tmp_path / "prepared-resumes"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    monkeypatch.setattr(
+        web_server,
+        "_resume_resources_root",
+        lambda: tmp_path / "resume-resources",
+    )
+    monkeypatch.setattr(
+        web_server,
+        "evaluate_resume_feedback",
+        lambda **_: (_ for _ in ()).throw(RuntimeError("no test LLM")),
+    )
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Backend Intern", "https://example.com/jobs/backend"],
+        env=env,
+    )
+    with db.connect() as connection:
+        connection.execute(
+            """
+            UPDATE roles
+            SET description = 'Python kubernetes distributed systems data platform work'
+            WHERE id = 1
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO master_resumes (id, filename, content, content_sha256)
+            VALUES (1, 'resume.tex', ?, 'abc')
+            """,
+            ("\\documentclass{article}\\begin{document}Python systems\\end{document}",),
+        )
+        connection.commit()
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        request = Request(
+            f"http://127.0.0.1:{port}/api/roles/1/prep-feedback",
+            data=json.dumps(
+                {
+                    "feedback_index": 0,
+                    "feedback_item": {
+                        "label": "gap",
+                        "title": "add distributed systems signal",
+                        "detail": "mention distributed systems experience",
+                        "latex_addition": "\\noindent Distributed systems experience.",
+                    },
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode())
+
+        resume_path = Path(payload["resume_path"])
+        assert response.status == 200
+        assert payload["accepted"] is True
+        assert resume_path == resume_root / "role-1" / "resume.tex"
+        resume_content = resume_path.read_text()
+        assert "% callumployed accepted prep feedback" in resume_content
+        assert "\\noindent Distributed systems experience." in resume_content
+        addition_index = resume_content.index("\\noindent Distributed systems experience.")
+        end_document_index = resume_content.index("\\end{document}")
+        assert addition_index < end_document_index
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_resume_pdf_endpoint_reports_missing_latex_compiler(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-resume-pdf.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setattr(
+        web_server,
+        "_prepared_resumes_root",
+        lambda: tmp_path / "prepared-resumes",
+    )
+    monkeypatch.setattr(
+        web_server,
+        "_resume_resources_root",
+        lambda: tmp_path / "resume-resources",
+    )
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Backend Intern", "https://example.com/jobs/backend"],
+        env=env,
+    )
+    with db.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO master_resumes (id, filename, content, content_sha256)
+            VALUES (1, 'resume.tex', ?, 'abc')
+            """,
+            ("\\documentclass{article}\\begin{document}Python systems\\end{document}",),
+        )
+        connection.commit()
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        request = Request(
+            f"http://127.0.0.1:{port}/api/roles/1/resume-pdf",
+            data=b"",
+            method="POST",
+        )
+
+        with pytest.raises(HTTPError) as error_info:
+            urlopen(request, timeout=5)
+
+        assert error_info.value.code == 503
+        payload = json.loads(error_info.value.read().decode())
+        assert "Install tectonic, latexmk, or pdflatex" in payload["error"]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_resume_resource_endpoint_uploads_shared_compile_dependency(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-resume-resource.sqlite3"
+    resource_root = tmp_path / "resume-resources"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "_resume_resources_root", lambda: resource_root)
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        content = b"\x89PNG\r\n"
+        request = Request(
+            f"http://127.0.0.1:{port}/api/resume-resources",
+            data=json.dumps(
+                {
+                    "filename": "../logo.png",
+                    "content_base64": base64.b64encode(content).decode(),
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode())
+
+        resource_path = resource_root / "logo.png"
+        assert response.status == 200
+        assert resource_path.read_bytes() == content
+        assert payload["resource"]["filename"] == "logo.png"
+        assert payload["resources"] == [{"filename": "logo.png", "bytes": len(content)}]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_shared_resume_resources_sync_into_role_resume_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resume_root = tmp_path / "prepared-resumes"
+    resource_root = tmp_path / "resume-resources"
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    monkeypatch.setattr(web_server, "_resume_resources_root", lambda: resource_root)
+    resource_root.mkdir(parents=True)
+    (resource_root / "logo.png").write_bytes(b"png")
+
+    web_server._ensure_role_resume_copy(
+        1,
+        web_server.MasterResume(
+            filename="resume.tex",
+            content="\\documentclass{article}\\begin{document}hi\\end{document}",
+            content_sha256="abc",
+        ),
+    )
+
+    assert (resume_root / "role-1" / "resume.tex").exists()
+    assert (resume_root / "role-1" / "logo.png").read_bytes() == b"png"
+
+
+def test_tectonic_resume_input_adds_pdftex_compatibility(tmp_path: Path) -> None:
+    resume_path = tmp_path / "resume.tex"
+    resume_path.write_text(
+        "\\documentclass{article}\n"
+        "\\input{glyphtounicode}\n"
+        "\\pdfgentounicode=1\n"
+        "\\begin{document}hello\\end{document}\n"
+    )
+
+    compile_path = web_server._write_tectonic_resume_input(resume_path)
+    compile_content = compile_path.read_text()
+
+    assert compile_path == tmp_path / "resume-tectonic.tex"
+    assert "\\providecommand{\\pdfglyphtounicode}[2]{}" in compile_content
+    assert "\\newcount\\pdfgentounicode" in compile_content
+
+
+def test_role_resume_resource_list_hides_compile_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resume_root = tmp_path / "prepared-resumes"
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    role_dir = resume_root / "role-1"
+    role_dir.mkdir(parents=True)
+    (role_dir / "resume.tex").write_text("resume")
+    (role_dir / "resume-tectonic.tex").write_text("generated")
+    (role_dir / "resume-tectonic.pdf").write_bytes(b"pdf")
+    (role_dir / "resume-tectonic.log").write_text("log")
+    (role_dir / "logo.png").write_bytes(b"png")
+
+    assert web_server._list_role_resume_resources(1) == [{"filename": "logo.png", "bytes": 3}]
 
 
 def test_config_payload_returns_current_settings(
@@ -578,6 +902,11 @@ def test_application_materials_endpoint_reports_default_collapsed_state(
 ) -> None:
     database = tmp_path / "tracker-application-materials.sqlite3"
     monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(
+        web_server,
+        "_resume_resources_root",
+        lambda: tmp_path / "resume-resources",
+    )
     db.ensure_initialized()
 
     server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
@@ -592,6 +921,8 @@ def test_application_materials_endpoint_reports_default_collapsed_state(
         assert empty_payload["ui"]["default_collapsed"] is False
         assert empty_payload["ui"]["has_master_resume"] is False
         assert empty_payload["ui"]["cover_letter_example_count"] == 0
+        assert empty_payload["ui"]["resume_resource_count"] == 0
+        assert empty_payload["resume_resources"] == []
 
         resume_request = Request(
             f"{base_url}/api/master-resume",
@@ -625,6 +956,7 @@ def test_application_materials_endpoint_reports_default_collapsed_state(
             ready_payload = json.loads(response.read().decode())
         assert ready_payload["ui"]["default_collapsed"] is True
         assert ready_payload["ui"]["cover_letter_example_count"] == 1
+        assert ready_payload["ui"]["resume_resource_count"] == 0
         assert ready_payload["master_resume"]["filename"] == "resume.tex"
         assert ready_payload["cover_letter_examples"][0]["filename"] == "cover.md"
     finally:

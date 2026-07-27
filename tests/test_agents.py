@@ -16,6 +16,11 @@ from callumployed.agents.posting_link_classifier import (
     build_posting_link_classification_prompt,
     classify_posting_links,
 )
+from callumployed.agents.resume_feedback import (
+    ResumeFeedbackAgent,
+    ResumeFeedbackResponse,
+    build_resume_feedback_prompt,
+)
 from callumployed.config import LlmSettings
 from callumployed.data.models import Company, CompanyCareerPage, ScanCandidate, ScanPage
 from callumployed.webscraping.models import (
@@ -64,6 +69,94 @@ def _classification_item(company_id: int = 1) -> PostingLinkClassificationItem:
             discovery_method="heuristic",
             created_at=datetime(2026, 1, 4),
         ),
+    )
+
+
+def test_resume_feedback_prompt_includes_verdict_rules_and_context() -> None:
+    prompt = build_resume_feedback_prompt(
+        role={
+            "id": 1,
+            "company_id": 2,
+            "title": "Backend Intern",
+            "role_url": "https://example.com/jobs/backend",
+            "location": "Vancouver",
+            "description": "Python distributed systems internship",
+        },
+        resume_content="Python systems projects in LaTeX",
+    )
+
+    assert '"ready_to_apply"' in prompt
+    assert '"tweak"' in prompt
+    assert "add skills matching the posting" in prompt
+    assert "change wording to align with posting" in prompt
+    assert "resume_context" in prompt
+    assert "job_context" in prompt
+    assert "Python distributed systems internship" in prompt
+    assert "Python systems projects in LaTeX" in prompt
+
+
+def test_resume_feedback_response_requires_known_verdict() -> None:
+    response = ResumeFeedbackResponse.model_validate(
+        {"verdict": "ready_to_apply", "overview": "fits well", "feedback_items": []}
+    )
+
+    assert response.verdict == "ready_to_apply"
+
+    with pytest.raises(ValidationError):
+        ResumeFeedbackResponse.model_validate(
+            {"verdict": "maybe", "overview": "unclear", "feedback_items": []}
+        )
+
+    with pytest.raises(ValidationError):
+        ResumeFeedbackResponse.model_validate(
+            {
+                "verdict": "tweak",
+                "overview": "needs work",
+                "feedback_items": [
+                    {
+                        "label": "generic",
+                        "title": "be better",
+                        "detail": "improve the resume",
+                    }
+                ],
+            }
+        )
+
+
+def test_resume_feedback_agent_normalizes_operation_titles() -> None:
+    class FakeResumeFeedbackModel:
+        async def ainvoke(self, _input: object) -> dict[str, object]:
+            return {
+                "verdict": "tweak",
+                "overview": "needs tailoring",
+                "feedback_items": [
+                    {
+                        "label": "add_skills",
+                        "title": "Add specific tech keywords from job posting",
+                        "detail": "mention supported skills from the posting",
+                    },
+                    {
+                        "label": "change_wording",
+                        "title": "Change wording to align with posting: distributed systems",
+                        "detail": "rewrite one bullet around distributed systems",
+                    },
+                ],
+            }
+
+    response = asyncio.run(
+        ResumeFeedbackAgent(
+            chat_model_factory=lambda _settings: FakeResumeFeedbackModel()
+        ).evaluate(
+            role={"id": 1, "title": "Backend Intern"},
+            resume_content="Python systems",
+        )
+    )
+
+    assert response.feedback_items[0].title == (
+        "add skills matching the posting: Add specific tech keywords from job posting"
+    )
+    assert response.feedback_items[1].title == (
+        "change wording to align with posting: distributed systems"
     )
 
 

@@ -43,6 +43,15 @@
           </div>
           <div class="material-row">
             <div class="material-status">
+              <p class="material-label">render resources</p>
+              <p class="material-meta" id="resume-resource-meta">no resources uploaded</p>
+              <ul class="examples-list" id="resume-resource-list"></ul>
+            </div>
+            <input class="sr-only" id="resume-resource-upload" type="file" multiple />
+            <button type="button" id="resume-resource-upload-button">upload</button>
+          </div>
+          <div class="material-row">
+            <div class="material-status">
               <p class="material-label">cover letters</p>
               <p class="material-meta" id="cover-letter-meta">no examples uploaded</p>
               <ul class="examples-list" id="cover-letter-list"></ul>
@@ -61,6 +70,7 @@
 
       <section class="review-entry" aria-label="discovered review">
         <button type="button" id="review-discovered">review discovered</button>
+        <button type="button" id="prep-interested">prep interested</button>
         <button type="button" id="scan-all-button">scan roles</button>
         <div class="scan-summary" id="scan-summary" aria-live="polite">
           <span id="scan-status-text">scan idle</span>
@@ -69,6 +79,7 @@
       </section>
 
       <section class="status-toolbar" aria-label="status navigation">
+        <div class="toolbar-summary" id="toolbar-summary" aria-label="job status summary"></div>
         <div class="view-actions">
           <button class="search-toggle" id="search-toggle" type="button" aria-haspopup="dialog" aria-label="search jobs">
             <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -127,6 +138,25 @@
       </div>
     </section>
 
+    <section class="review-view prep-view" id="prep-view" aria-label="interested job prep" hidden>
+      <div class="review-shell">
+        <header class="review-header">
+          <div>
+            <p class="eyebrow">materials prep</p>
+            <h2 id="prep-heading">prep queue</h2>
+          </div>
+          <button type="button" id="close-prep">close</button>
+        </header>
+        <div class="review-progress" id="prep-progress"></div>
+        <article class="review-card prep-card" id="prep-card"></article>
+      </div>
+      <div class="review-actions prep-actions" aria-label="prep actions">
+        <button class="review-action" type="button" data-prep-action="later">prep later</button>
+        <button class="review-action" type="button" data-prep-action="pdf">generate PDF</button>
+        <button class="review-action success" type="button" data-prep-action="applied">move to applied</button>
+      </div>
+    </section>
+
     <aside class="scan-status-bar" id="scan-status-bar" aria-label="scan running" hidden>
       <span class="scan-status-dot" aria-hidden="true"></span>
     </aside>
@@ -147,6 +177,6 @@
       </div>
     </section>
 
-    <script src="/assets/app.js?v=20260727-5" type="module"></script>
+    <script src="/assets/app.js?v=20260727-9" type="module"></script>
   </body>
 </html>

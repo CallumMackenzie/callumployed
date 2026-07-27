@@ -4,6 +4,8 @@ import asyncio
 import base64
 import binascii
 import json
+import shutil
+import subprocess
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -11,19 +13,23 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from io import BytesIO
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from socketserver import BaseServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
+from platformdirs import user_data_path
+
+from callumployed.agents.resume_feedback import evaluate_resume_feedback
 from callumployed.data import db
 from callumployed.data.models import CoverLetterExample, MasterResume, RoleStatus
 from callumployed.data.repositories import (
     add_cover_letter_example,
     get_location_filter,
     get_master_resume,
+    get_role,
     get_tracking_stats,
     list_companies,
     list_config_values,
@@ -216,6 +222,15 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             if parsed_url.path == "/api/cover-letter-examples":
                 self._send_json(build_cover_letter_examples_payload())
                 return
+            path_parts = [part for part in PurePosixPath(parsed_url.path).parts if part != "/"]
+            if (
+                len(path_parts) == 4
+                and path_parts[0] == "api"
+                and path_parts[1] == "roles"
+                and path_parts[3] == "prep-analysis"
+            ):
+                self._send_prep_analysis(path_parts[2])
+                return
             if parsed_url.path.startswith("/assets/"):
                 filename = PurePosixPath(parsed_url.path).name
                 content_type = _content_type_for(filename)
@@ -238,6 +253,30 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 len(path_parts) == 4
                 and path_parts[0] == "api"
                 and path_parts[1] == "roles"
+                and path_parts[3] == "prep-feedback"
+            ):
+                self._accept_prep_feedback(path_parts[2])
+                return
+            if (
+                len(path_parts) == 4
+                and path_parts[0] == "api"
+                and path_parts[1] == "roles"
+                and path_parts[3] == "resume-pdf"
+            ):
+                self._generate_resume_pdf(path_parts[2])
+                return
+            if (
+                len(path_parts) == 4
+                and path_parts[0] == "api"
+                and path_parts[1] == "roles"
+                and path_parts[3] == "resume-resources"
+            ):
+                self._upload_resume_resource(path_parts[2])
+                return
+            if (
+                len(path_parts) == 4
+                and path_parts[0] == "api"
+                and path_parts[1] == "roles"
                 and path_parts[3] == "review-later"
             ):
                 self._record_review_later(path_parts[2])
@@ -247,6 +286,9 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
             if len(path_parts) == 2 and path_parts == ["api", "cover-letter-examples"]:
                 self._add_cover_letter_example()
+                return
+            if len(path_parts) == 2 and path_parts == ["api", "resume-resources"]:
+                self._upload_resume_resource()
                 return
             if len(path_parts) == 3 and path_parts == ["api", "scan", "all"]:
                 self._start_scan_all()
@@ -351,6 +393,149 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
 
             self._send_json({"role": role.model_dump(mode="json")})
+
+        def _send_prep_analysis(self, role_id_text: str) -> None:
+            try:
+                role_id = int(role_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
+                return
+
+            try:
+                with db.connect() as connection:
+                    role = get_role(connection, role_id)
+                    resume = get_master_resume(connection)
+            except LookupError:
+                self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
+                return
+
+            analysis = build_prep_analysis(role.model_dump(mode="json"), resume)
+            if resume is not None:
+                _ensure_role_resume_copy(role.id or role_id, resume)
+            self._send_json(
+                {
+                    "analysis": analysis,
+                    "resources": _list_role_resume_resources(role.id or role_id),
+                }
+            )
+
+        def _accept_prep_feedback(self, role_id_text: str) -> None:
+            try:
+                role_id = int(role_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
+                return
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            feedback_index = payload.get("feedback_index")
+            if not isinstance(feedback_index, int):
+                self.send_error(HTTPStatus.BAD_REQUEST, "Expected feedback_index")
+                return
+            try:
+                with db.connect() as connection:
+                    role = get_role(connection, role_id)
+                    resume = get_master_resume(connection)
+            except LookupError:
+                self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
+                return
+            if resume is None:
+                self.send_error(HTTPStatus.BAD_REQUEST, "No master resume stored")
+                return
+            feedback = payload.get("feedback_item")
+            if not isinstance(feedback, dict):
+                analysis = build_prep_analysis(role.model_dump(mode="json"), resume)
+                feedback_items = analysis.get("feedback_items")
+                if (
+                    not isinstance(feedback_items, list)
+                    or not 0 <= feedback_index < len(feedback_items)
+                ):
+                    self.send_error(HTTPStatus.BAD_REQUEST, "Invalid feedback_index")
+                    return
+                feedback = feedback_items[feedback_index]
+            if not isinstance(feedback, dict):
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid feedback item")
+                return
+            resume_path = _apply_feedback_to_role_resume(role.id or role_id, resume, feedback)
+            self._send_json(
+                {
+                    "accepted": True,
+                    "feedback_index": feedback_index,
+                    "resume_path": str(resume_path),
+                }
+            )
+
+        def _generate_resume_pdf(self, role_id_text: str) -> None:
+            try:
+                role_id = int(role_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
+                return
+            try:
+                with db.connect() as connection:
+                    role = get_role(connection, role_id)
+                    resume = get_master_resume(connection)
+            except LookupError:
+                self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
+                return
+            if resume is None:
+                self.send_error(HTTPStatus.BAD_REQUEST, "No master resume stored")
+                return
+            try:
+                pdf_path = _generate_role_resume_pdf(role.model_dump(mode="json"), resume)
+            except RuntimeError as error:
+                self._send_json_with_status(
+                    {"error": str(error)},
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+                return
+            self._send_json({"pdf_path": str(pdf_path)})
+
+        def _upload_resume_resource(self, role_id_text: str | None = None) -> None:
+            role_id: int | None = None
+            if role_id_text is not None:
+                try:
+                    role_id = int(role_id_text)
+                except ValueError:
+                    self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
+                    return
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            filename = payload.get("filename")
+            content_base64 = payload.get("content_base64")
+            if not isinstance(filename, str) or not isinstance(content_base64, str):
+                self.send_error(HTTPStatus.BAD_REQUEST, "Expected filename and content_base64")
+                return
+            if role_id is not None:
+                try:
+                    with db.connect() as connection:
+                        role = get_role(connection, role_id)
+                        resume = get_master_resume(connection)
+                except LookupError:
+                    self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
+                    return
+                if resume is not None:
+                    _ensure_role_resume_copy(role.id or role_id, resume)
+            try:
+                saved_path = (
+                    _save_role_resume_resource(role.id or role_id, filename, content_base64)
+                    if role_id is not None
+                    else _save_resume_resource(filename, content_base64)
+                )
+            except ValueError as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            self._send_json(
+                {
+                    "resource": _resume_resource_summary(saved_path),
+                    "resources": (
+                        _list_role_resume_resources(role.id or role_id)
+                        if role_id is not None
+                        else _list_resume_resources()
+                    ),
+                }
+            )
 
         def _upsert_master_resume(self) -> None:
             payload = self._read_json_body()
@@ -638,6 +823,376 @@ def build_application_materials_payload() -> dict[str, Any]:
     return _application_materials_payload(resume, examples)
 
 
+def build_prep_analysis(
+    role: dict[str, Any],
+    resume: MasterResume | None,
+    *,
+    use_agent: bool = True,
+) -> dict[str, Any]:
+    if use_agent and resume is not None:
+        try:
+            response = asyncio.run(
+                evaluate_resume_feedback(role=role, resume_content=resume.content)
+            )
+            payload = response.model_dump(mode="json")
+            return {
+                "role_id": role.get("id"),
+                "source": "ai_resume_feedback",
+                "matched_terms": [],
+                "missing_terms": [],
+                **payload,
+            }
+        except Exception:  # noqa: BLE001 - prep view should still work without LLM access.
+            pass
+
+    title = str(role.get("title") or "this role")
+    description = str(role.get("description") or "")
+    location = str(role.get("location") or "")
+    resume_content = resume.content if resume is not None else ""
+    role_terms = _prep_keywords(" ".join([title, description, location]))
+    resume_terms = _prep_keywords(resume_content)
+    matched_terms = sorted(role_terms & resume_terms)[:10]
+    missing_terms = sorted(role_terms - resume_terms)[:10]
+
+    if resume is None:
+        overview = "no master resume is stored yet, so fit analysis is limited to the job text."
+    elif not description.strip():
+        overview = (
+            "resume fit is hard to judge because this role does not have a saved job "
+            "description yet."
+        )
+    elif matched_terms:
+        overview = (
+            f"resume has visible overlap with {title}, especially around "
+            f"{', '.join(matched_terms[:4])}."
+        )
+    else:
+        overview = (
+            f"resume overlap with {title} is not obvious from the saved text; tailor the "
+            "materials around the role's strongest requirements."
+        )
+
+    feedback_items: list[dict[str, str]] = []
+    if resume is None:
+        feedback_items.append(
+            {
+                "label": "setup",
+                "title": "upload master resume",
+                "detail": "add the current .tex resume before tailoring materials for this role.",
+            }
+        )
+    if not description.strip():
+        feedback_items.append(
+            {
+                "label": "refresh_context",
+                "title": "refresh job context: saved description is missing",
+                "detail": "rescan or open the role page so the prep view has full job context.",
+            }
+        )
+    if matched_terms:
+        feedback_items.append(
+            {
+                "label": "change_wording",
+                "title": "change wording to align with posting: matched experience",
+                "detail": (
+                    f"rewrite an existing project or experience bullet to foreground "
+                    f"{', '.join(matched_terms[:5])} using language from the posting."
+                ),
+            }
+        )
+    if missing_terms:
+        feedback_items.append(
+            {
+                "label": "add_skills",
+                "title": "add skills matching the posting: missing keywords",
+                "detail": (
+                    f"add {', '.join(missing_terms[:5])} only where they are honestly "
+                    "supported by existing resume projects or experience."
+                ),
+            }
+        )
+    feedback_items.append(
+        {
+            "label": "move_emphasis",
+            "title": "move emphasis earlier: strongest company-relevant project",
+            "detail": "move the most relevant project or skill cluster higher in the resume.",
+        }
+    )
+
+    verdict = "tweak" if feedback_items[:-1] else "ready_to_apply"
+    if verdict == "ready_to_apply":
+        overview = f"{title} looks ready to apply based on the saved resume and job context."
+        feedback_items = []
+
+    return {
+        "role_id": role.get("id"),
+        "source": "local_resume_job_analysis",
+        "verdict": verdict,
+        "overview": overview,
+        "matched_terms": matched_terms,
+        "missing_terms": missing_terms,
+        "feedback_items": feedback_items,
+    }
+
+
+def _prep_keywords(text: str) -> set[str]:
+    ignored_terms = {
+        "about",
+        "and",
+        "are",
+        "for",
+        "from",
+        "intern",
+        "internship",
+        "role",
+        "software",
+        "the",
+        "this",
+        "with",
+        "you",
+        "your",
+    }
+    normalized = "".join(character.lower() if character.isalnum() else " " for character in text)
+    return {
+        word
+        for word in normalized.split()
+        if len(word) >= 4 and word not in ignored_terms
+    }
+
+
+def _prepared_resumes_root() -> Path:
+    return user_data_path("callumployed", appauthor=False) / "prepared-resumes"
+
+
+def _resume_resources_root() -> Path:
+    return user_data_path("callumployed", appauthor=False) / "resume-resources"
+
+
+def _role_resume_dir(role_id: int) -> Path:
+    return _prepared_resumes_root() / f"role-{role_id}"
+
+
+def _role_resume_tex_path(role_id: int) -> Path:
+    return _role_resume_dir(role_id) / "resume.tex"
+
+
+def _resume_resource_summary(path: Path) -> dict[str, Any]:
+    return {
+        "filename": path.name,
+        "bytes": path.stat().st_size,
+    }
+
+
+def _list_resume_resources() -> list[dict[str, Any]]:
+    resource_dir = _resume_resources_root()
+    if not resource_dir.exists():
+        return []
+    return [
+        _resume_resource_summary(path)
+        for path in sorted(resource_dir.iterdir(), key=lambda item: item.name.lower())
+        if path.is_file()
+    ]
+
+
+def _list_role_resume_resources(role_id: int) -> list[dict[str, Any]]:
+    resume_dir = _role_resume_dir(role_id)
+    if not resume_dir.exists():
+        return []
+    excluded_names = {
+        "resume.tex",
+        "resume.pdf",
+        "resume-tectonic.tex",
+        "resume-tectonic.pdf",
+    }
+    excluded_suffixes = {".aux", ".fls", ".fdb_latexmk", ".log", ".out", ".synctex.gz"}
+    resources: list[dict[str, Any]] = []
+    for path in sorted(resume_dir.iterdir(), key=lambda item: item.name.lower()):
+        if not path.is_file():
+            continue
+        if path.name in excluded_names or any(
+            path.name.endswith(suffix) for suffix in excluded_suffixes
+        ):
+            continue
+        resources.append(_resume_resource_summary(path))
+    return resources
+
+
+def _ensure_role_resume_copy(role_id: int, resume: MasterResume) -> Path:
+    resume_dir = _role_resume_dir(role_id)
+    resume_dir.mkdir(parents=True, exist_ok=True)
+    resume_path = _role_resume_tex_path(role_id)
+    if not resume_path.exists():
+        resume_path.write_text(resume.content)
+    _sync_resume_resources_to_role(role_id)
+    return resume_path
+
+
+def _sync_resume_resources_to_role(role_id: int) -> None:
+    resource_dir = _resume_resources_root()
+    if not resource_dir.exists():
+        return
+    resume_dir = _role_resume_dir(role_id)
+    resume_dir.mkdir(parents=True, exist_ok=True)
+    for resource_path in resource_dir.iterdir():
+        if resource_path.is_file():
+            shutil.copyfile(resource_path, resume_dir / resource_path.name)
+
+
+def _save_resume_resource(filename: str, content_base64: str) -> Path:
+    return _save_resource_file(_resume_resources_root(), filename, content_base64)
+
+
+def _save_role_resume_resource(role_id: int, filename: str, content_base64: str) -> Path:
+    return _save_resource_file(_role_resume_dir(role_id), filename, content_base64)
+
+
+def _save_resource_file(root: Path, filename: str, content_base64: str) -> Path:
+    safe_filename = _safe_resource_filename(filename)
+    try:
+        content = base64.b64decode(content_base64, validate=True)
+    except binascii.Error as error:
+        raise ValueError("Resource content must be valid base64") from error
+    root.mkdir(parents=True, exist_ok=True)
+    target_path = root / safe_filename
+    target_path.write_bytes(content)
+    return target_path
+
+
+def _safe_resource_filename(filename: str) -> str:
+    safe_filename = PurePosixPath(filename).name.strip()
+    if not safe_filename or safe_filename in {".", ".."}:
+        raise ValueError("Invalid resource filename")
+    if safe_filename in {"resume.tex", "resume.pdf"}:
+        raise ValueError("Resource filename is reserved")
+    return safe_filename
+
+
+def _apply_feedback_to_role_resume(
+    role_id: int,
+    resume: MasterResume,
+    feedback: dict[str, Any],
+) -> Path:
+    resume_path = _ensure_role_resume_copy(role_id, resume)
+    title = str(feedback.get("title") or "resume feedback")
+    detail = str(feedback.get("detail") or "")
+    marker = f"% callumployed accepted feedback: {title}"
+    existing_content = resume_path.read_text()
+    if marker in existing_content:
+        return resume_path
+    target_text = feedback.get("target_text")
+    replacement_text = feedback.get("replacement_text")
+    latex_addition = feedback.get("latex_addition")
+    updated_content = existing_content
+
+    if (
+        isinstance(target_text, str)
+        and target_text
+        and isinstance(replacement_text, str)
+        and replacement_text
+        and target_text in updated_content
+    ):
+        updated_content = updated_content.replace(target_text, replacement_text, 1)
+    elif isinstance(latex_addition, str) and latex_addition.strip():
+        addition = "\n".join(
+            [
+                "",
+                "% callumployed accepted prep feedback",
+                marker,
+                latex_addition.strip(),
+                "",
+            ]
+        )
+        if "\\end{document}" in updated_content:
+            updated_content = updated_content.replace(
+                "\\end{document}",
+                f"{addition}\\end{{document}}",
+                1,
+            )
+        else:
+            updated_content = f"{updated_content.rstrip()}{addition}"
+    else:
+        updated_content = "\n".join(
+            [
+                updated_content.rstrip(),
+                "",
+                "% callumployed accepted prep feedback",
+                marker,
+                f"% {detail}",
+                "",
+            ]
+        )
+
+    if marker not in updated_content:
+        updated_content = "\n".join([updated_content.rstrip(), "", marker, ""])
+    resume_path.write_text(updated_content)
+    return resume_path
+
+
+def _generate_role_resume_pdf(role: dict[str, Any], resume: MasterResume) -> Path:
+    role_id = role.get("id")
+    if not isinstance(role_id, int):
+        raise RuntimeError("Role did not include an ID")
+    compiler = shutil.which("tectonic") or shutil.which("latexmk") or shutil.which("pdflatex")
+    if compiler is None:
+        raise RuntimeError("No LaTeX compiler found. Install tectonic, latexmk, or pdflatex.")
+
+    resume_path = _ensure_role_resume_copy(role_id, resume)
+    resume_dir = resume_path.parent
+    compiler_name = Path(compiler).name
+    if compiler_name == "tectonic":
+        compile_path = _write_tectonic_resume_input(resume_path)
+        command = [compiler, "--keep-logs", "--keep-intermediates", compile_path.name]
+        generated_pdf = resume_dir / f"{compile_path.stem}.pdf"
+    elif compiler_name == "latexmk":
+        generated_pdf = resume_dir / "resume.pdf"
+        command = [compiler, "-pdf", "-interaction=nonstopmode", resume_path.name]
+    else:
+        generated_pdf = resume_dir / "resume.pdf"
+        command = [compiler, "-interaction=nonstopmode", resume_path.name]
+    completed = subprocess.run(
+        command,
+        cwd=resume_dir,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError("LaTeX failed to compile the role resume.")
+
+    if not generated_pdf.exists():
+        raise RuntimeError(f"LaTeX did not produce {generated_pdf.name}.")
+
+    downloads_dir = Path.home() / "Downloads"
+    safe_title = _safe_filename(str(role.get("title") or f"role-{role_id}"))
+    target_path = downloads_dir / f"callumployed-{role_id}-{safe_title}-resume.pdf"
+    shutil.copyfile(generated_pdf, target_path)
+    return target_path
+
+
+def _write_tectonic_resume_input(resume_path: Path) -> Path:
+    content = resume_path.read_text()
+    compatibility = (
+        "% callumployed tectonic compatibility\n"
+        "\\providecommand{\\pdfglyphtounicode}[2]{}\n"
+        "\\ifdefined\\pdfgentounicode\\else\\newcount\\pdfgentounicode\\fi\n"
+    )
+    if (
+        ("\\pdfglyphtounicode" in content or "\\pdfgentounicode" in content)
+        and compatibility not in content
+    ):
+        content = content.replace("\\documentclass", f"{compatibility}\\documentclass", 1)
+    compile_path = resume_path.with_name("resume-tectonic.tex")
+    compile_path.write_text(content)
+    return compile_path
+
+
+def _safe_filename(value: str) -> str:
+    cleaned = "".join(character.lower() if character.isalnum() else "-" for character in value)
+    parts = [part for part in cleaned.split("-") if part]
+    return "-".join(parts[:10]) or "role"
+
+
 def _application_materials_payload(
     resume: MasterResume | None,
     examples: list[CoverLetterExample],
@@ -647,10 +1202,12 @@ def _application_materials_payload(
         "cover_letter_examples": [
             _cover_letter_example_summary(example) for example in examples
         ],
+        "resume_resources": _list_resume_resources(),
         "ui": {
             "default_collapsed": resume is not None and len(examples) >= 1,
             "has_master_resume": resume is not None,
             "cover_letter_example_count": len(examples),
+            "resume_resource_count": len(_list_resume_resources()),
         },
     }
 

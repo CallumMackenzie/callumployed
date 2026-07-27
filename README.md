@@ -50,6 +50,27 @@ python3 --version
 
 Use `python3` instead if it is Python 3.12 or newer.
 
+### External render dependencies
+
+The web prep view can generate per-role resume PDFs from uploaded LaTeX. PDF
+rendering requires one local TeX engine because Python dependencies do not bundle a
+complete LaTeX renderer.
+
+Recommended on macOS:
+
+```bash
+brew install tectonic
+```
+
+Callumployed checks for these compilers in order:
+
+1. `tectonic`
+2. `latexmk`
+3. `pdflatex`
+
+`tectonic` is the smallest recommended install path. `latexmk` or `pdflatex` also
+work if they are already available from a TeX distribution such as MacTeX.
+
 ## Run the CLI
 
 After installing dependencies:
@@ -124,6 +145,9 @@ Application materials are stored in the local database alongside the tracker dat
 The master resume is a single replaceable `.tex` document. Cover letter examples are
 an append-only collection, so users can upload as many prior examples as they want for
 future tailoring.
+Resume render resources such as images, class files, and bibliography files are stored
+locally next to the app data and copied into each per-role resume folder before PDF
+generation.
 
 CLI commands:
 
@@ -134,8 +158,9 @@ callumployed materials show
 ```
 
 The web tracker exposes the same store through a compact application-materials bar:
-one control replaces the master resume, and another adds cover letter examples while
-showing recent uploaded filenames without expanding the whole tracker view.
+one control replaces the master resume, one uploads shared render resources, and
+another adds cover letter examples while showing recent uploaded filenames without
+expanding the whole tracker view.
 
 MCP tools expose the same data for agents:
 
