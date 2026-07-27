@@ -1,4 +1,3 @@
-const statsEl = document.querySelector("#stats");
 const statusListEl = document.querySelector("#status-list");
 const statusTabsEl = document.querySelector("#status-tabs");
 const searchToggle = document.querySelector("#search-toggle");
@@ -38,8 +37,6 @@ const settingsForm = document.querySelector("#settings-form");
 const settingsOptions = document.querySelector("#settings-options");
 
 const REVIEW_LATER_RECOMMENDATION_THRESHOLD = 3;
-const APPLICATION_STATUSES = new Set(["applied", "OA", "interview", "rejected", "offer"]);
-
 let hideEmpty = true;
 let trackerData = null;
 let masterResume = null;
@@ -129,17 +126,6 @@ function renderRoleTitle(title, url, className) {
   const label = `<span class="role-title-text">${escapeUiText(title)}</span>`;
   if (!url) return `<span class="${className}">${label}</span>`;
   return `<a class="${className}" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${label}${renderLinkIcon()}</a>`;
-}
-
-function renderStats(stats) {
-  const items = [
-    ["companies", stats.companies_total],
-    ["jobs", stats.jobs_total],
-    ["applications", stats.applications_total],
-  ];
-  statsEl.innerHTML = items
-    .map(([label, value]) => `<dl class="stat"><dt>${escapeUiText(label)}</dt><dd>${value}</dd></dl>`)
-    .join("");
 }
 
 function renderMasterResume(resume, message = "") {
@@ -340,7 +326,6 @@ function render(data) {
   trackerData = data;
   searchInput.value = data.query;
   updateSearchButton();
-  renderStats(data.stats);
   renderTabs(data.statuses);
   renderStatuses(data.statuses);
   updateToggleAllButton();
@@ -761,7 +746,6 @@ function applyRoleStatusUpdate(updatedRole, currentJobEl) {
   const nextStatus = updatedRole.role_status;
   const movedRole = moveRoleInTrackerData(updatedRole, previousStatus, nextStatus);
   updateStatusCounts(previousStatus, nextStatus);
-  updateApplicationStats(previousStatus, nextStatus);
   updateReviewButton(trackerData.statuses);
   moveRoleElement(currentJobEl, movedRole, previousStatus, nextStatus);
   updateToggleAllButton();
@@ -801,20 +785,6 @@ function updateStatusCounts(previousStatus, nextStatus) {
     const pane = document.querySelector(`#status-${CSS.escape(status)}`);
     refreshEmptyMessage(pane);
   });
-}
-
-function updateApplicationStats(previousStatus, nextStatus) {
-  if (!trackerData.stats) return;
-  const wasApplication = APPLICATION_STATUSES.has(previousStatus);
-  const isApplication = APPLICATION_STATUSES.has(nextStatus);
-  if (wasApplication === isApplication) {
-    renderStats(trackerData.stats);
-    return;
-  }
-
-  trackerData.stats.applications_total =
-    Number(trackerData.stats.applications_total ?? 0) + (isApplication ? 1 : -1);
-  renderStats(trackerData.stats);
 }
 
 function moveRoleElement(currentJobEl, movedRole, previousStatus, nextStatus) {
