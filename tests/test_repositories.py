@@ -21,9 +21,11 @@ from callumployed.data.repositories import (
     clear_roles,
     create_scan_run,
     finish_scan_run,
+    get_company,
     get_event,
     get_location_filter,
     get_master_resume,
+    increase_company_browser_wait,
     list_companies,
     list_company_career_pages,
     list_config_values,
@@ -71,7 +73,23 @@ def test_company_repository_adds_and_lists_companies() -> None:
     )
 
     assert company.id == 1
+    assert company.browser_extra_wait_ms == 0
     assert list_companies(connection) == [company]
+
+
+def test_company_repository_increases_browser_wait_time() -> None:
+    connection = db.connect(":memory:")
+    db.run_migrations(connection)
+
+    company = add_company(connection, Company(name="Acme"))
+    if company.id is None:
+        raise AssertionError("company id missing")
+
+    updated_company = increase_company_browser_wait(connection, company.id)
+    updated_company = increase_company_browser_wait(connection, company.id)
+
+    assert updated_company.browser_extra_wait_ms == 2_000
+    assert get_company(connection, company.id).browser_extra_wait_ms == 2_000
 
 
 def test_config_repository_filters_graduate_degree_roles_by_default() -> None:

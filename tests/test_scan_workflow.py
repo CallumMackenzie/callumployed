@@ -22,6 +22,7 @@ from callumployed.data.repositories import (
     add_scan_candidates,
     add_scan_page,
     create_scan_run,
+    get_company,
     get_role,
     list_role_discovery_attempts,
     list_roles,
@@ -2091,3 +2092,162 @@ def test_scan_company_records_failed_discovered_link_visits(
     assert len(attempts) == 1
     assert attempts[0].status is RoleDiscoveryStatus.FAILED
     assert attempts[0].error == "posting page failed"
+
+
+def test_scan_company_touches_rediscovered_existing_roles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+    existing_url = "https://example.com/jobs/software-engineering-intern-12345"
+    old_seen_at = "2026-01-01 00:00:00"
+
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+        **_render_options: object,
+    ) -> RenderedPageState:
+        return _page(url)
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Acme"))
+        if company.id is None:
+            raise AssertionError("company id missing")
+        add_company_career_page(
+            connection,
+            CompanyCareerPage(company_id=company.id, url="https://example.com/careers"),
+        )
+        role = add_role(
+            connection,
+            Role(
+                company_id=company.id,
+                title="Software Engineering Intern",
+                role_url=existing_url,
+            ),
+        )
+        if role.id is None:
+            raise AssertionError("role id missing")
+        connection.execute(
+            """
+            UPDATE roles
+            SET last_seen_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (old_seen_at, old_seen_at, role.id),
+        )
+        connection.commit()
+
+    scan = asyncio.run(
+        scan_workflow.scan_company(
+            company,
+            chat_model_factory=lambda _settings: EmptyStructuredModel(),
+        )
+    )
+
+    assert scan is not None
+    assert any(
+        candidate.url == existing_url and "already in database" in candidate.reasons
+        for candidate in scan["results"][0].candidates
+    )
+    with db.connect() as connection:
+        updated_role = get_role(connection, role.id)
+        assert updated_role.last_seen_at is not None
+        assert updated_role.updated_at is not None
+        assert updated_role.last_seen_at.isoformat() != "2026-01-01T00:00:00"
+        assert updated_role.updated_at.isoformat() != "2026-01-01T00:00:00"
+
+
+
+def test_scan_company_increases_company_wait_and_retries_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+    render_timeouts: list[int | None] = []
+
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        timeout_ms: int | None = None,
+        **_render_options: object,
+    ) -> RenderedPageState:
+        render_timeouts.append(timeout_ms)
+        if len(render_timeouts) == 1:
+            raise NavigationError(f"Timed out while navigating to {url}")
+        return _page(url)
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Acme"))
+        if company.id is None:
+            raise AssertionError("company id missing")
+        add_company_career_page(
+            connection,
+            CompanyCareerPage(company_id=company.id, url="https://example.com/careers"),
+        )
+
+    scan = asyncio.run(
+        scan_workflow.scan_company(
+            company,
+            chat_model_factory=lambda _settings: EmptyStructuredModel(),
+        )
+    )
+
+    assert scan is not None
+    assert render_timeouts[:2] == [
+        None,
+        scan_workflow.browser.DEFAULT_TIMEOUT_MS
+        + scan_workflow.COMPANY_TIMEOUT_RETRY_INCREMENT_MS,
+    ]
+    assert scan["company"].browser_extra_wait_ms == 1_000
+    with db.connect() as connection:
+        assert get_company(connection, company.id).browser_extra_wait_ms == 1_000
+
+
+def test_scan_company_caps_timeout_wait_increases_per_scan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+    render_timeouts: list[int | None] = []
+
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        timeout_ms: int | None = None,
+        **_render_options: object,
+    ) -> RenderedPageState:
+        render_timeouts.append(timeout_ms)
+        raise NavigationError(f"Timed out while navigating to {url}")
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Acme"))
+        if company.id is None:
+            raise AssertionError("company id missing")
+        add_company_career_page(
+            connection,
+            CompanyCareerPage(company_id=company.id, url="https://example.com/careers"),
+        )
+
+    with pytest.raises(NavigationError, match="Timed out while navigating"):
+        asyncio.run(
+            scan_workflow.scan_company(
+                company,
+                chat_model_factory=lambda _settings: EmptyStructuredModel(),
+            )
+        )
+
+    assert render_timeouts == [
+        None,
+        scan_workflow.browser.DEFAULT_TIMEOUT_MS + 1_000,
+        scan_workflow.browser.DEFAULT_TIMEOUT_MS + 2_000,
+        scan_workflow.browser.DEFAULT_TIMEOUT_MS + 3_000,
+    ]
+    with db.connect() as connection:
+        assert get_company(connection, company.id).browser_extra_wait_ms == 3_000

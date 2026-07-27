@@ -1,9 +1,12 @@
 import asyncio
+import base64
 import json
+from io import BytesIO
 from pathlib import Path
 from threading import Event, Thread
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from zipfile import ZipFile
 
 import pytest
 from typer.testing import CliRunner
@@ -11,7 +14,11 @@ from typer.testing import CliRunner
 from callumployed.cli import app
 from callumployed.data import db
 from callumployed.data.models import Company
-from callumployed.data.repositories import add_company, create_scan_run
+from callumployed.data.repositories import (
+    add_company,
+    create_scan_run,
+    list_cover_letter_examples,
+)
 from callumployed.web.server import (
     LocalThreadingHTTPServer,
     ScanCoordinator,
@@ -22,6 +29,23 @@ from callumployed.web.server import (
 )
 
 runner = CliRunner()
+
+
+def _minimal_docx(paragraphs: list[str]) -> bytes:
+    body = "".join(
+        f"<w:p><w:r><w:t>{paragraph}</w:t></w:r></w:p>"
+        for paragraph in paragraphs
+    )
+    document_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body>{body}</w:body>"
+        "</w:document>"
+    )
+    archive_bytes = BytesIO()
+    with ZipFile(archive_bytes, "w") as archive:
+        archive.writestr("word/document.xml", document_xml)
+    return archive_bytes.getvalue()
 
 
 def test_static_svg_assets_are_served_with_svg_content_type() -> None:
@@ -73,8 +97,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'class="stats-grid"' in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=20260727-3" in markup
-        assert "/assets/app.js?v=20260727-3" in markup
+        assert "/assets/app.css?v=20260727-4" in markup
+        assert "/assets/app.js?v=20260727-5" in markup
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -602,6 +626,55 @@ def test_application_materials_endpoint_reports_default_collapsed_state(
         assert ready_payload["ui"]["cover_letter_example_count"] == 1
         assert ready_payload["master_resume"]["filename"] == "resume.tex"
         assert ready_payload["cover_letter_examples"][0]["filename"] == "cover.md"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_cover_letter_examples_endpoint_extracts_docx_upload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-cover-letter-docx.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        url = f"http://127.0.0.1:{port}/api/cover-letter-examples"
+        request = Request(
+            url,
+            data=json.dumps(
+                {
+                    "filename": "google-cover.docx",
+                    "content_base64": base64.b64encode(
+                        _minimal_docx(
+                            [
+                                "Dear Google,",
+                                "I am excited about this internship.",
+                            ]
+                        )
+                    ).decode(),
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode())
+
+        assert payload["cover_letter_example"]["filename"] == "google-cover.docx"
+        with db.connect() as connection:
+            examples = list_cover_letter_examples(connection)
+        assert len(examples) == 1
+        assert examples[0].content == (
+            "Dear Google,\nI am excited about this internship."
+        )
     finally:
         server.shutdown()
         thread.join(timeout=5)

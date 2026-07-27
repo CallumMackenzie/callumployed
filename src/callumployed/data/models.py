@@ -45,6 +45,7 @@ class Company(AppModel):
     updated_at: datetime | None = None
     notes: str | None = None
     prestige_tier: str | None = None
+    browser_extra_wait_ms: int = 0
 
 
 class CompanyCareerPage(AppModel):

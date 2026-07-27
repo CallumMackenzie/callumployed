@@ -55,15 +55,17 @@ def add_company(connection: turso.Connection, company: Company) -> Company:
                 name,
                 careers_url,
                 notes,
-                prestige_tier
+                prestige_tier,
+                browser_extra_wait_ms
             )
-            VALUES (?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?)
             """,
             (
                 company.name,
                 "",
                 company.notes,
                 company.prestige_tier,
+                company.browser_extra_wait_ms,
             ),
         )
         connection.commit()
@@ -71,13 +73,14 @@ def add_company(connection: turso.Connection, company: Company) -> Company:
 
     cursor = connection.execute(
         """
-        INSERT INTO companies (name, notes, prestige_tier)
-        VALUES (?, ?, ?)
+        INSERT INTO companies (name, notes, prestige_tier, browser_extra_wait_ms)
+        VALUES (?, ?, ?, ?)
         """,
         (
             company.name,
             company.notes,
             company.prestige_tier,
+            company.browser_extra_wait_ms,
         ),
     )
     connection.commit()
@@ -326,7 +329,8 @@ def get_company(connection: turso.Connection, company_id: int) -> Company:
             created_at,
             updated_at,
             notes,
-            prestige_tier
+            prestige_tier,
+            browser_extra_wait_ms
         FROM companies
         WHERE id = ?
         """,
@@ -346,12 +350,33 @@ def list_companies(connection: turso.Connection) -> list[Company]:
             created_at,
             updated_at,
             notes,
-            prestige_tier
+            prestige_tier,
+            browser_extra_wait_ms
         FROM companies
         ORDER BY name
         """
     ).fetchall()
     return [Company.model_validate(dict(row)) for row in rows]
+
+
+def increase_company_browser_wait(
+    connection: turso.Connection,
+    company_id: int,
+    *,
+    increment_ms: int = 1_000,
+) -> Company:
+    connection.execute(
+        """
+        UPDATE companies
+        SET
+            browser_extra_wait_ms = browser_extra_wait_ms + ?,
+            updated_at = datetime('now')
+        WHERE id = ?
+        """,
+        (increment_ms, company_id),
+    )
+    connection.commit()
+    return get_company(connection, company_id)
 
 
 def add_company_career_page(

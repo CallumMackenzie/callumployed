@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import threading
 from dataclasses import dataclass
@@ -8,10 +10,13 @@ from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
+from io import BytesIO
 from pathlib import PurePosixPath
 from socketserver import BaseServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+from xml.etree import ElementTree
+from zipfile import BadZipFile, ZipFile
 
 from callumployed.data import db
 from callumployed.data.models import CoverLetterExample, MasterResume, RoleStatus
@@ -378,8 +383,18 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
 
             filename = payload.get("filename")
             content = payload.get("content")
-            if not isinstance(filename, str) or not isinstance(content, str):
-                self.send_error(HTTPStatus.BAD_REQUEST, "Expected filename and content")
+            content_base64 = payload.get("content_base64")
+            if not isinstance(filename, str):
+                self.send_error(HTTPStatus.BAD_REQUEST, "Expected filename")
+                return
+            try:
+                extracted_content = _cover_letter_content_from_payload(
+                    filename,
+                    content=content,
+                    content_base64=content_base64,
+                )
+            except ValueError as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
                 return
 
             try:
@@ -387,7 +402,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                     example = add_cover_letter_example(
                         connection,
                         filename=filename,
-                        content=content,
+                        content=extracted_content,
                     )
                     examples = list_cover_letter_examples(connection)
             except ValueError as error:
@@ -659,6 +674,57 @@ def _cover_letter_example_summary(example: CoverLetterExample) -> dict[str, Any]
         "created_at": example.created_at.isoformat() if example.created_at else None,
         "updated_at": example.updated_at.isoformat() if example.updated_at else None,
     }
+
+
+def _cover_letter_content_from_payload(
+    filename: str,
+    *,
+    content: object,
+    content_base64: object,
+) -> str:
+    if filename.lower().endswith(".docx"):
+        if not isinstance(content_base64, str):
+            raise ValueError("DOCX cover letter uploads require content_base64")
+        try:
+            document_bytes = base64.b64decode(content_base64, validate=True)
+        except (binascii.Error, ValueError) as error:
+            raise ValueError("DOCX cover letter content is not valid base64") from error
+        return _extract_docx_text(document_bytes)
+    if not isinstance(content, str):
+        raise ValueError("Expected filename and content")
+    return content
+
+
+def _extract_docx_text(document_bytes: bytes) -> str:
+    try:
+        with ZipFile(BytesIO(document_bytes)) as archive:
+            document_xml = archive.read("word/document.xml")
+    except (BadZipFile, KeyError) as error:
+        raise ValueError("DOCX cover letter content could not be read") from error
+
+    try:
+        document = ElementTree.fromstring(document_xml)
+    except ElementTree.ParseError as error:
+        raise ValueError("DOCX cover letter document XML could not be parsed") from error
+
+    namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    paragraphs: list[str] = []
+    for paragraph in document.findall(".//w:p", namespace):
+        parts: list[str] = []
+        for node in paragraph.iter():
+            if node.tag == f"{{{namespace['w']}}}t" and node.text:
+                parts.append(node.text)
+            elif node.tag == f"{{{namespace['w']}}}tab":
+                parts.append("\t")
+            elif node.tag == f"{{{namespace['w']}}}br":
+                parts.append("\n")
+        text = "".join(parts).strip()
+        if text:
+            paragraphs.append(text)
+    extracted = "\n".join(paragraphs).strip()
+    if not extracted:
+        raise ValueError("DOCX cover letter content cannot be empty")
+    return extracted
 
 
 def _now_utc() -> datetime:

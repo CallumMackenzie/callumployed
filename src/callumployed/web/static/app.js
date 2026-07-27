@@ -292,6 +292,7 @@ function renderInterestedActions(job) {
     <div class="job-actions" aria-label="interested role actions">
       <button class="job-action" type="button" data-role-id="${job.id}" data-status="applied">applied</button>
       <button class="job-action" type="button" data-role-id="${job.id}" data-status="disinterested">disinterested</button>
+      <button class="job-action danger" type="button" data-role-id="${job.id}" data-status="closed">closed</button>
     </div>
   `;
 }
@@ -617,14 +618,16 @@ async function uploadCoverLetterExamples(files) {
   );
   try {
     for (const file of selectedFiles) {
-      const content = await file.text();
+      const payload = { filename: file.name };
+      if (file.name.toLowerCase().endsWith(".docx")) {
+        payload.content_base64 = await readFileAsBase64(file);
+      } else {
+        payload.content = await file.text();
+      }
       const response = await fetch("/api/cover-letter-examples", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          filename: file.name,
-          content,
-        }),
+        body: JSON.stringify(payload),
       });
       if (!response.ok) throw new Error("Cover letter example upload failed");
     }
@@ -636,6 +639,18 @@ async function uploadCoverLetterExamples(files) {
     coverLetterUpload.value = "";
     coverLetterUploadButton.disabled = false;
   }
+}
+
+function readFileAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => {
+      const result = String(reader.result ?? "");
+      resolve(result.includes(",") ? result.split(",", 2)[1] : result);
+    });
+    reader.addEventListener("error", () => reject(reader.error));
+    reader.readAsDataURL(file);
+  });
 }
 
 searchForm.addEventListener("submit", (event) => {

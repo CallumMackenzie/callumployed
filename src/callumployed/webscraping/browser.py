@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, Literal
 
@@ -289,7 +290,8 @@ async def _render_with_context(
         if response.status >= 400:
             raise NavigationError(navigation_error_message(url, response.status))
 
-        await page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 15_000))
+        with suppress(PlaywrightTimeoutError):
+            await page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 15_000))
         await _wait_for_dynamic_content(
             page,
             timeout_ms=timeout_ms,

@@ -37,6 +37,7 @@ from callumployed.data.repositories import (
     get_role,
     get_role_by_company_url,
     get_scan_candidate,
+    increase_company_browser_wait,
     list_company_career_pages,
     list_rejected_role_urls,
     list_role_discovery_attempts,
@@ -74,6 +75,8 @@ from callumployed.webscraping.profile_manager import BrowserProfileManager
 from callumployed.webscraping.role_page_classifier import assess_role_page
 
 MIN_ROLE_CREATION_CONFIDENCE = 0.6
+COMPANY_TIMEOUT_RETRY_INCREMENT_MS = 1_000
+MAX_COMPANY_TIMEOUT_RETRIES_PER_SCAN = 3
 ROLE_PAGE_CONTENT_SETTLE_MIN_WAIT_MS = browser.ROLE_PAGE_CONTENT_SETTLE_MIN_WAIT_MS
 ROLE_PAGE_CONTENT_SETTLE_TIMEOUT_MS = browser.ROLE_PAGE_CONTENT_SETTLE_TIMEOUT_MS
 ROLE_PAGE_CONTENT_SETTLE_POLL_MS = browser.ROLE_PAGE_CONTENT_SETTLE_POLL_MS
@@ -137,6 +140,7 @@ class ScanWorkflowState(TypedDict, total=False):
     existing_posting_urls: set[str]
     rejected_role_urls: set[str]
     retry_rejected_roles: bool
+    browser_timeout_ms: int | None
     llm_settings: LlmSettings | None
     chat_model_factory: ChatModelFactory | None
     page: RenderedPageState
@@ -302,7 +306,28 @@ async def persist_scan_node(state: ScanWorkflowState) -> dict[str, object]:
         if scan_page.id is None:
             raise RuntimeError("created scan page did not include an id")
         stored_candidates = add_scan_candidates(connection, scan_page.id, result.candidates, result)
+        _touch_rediscovered_existing_roles(connection, state, result)
     return {"scan_page": scan_page, "stored_candidates": stored_candidates}
+
+
+def _touch_rediscovered_existing_roles(
+    connection: Any,
+    state: ScanWorkflowState,
+    result: CareersPageScanResult,
+) -> None:
+    company = state.get("company")
+    if company is None or company.id is None:
+        return
+
+    rediscovered_urls = {
+        candidate.url
+        for candidate in result.candidates
+        if "already in database" in candidate.reasons
+    }
+    for url in rediscovered_urls:
+        existing_role = get_role_by_company_url(connection, company.id, url)
+        if existing_role is not None and existing_role.id is not None:
+            update_role(connection, existing_role.id, touch_last_seen=True)
 
 
 async def visit_discovered_links_node(state: ScanWorkflowState) -> dict[str, object]:
@@ -830,6 +855,8 @@ async def _render_with_browser_profile_manager(
     state: ScanWorkflowState,
     **render_options: Any,
 ) -> RenderedPageState:
+    if "timeout_ms" not in render_options and state.get("browser_timeout_ms") is not None:
+        render_options["timeout_ms"] = state["browser_timeout_ms"]
     profile_manager = state.get("browser_profile_manager")
     if browser.browser_backend() == "browserbase":
         try:
@@ -1124,6 +1151,7 @@ async def scan_career_page(
     existing_posting_urls: set[str] | None = None,
     rejected_role_urls: set[str] | None = None,
     retry_rejected_roles: bool = False,
+    browser_timeout_ms: int | None = None,
     llm_settings: LlmSettings | None = None,
     chat_model_factory: ChatModelFactory | None = None,
 ) -> CareersPageScanResult:
@@ -1147,6 +1175,7 @@ async def scan_career_page(
                     set() if retry_rejected_roles else rejected_role_urls or set()
                 ),
                 "retry_rejected_roles": retry_rejected_roles,
+                "browser_timeout_ms": browser_timeout_ms,
                 "llm_settings": llm_settings,
                 "chat_model_factory": chat_model_factory,
                 "agent_links": [],
@@ -1189,14 +1218,21 @@ async def scan_company(
     if scan_run.id is None:
         raise RuntimeError("created scan run did not include an id")
 
+    current_company = company
+    timeout_retries_remaining = MAX_COMPANY_TIMEOUT_RETRIES_PER_SCAN
     results: list[CareersPageScanResult] = []
     role_discovery_attempts: list[RoleDiscoveryAttempt] = []
     try:
         for career_page in career_pages:
-            result = await scan_career_page(
-                company,
+            (
+                result,
+                current_company,
+                timeout_retries_used,
+            ) = await _scan_career_page_with_timeout_retry(
+                current_company,
                 career_page,
                 scan_run_id=scan_run.id,
+                timeout_retries_remaining=timeout_retries_remaining,
                 browser_profile_manager=browser_profile_manager,
                 include_graduate_degree_roles=include_graduate_degree_roles,
                 include_hardware_roles=include_hardware_roles,
@@ -1209,6 +1245,7 @@ async def scan_company(
                 llm_settings=llm_settings,
                 chat_model_factory=chat_model_factory,
             )
+            timeout_retries_remaining -= timeout_retries_used
             results.append(result)
     except Exception as error:
         with db.connect() as connection:
@@ -1223,7 +1260,7 @@ async def scan_company(
         )
 
     return {
-        "company": company,
+        "company": current_company,
         "scan_run": scan_run,
         "career_pages": career_pages,
         "results": results,
@@ -1234,6 +1271,76 @@ async def scan_company(
         "internship_mode": internship_mode,
         "location_filter": location_filter,
     }
+
+
+async def _scan_career_page_with_timeout_retry(
+    company: Company,
+    career_page: CompanyCareerPage,
+    *,
+    scan_run_id: int,
+    timeout_retries_remaining: int,
+    browser_profile_manager: BrowserProfileManager | None,
+    include_graduate_degree_roles: bool,
+    include_hardware_roles: bool,
+    require_software_keywords: bool,
+    internship_mode: bool,
+    location_filter: str,
+    existing_posting_urls: set[str],
+    rejected_role_urls: set[str],
+    retry_rejected_roles: bool,
+    llm_settings: LlmSettings | None,
+    chat_model_factory: ChatModelFactory | None,
+) -> tuple[CareersPageScanResult, Company, int]:
+    current_company = company
+    timeout_retries_used = 0
+    while True:
+        try:
+            return (
+                await scan_career_page(
+                    current_company,
+                    career_page,
+                    scan_run_id=scan_run_id,
+                    browser_profile_manager=browser_profile_manager,
+                    include_graduate_degree_roles=include_graduate_degree_roles,
+                    include_hardware_roles=include_hardware_roles,
+                    require_software_keywords=require_software_keywords,
+                    internship_mode=internship_mode,
+                    location_filter=location_filter,
+                    existing_posting_urls=existing_posting_urls,
+                    rejected_role_urls=rejected_role_urls,
+                    retry_rejected_roles=retry_rejected_roles,
+                    browser_timeout_ms=_company_browser_timeout_ms(current_company),
+                    llm_settings=llm_settings,
+                    chat_model_factory=chat_model_factory,
+                ),
+                current_company,
+                timeout_retries_used,
+            )
+        except NavigationError as error:
+            if (
+                not _is_navigation_timeout(error)
+                or timeout_retries_used >= timeout_retries_remaining
+            ):
+                raise
+
+        with db.connect() as connection:
+            current_company = increase_company_browser_wait(
+                connection,
+                current_company.id or career_page.company_id,
+                increment_ms=COMPANY_TIMEOUT_RETRY_INCREMENT_MS,
+            )
+        timeout_retries_used += 1
+
+
+def _company_browser_timeout_ms(company: Company) -> int | None:
+    extra_wait_ms = max(company.browser_extra_wait_ms, 0)
+    if extra_wait_ms == 0:
+        return None
+    return browser.DEFAULT_TIMEOUT_MS + extra_wait_ms
+
+
+def _is_navigation_timeout(error: NavigationError) -> bool:
+    return str(error).startswith("Timed out while navigating to ")
 
 
 async def scan_company_by_id(

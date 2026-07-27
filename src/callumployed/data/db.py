@@ -31,6 +31,7 @@ def run_migrations(connection: turso.Connection) -> None:
     _ensure_app_config_table(connection)
     _ensure_master_resumes_table(connection)
     _ensure_cover_letter_examples_table(connection)
+    _ensure_company_browser_wait_column(connection)
     _ensure_role_information_columns(connection)
     _ensure_role_discovery_assessment_columns(connection)
     _backfill_legacy_company_career_pages(connection)
@@ -83,6 +84,15 @@ def _ensure_cover_letter_examples_table(connection: turso.Connection) -> None:
             ON cover_letter_examples (updated_at)
         """
     )
+
+
+def _ensure_company_browser_wait_column(connection: turso.Connection) -> None:
+    company_columns = connection.execute("PRAGMA table_info(companies)").fetchall()
+    existing_columns = {row["name"] for row in company_columns}
+    if "browser_extra_wait_ms" not in existing_columns:
+        connection.execute(
+            "ALTER TABLE companies ADD COLUMN browser_extra_wait_ms INTEGER NOT NULL DEFAULT 0"
+        )
 
 
 def _ensure_role_information_columns(connection: turso.Connection) -> None:

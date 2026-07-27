@@ -13,6 +13,7 @@ from callumployed.webscraping.browser import (
     PROFILE_DIR_NAME,
     ROLE_PAGE_CONTENT_SETTLE_MIN_WAIT_MS,
     ROLE_PAGE_CONTENT_SETTLE_TIMEOUT_MS,
+    PlaywrightTimeoutError,
     _browserbase_session_connect_url,
     _looks_like_blocked_page,
     _render_with_context,
@@ -1151,6 +1152,84 @@ def test_render_with_context_closes_page_after_snapshot(
     )
 
     assert result.final_url == "https://example.com/careers"
+    assert context.page.closed is True
+
+
+def test_render_with_context_tolerates_networkidle_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeResponse:
+        status = 200
+
+    class FakeBodyLocator:
+        async def inner_text(self, *, timeout: int) -> str:
+            return "Software Engineer Intern"
+
+    class FakePage:
+        url = "https://example.com/careers"
+
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def goto(self, url: str, *, wait_until: str, timeout: int) -> FakeResponse:
+            return FakeResponse()
+
+        async def wait_for_load_state(self, state: str, *, timeout: int) -> None:
+            raise PlaywrightTimeoutError("networkidle timeout")
+
+        async def title(self) -> str:
+            return "Example Careers"
+
+        async def content(self) -> str:
+            return "<html><body><a href='/jobs/1'>Software Engineer Intern</a></body></html>"
+
+        def locator(self, selector: str) -> FakeBodyLocator:
+            return FakeBodyLocator()
+
+        async def close(self) -> None:
+            self.closed = True
+
+    class FakeContext:
+        def __init__(self) -> None:
+            self.page = FakePage()
+
+        def set_default_timeout(self, timeout: int) -> None:
+            return None
+
+        def set_default_navigation_timeout(self, timeout: int) -> None:
+            return None
+
+        async def route(self, pattern: str, handler: object) -> None:
+            return None
+
+        async def new_page(self) -> FakePage:
+            return self.page
+
+    async def fake_wait_for_dynamic_content(
+        page: object,
+        *,
+        timeout_ms: int,
+        **_settle_options: object,
+    ) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "callumployed.webscraping.browser._wait_for_dynamic_content",
+        fake_wait_for_dynamic_content,
+    )
+    context = FakeContext()
+
+    result = asyncio.run(
+        _render_with_context(
+            context,  # type: ignore[arg-type]
+            "https://example.com/careers",
+            timeout_ms=1_000,
+            blocked_types=set(),
+        )
+    )
+
+    assert result.title == "Example Careers"
+    assert "Software Engineer Intern" in result.html
     assert context.page.closed is True
 
 
