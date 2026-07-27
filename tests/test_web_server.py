@@ -299,8 +299,9 @@ def test_scan_status_reports_persisted_started_time_for_interrupted_scan(
 
     payload = build_scan_status_payload()
 
-    assert payload["last_scan_at"] == scan_run.started_at.isoformat()
-    assert payload["latest_scan"]["started_at"] == scan_run.started_at.isoformat()
+    expected_started_at = f"{scan_run.started_at.isoformat()}Z"
+    assert payload["last_scan_at"] == expected_started_at
+    assert payload["latest_scan"]["started_at"] == expected_started_at
     assert payload["latest_scan"]["finished_at"] is None
 
 

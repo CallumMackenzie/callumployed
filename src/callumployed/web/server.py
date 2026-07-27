@@ -734,7 +734,8 @@ def _now_utc() -> datetime:
 def _datetime_or_none(value: datetime | None) -> str | None:
     if value is None:
         return None
-    return value.isoformat()
+    value = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    return value.isoformat().replace("+00:00", "Z")
 
 
 def _latest_datetime(*values: datetime | None) -> datetime | None:
