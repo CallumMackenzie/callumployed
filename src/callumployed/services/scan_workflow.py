@@ -33,12 +33,10 @@ from callumployed.data.repositories import (
     create_scan_run,
     finish_scan_run,
     get_company,
-    get_company_career_page,
     get_location_filter,
     get_role,
     get_role_by_company_url,
     get_scan_candidate,
-    get_scan_page,
     list_company_career_pages,
     list_rejected_role_urls,
     list_role_discovery_attempts,
@@ -267,11 +265,11 @@ def build_result_node(state: ScanWorkflowState) -> dict[str, object]:
             for link in links
             if _has_software_keyword(link.text, " ".join(link.reasons))
         ]
-    if state.get("internship_mode", True) and _requires_intern_keywords(state):
+    if state.get("internship_mode", True):
         links = [
             link
             for link in links
-            if _has_intern_keyword(link.text)
+            if _discovered_link_has_intern_evidence(link)
         ]
     page = state["page"]
     result = CareersPageScanResult(
@@ -404,14 +402,13 @@ async def visit_discovered_links_node(state: ScanWorkflowState) -> dict[str, obj
             if (
                 assessment.is_role
                 and state.get("internship_mode", True)
-                and _requires_intern_keywords(state)
                 and _intern_keyword_evidence_source(assessment, candidate, page) is None
             ):
                 assessment = assessment.model_copy(
                     update={
                         "is_role": False,
                         "confidence": max(assessment.confidence, 0.8),
-                        "rejection_reason": "intern keyword requirement filtered by source config",
+                        "rejection_reason": "intern keyword requirement filtered by app config",
                         "reasons": [
                             *assessment.reasons,
                             "intern keyword requirement",
@@ -421,7 +418,6 @@ async def visit_discovered_links_node(state: ScanWorkflowState) -> dict[str, obj
             elif (
                 assessment.is_role
                 and state.get("internship_mode", True)
-                and _requires_intern_keywords(state)
             ):
                 intern_evidence_source = _intern_keyword_evidence_source(
                     assessment,
@@ -569,6 +565,7 @@ FILTER_REJECTION_REASONS = {
     "graduate-degree role filtered by app config",
     "hardware-only role filtered by app config",
     "software keyword requirement filtered by app config",
+    "intern keyword requirement filtered by app config",
     "intern keyword requirement filtered by source config",
     "location filtered by app config",
 }
@@ -605,12 +602,6 @@ def refilter_collected_roles(
             continue
         with db.connect() as connection:
             candidate = get_scan_candidate(connection, attempt.scan_candidate_id)
-            scan_page = get_scan_page(connection, candidate.scan_page_id)
-            career_page = (
-                get_company_career_page(connection, scan_page.company_career_page_id)
-                if scan_page.company_career_page_id is not None
-                else None
-            )
 
         assessment = _assessment_from_stored_attempt(attempt)
         assessment = _apply_role_filters(
@@ -621,11 +612,7 @@ def refilter_collected_roles(
             location_filter=location_filter,
         )
         page = _stored_page_from_attempt(attempt)
-        if assessment.is_role and _stored_attempt_requires_intern_keywords(
-            scan_page,
-            career_page,
-            internship_mode=internship_mode,
-        ):
+        if assessment.is_role and internship_mode:
             intern_evidence_source = _intern_keyword_evidence_source(
                 assessment,
                 candidate,
@@ -636,7 +623,7 @@ def refilter_collected_roles(
                     update={
                         "is_role": False,
                         "confidence": max(assessment.confidence, 0.8),
-                        "rejection_reason": "intern keyword requirement filtered by source config",
+                        "rejection_reason": "intern keyword requirement filtered by app config",
                         "reasons": [
                             *assessment.reasons,
                             "intern keyword requirement",
@@ -825,20 +812,6 @@ def _stored_page_from_attempt(attempt: RoleDiscoveryAttempt) -> RenderedPageStat
         title=attempt.title,
         html="",
         visible_text=attempt.visible_text_excerpt,
-    )
-
-
-def _stored_attempt_requires_intern_keywords(
-    scan_page: ScanPage,
-    career_page: CompanyCareerPage | None,
-    *,
-    internship_mode: bool = True,
-) -> bool:
-    return internship_mode and _requires_intern_keywords(
-        {
-            "url": scan_page.source_url,
-            "career_page": career_page,
-        }
     )
 
 
@@ -1049,6 +1022,12 @@ def _has_intern_keyword(title: str | None) -> bool:
     return bool(INTERN_INTENT_PATTERN.search(text))
 
 
+def _discovered_link_has_intern_evidence(link: DiscoveredJobLink) -> bool:
+    return _has_intern_keyword(
+        " ".join(part for part in (link.text, link.url, " ".join(link.reasons)) if part)
+    )
+
+
 def _intern_keyword_evidence_source(
     assessment: RolePageAssessment,
     candidate: ScanCandidate,
@@ -1066,20 +1045,6 @@ def _intern_keyword_evidence_source(
         if _has_intern_keyword(text):
             return source
     return None
-
-
-def _requires_intern_keywords(state: ScanWorkflowState) -> bool:
-    career_page = state.get("career_page")
-    text = " ".join(
-        part
-        for part in (
-            state.get("url"),
-            career_page.url if career_page is not None else None,
-            career_page.label if career_page is not None else None,
-        )
-        if part
-    )
-    return bool(INTERN_INTENT_PATTERN.search(text))
 
 
 def should_classify(state: ScanWorkflowState) -> Literal["classify", "skip"]:

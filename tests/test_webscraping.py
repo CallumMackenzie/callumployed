@@ -629,6 +629,60 @@ def test_assess_role_page_extracts_location_from_job_text(
     assert assessment.location == "Toronto, ON; Waterloo, ON"
 
 
+def test_assess_role_page_cleans_google_rendered_job_card() -> None:
+    page = RenderedPageState(
+        url=(
+            "https://www.google.com/about/careers/applications/jobs/results/"
+            "85564713261245126-software-engineering-intern-bs-summer-2027"
+        ),
+        final_url=(
+            "https://www.google.com/about/careers/applications/jobs/results/"
+            "85564713261245126-software-engineering-intern-bs-summer-2027"
+        ),
+        title="Software Engineering Intern, BS, Summer 2027",
+        html="""
+        <main>
+          Software Engineering Intern, BS, Summer 2027
+          link Copy link
+          email Email a friend
+          corporate_fare Google place Mountain View, CA, USA ; Atlanta, GA, USA ;
+          +29 more ; +28 more bar_chart Intern & Apprentice
+          info_outline
+          This posting is for students who want early consideration for our Summer 2027 roles.
+          Applications will be reviewed on a rolling basis.
+          Participation in the internship program requires that you are located in the United
+          States for the duration of the internship program.
+          ## Minimum qualifications
+          Pursuing a Bachelor's degree or post secondary training experience.
+          ## Preferred qualifications
+          Returning to a degree program after completion of the internship.
+          ## About the job
+          Join us for a unique 12-14 week paid internship.
+          Benefits for this role include medical coverage.
+        </main>
+        """,
+    )
+
+    assessment = assess_role_page(
+        page,
+        title_hints=("Learn more about Software Engineering Intern, BS, Summer 2027",),
+    )
+
+    assert assessment.is_role is True
+    assert assessment.title == "Software Engineering Intern, BS, Summer 2027"
+    assert assessment.location == (
+        "Mountain View, CA, United States; Atlanta, GA, United States; Multiple locations"
+    )
+    assert assessment.description is not None
+    assert assessment.description.startswith(
+        "This posting is for students who want early consideration"
+    )
+    assert "Copy link" not in assessment.description
+    assert "Email a friend" not in assessment.description
+    assert "corporate_fare" not in assessment.description
+    assert "Benefits for this role include" not in assessment.description
+
+
 def test_extract_job_description_trims_boilerplate_and_duplicates() -> None:
     soup = BeautifulSoup(
         """

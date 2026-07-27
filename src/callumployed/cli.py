@@ -348,7 +348,7 @@ def allow_non_software_keywords_command() -> None:
 
 @config_app.command("enable-internship-mode")
 def enable_internship_mode_command() -> None:
-    """Require intern evidence on internship-focused source pages."""
+    """Require intern evidence before tracking roles."""
     with db.connect() as connection:
         set_internship_mode(connection, True)
 
@@ -357,7 +357,7 @@ def enable_internship_mode_command() -> None:
 
 @config_app.command("disable-internship-mode")
 def disable_internship_mode_command() -> None:
-    """Do not require intern evidence on internship-focused source pages."""
+    """Do not require intern evidence before tracking roles."""
     with db.connect() as connection:
         set_internship_mode(connection, False)
 

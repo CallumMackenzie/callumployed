@@ -1185,6 +1185,7 @@ def test_scan_company_filters_locations_by_config(
             connection,
             CompanyCareerPage(company_id=company.id, url="https://example.com/careers"),
         )
+        set_internship_mode(connection, False)
         set_location_filter(connection, "canada")
 
     scan = asyncio.run(
@@ -1218,16 +1219,13 @@ def test_location_filter_treats_calgary_as_canada() -> None:
     assert not scan_workflow._location_matches_filter("Calgary, AB", "international")
 
 
-def test_scan_company_requires_intern_keywords_for_intern_source_url(
+def test_scan_company_requires_intern_keywords_when_internship_mode_enabled(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _use_database(monkeypatch, tmp_path)
 
-    source_url = (
-        "https://apply.careers.microsoft.com/careers"
-        "?filter_profession=software+engineering&filter_seniority=Intern"
-    )
+    source_url = "https://apply.careers.microsoft.com/careers"
 
     async def fake_render_careers_page(
         url: str,
@@ -1299,7 +1297,7 @@ def test_scan_company_requires_intern_keywords_for_intern_source_url(
     assert {role.title for role in roles} == {"Software Engineering Intern"}
 
 
-def test_scan_company_can_disable_internship_mode_for_intern_source_url(
+def test_scan_company_can_disable_internship_mode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1577,7 +1575,7 @@ def test_refilter_collected_roles_creates_role_from_selected_link_intern_evidenc
                 assessment_description="Software engineering internship.",
                 assessment_extraction_method="jobposting_structured_data",
                 assessment_rejection_reason=(
-                    "intern keyword requirement filtered by source config"
+                    "intern keyword requirement filtered by app config"
                 ),
                 assessment_reasons=[
                     "schema.org JobPosting structured data",
@@ -1669,7 +1667,7 @@ def test_refilter_collected_roles_does_not_use_source_url_as_intern_evidence(
                 assessment_description="Software engineering role.",
                 assessment_extraction_method="jobposting_structured_data",
                 assessment_rejection_reason=(
-                    "intern keyword requirement filtered by source config"
+                    "intern keyword requirement filtered by app config"
                 ),
                 assessment_reasons=[
                     "schema.org JobPosting structured data",
@@ -1772,7 +1770,7 @@ def test_refilter_collected_roles_treats_early_talent_source_as_intern_intent(
     assert dry_run["changed_attempts"] == 1
     assert dry_run["attempts"][0]["action"] == "archive_role"
     assert dry_run["attempts"][0]["reason"] == (
-        "intern keyword requirement filtered by source config"
+        "intern keyword requirement filtered by app config"
     )
 
     applied = scan_workflow.refilter_collected_roles(scan_run_id=scan_run.id, apply=True)
@@ -1785,7 +1783,7 @@ def test_refilter_collected_roles_treats_early_talent_source_as_intern_intent(
     assert archived.role_status is RoleStatus.ARCHIVED
     assert attempts[0].assessment_is_role is False
     assert attempts[0].assessment_rejection_reason == (
-        "intern keyword requirement filtered by source config"
+        "intern keyword requirement filtered by app config"
     )
 
 

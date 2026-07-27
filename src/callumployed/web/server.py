@@ -571,10 +571,7 @@ def build_config_payload() -> dict[str, Any]:
             {
                 "key": "internship_mode",
                 "label": "internship mode",
-                "description": (
-                    "for internship-focused source pages, require intern evidence "
-                    "before tracking roles"
-                ),
+                "description": "require intern evidence before tracking roles",
                 "control": "toggle",
                 "value": internship_mode,
                 "default": True,

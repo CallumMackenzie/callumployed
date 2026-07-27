@@ -49,7 +49,8 @@ DESCRIPTION_SELECTORS = (
 )
 NOISE_PATTERN = re.compile(
     r"\b(?:"
-    r"ada@|all rights reserved|back-up childcare|commuter benefits|"
+    r"ada@|all rights reserved|back-up childcare|benefits\s+for\s+this\s+role|"
+    r"commuter benefits|"
     r"company paid|dental|e-verify|employee assistance program|employee discounts|"
     r"equal opportunity|family-building|fertility|flexible spending accounts|"
     r"health savings account|medical plans|pet insurance|privacy notice|"
@@ -134,6 +135,7 @@ def _clean_description_text(text: str | None) -> str | None:
     lines = [_normalize_line(line) for line in re.split(r"[\n•]+", plain_text)]
     lines = [line for line in lines if line]
     lines = _split_oversized_lines(lines)
+    lines = _drop_leading_google_job_card_chrome(lines)
     lines = _trim_to_relevant_sections(lines)
     lines = _drop_noise_lines(lines)
     lines = _dedupe_lines(lines)
@@ -257,8 +259,46 @@ def _strip_heading_structure(line: str) -> str:
 def _is_metadata_line(line: str) -> bool:
     return bool(
         NAV_NOISE_PATTERN.search(line)
+        or _is_google_job_card_chrome_line(line)
         or re.search(r"\b(?:req\.?\s*id|job\s*type|employment\s*type)\b", line, re.I)
         or re.fullmatch(r"[A-Za-z .'-]+,\s*[A-Za-z]{2,}(?:,\s*[A-Za-z .'-]+)?", line)
+    )
+
+
+def _drop_leading_google_job_card_chrome(lines: list[str]) -> list[str]:
+    if not any(_is_google_job_card_chrome_line(line) for line in lines[:6]):
+        return lines
+    for index, line in enumerate(lines[:10]):
+        if _is_google_job_body_start(line) or _is_core_heading(line):
+            return lines[index:]
+    return lines
+
+
+def _is_google_job_card_chrome_line(line: str) -> bool:
+    normalized = re.sub(r"\s+", " ", line).strip()
+    return bool(
+        re.fullmatch(r"(?:link\s+)?Copy link", normalized, re.I)
+        or re.fullmatch(r"(?:email\s+)?Email a friend", normalized, re.I)
+        or re.fullmatch(r"info_outline", normalized, re.I)
+        or (
+            normalized.startswith("corporate_fare ")
+            and " place " in normalized
+            and " bar_chart " in normalized
+        )
+    )
+
+
+def _is_google_job_body_start(line: str) -> bool:
+    body_start_pattern = (
+        r"(?:This posting is for|Applications will be reviewed|"
+        r"Participation in the internship)"
+    )
+    return bool(
+        re.match(
+            body_start_pattern,
+            line,
+            re.I,
+        )
     )
 
 
@@ -270,6 +310,8 @@ def _drop_noise_lines(lines: list[str]) -> list[str]:
         if NOISE_PATTERN.search(line):
             break
         if NAV_NOISE_PATTERN.fullmatch(line):
+            continue
+        if _is_google_job_card_chrome_line(line):
             continue
         kept.append(line)
     return kept

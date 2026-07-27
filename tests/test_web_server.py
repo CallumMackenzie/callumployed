@@ -118,10 +118,7 @@ def test_config_payload_returns_current_settings(
         {
             "key": "internship_mode",
             "label": "internship mode",
-            "description": (
-                "for internship-focused source pages, require intern evidence "
-                "before tracking roles"
-            ),
+            "description": "require intern evidence before tracking roles",
             "control": "toggle",
             "value": True,
             "default": True,

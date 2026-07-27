@@ -45,6 +45,10 @@ LOCATION_CONTEXT_PATTERNS = (
         re.I,
     ),
 )
+GOOGLE_JOB_CARD_LOCATION_PATTERN = re.compile(
+    r"\bplace\s+([\s\S]{2,260}?)(?=\s+bar_chart\b|\s+info_outline\b|\s+This\s+posting\b)",
+    re.I,
+)
 COUNTRY_ALIASES = {
     "br": "Brazil",
     "brazil": "Brazil",
@@ -103,6 +107,12 @@ def parse_job_location(
     *,
     context_text: str | None = None,
 ) -> str | None:
+    google_location = _google_job_card_location(location_text) or _google_job_card_location(
+        context_text
+    )
+    if google_location:
+        return google_location
+
     direct_location = _normalize_location_text(location_text)
     if direct_location:
         return direct_location
@@ -121,6 +131,32 @@ def parse_job_location(
     if REMOTE_PATTERN.search(context_text):
         return "Remote"
     return None
+
+
+def _google_job_card_location(text: str | None) -> str | None:
+    if not text:
+        return None
+    match = GOOGLE_JOB_CARD_LOCATION_PATTERN.search(text)
+    if not match:
+        return None
+    raw_location = _clean_location_text(match.group(1))
+    if not raw_location:
+        return None
+
+    has_more_locations = bool(re.search(r"\+\d+\s+more\b", raw_location, re.I))
+    segments = [
+        segment.strip(" -|:;,")
+        for segment in SEPARATOR_PATTERN.split(raw_location)
+        if segment.strip(" -|:;,") and not re.fullmatch(r"\+\d+\s+more", segment.strip(), re.I)
+    ]
+    normalized_segments = [
+        _normalize_location_fragment(segment)
+        for segment in segments
+        if _looks_like_location_fragment(segment)
+    ]
+    if has_more_locations:
+        normalized_segments.append("Multiple locations")
+    return _join_location_parts(normalized_segments)
 
 
 def _normalize_location_text(text: str | None) -> str | None:

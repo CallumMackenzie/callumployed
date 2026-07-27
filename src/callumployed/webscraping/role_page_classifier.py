@@ -222,14 +222,19 @@ def assess_role_page(
     domain = parsed.netloc.lower()
     path = parsed.path.lower()
     title, title_source = _select_role_title(page, soup, title_hints=title_hints)
-    fallback_description = _clean_text(
-        " ".join(part for part in (page.visible_text, _extract_main_text(page)) if part)
+    raw_text_parts = (page.visible_text, _extract_main_text(page), soup.get_text(" ", strip=True))
+    raw_page_text = _clean_text(
+        " ".join(
+            part
+            for part in raw_text_parts
+            if part
+        )
     )
     description = extract_job_description(
         soup,
-        fallback_text=fallback_description,
+        fallback_text=raw_page_text,
     )
-    visible_text = _clean_text(" ".join(part for part in (page.visible_text, description) if part))
+    visible_text = _clean_text(" ".join(part for part in (raw_page_text, description) if part))
     is_closed = _is_closed_page(page, visible_text)
 
     if _is_ats_role_page(domain, path, visible_text):
@@ -447,7 +452,8 @@ def _title_from_url_slug(url: str) -> str | None:
     path_parts = [part for part in parsed.path.split("/") if part]
     for raw_part in reversed(path_parts):
         part = re.sub(r"\.(?:html?|php|aspx?)$", "", raw_part, flags=re.I)
-        part = re.sub(r"[-_]\d{4,}$", "", part).strip("-_/ ")
+        part = re.sub(r"^\d{8,}[-_]", "", part)
+        part = re.sub(r"[-_]\d{5,}$", "", part).strip("-_/ ")
         if not part or part.lower() in {"apply", "details", "job", "jobs", "search"}:
             continue
         words = [word for word in re.split(r"(?:[-_+]|%20)+", part) if word]
@@ -461,8 +467,10 @@ def _title_case_slug_words(words: list[str]) -> str:
     acronyms = {
         "ai": "AI",
         "api": "API",
+        "bs": "BS",
         "ios": "iOS",
         "ml": "ML",
+        "ms": "MS",
         "ui": "UI",
         "ux": "UX",
     }
@@ -473,6 +481,7 @@ def _clean_title(text: str | None) -> str | None:
     cleaned = _clean_text(text)
     if cleaned is None:
         return None
+    cleaned = re.sub(r"^\s*learn\s+more\s+about\s+", "", cleaned, flags=re.I)
     cleaned = re.sub(r"\s*\(\s*(?:m/f/d|f/m/d|m/w/d)\s*\)\s*$", "", cleaned, flags=re.I)
     cleaned = TITLE_ACTION_SUFFIX_PATTERN.sub("", cleaned)
     cleaned = TITLE_POSTED_SUFFIX_PATTERN.sub("", cleaned)
