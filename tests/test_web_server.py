@@ -69,10 +69,12 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'aria-label="open settings"' in markup
         assert 'id="settings-view"' in markup
         assert 'id="settings-options"' in markup
-        assert 'id="stats"' not in markup
-        assert 'class="stats-grid"' not in markup
-        assert "/assets/app.css?v=20260727-2" in markup
-        assert "/assets/app.js?v=20260727-2" in markup
+        assert 'id="stats"' in markup
+        assert 'class="stats-grid"' in markup
+        assert 'id="status-tabs"' not in markup
+        assert 'class="status-tabs"' not in markup
+        assert "/assets/app.css?v=20260727-3" in markup
+        assert "/assets/app.js?v=20260727-3" in markup
     finally:
         server.shutdown()
         thread.join(timeout=5)

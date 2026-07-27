@@ -1,5 +1,5 @@
+const statsEl = document.querySelector("#stats");
 const statusListEl = document.querySelector("#status-list");
-const statusTabsEl = document.querySelector("#status-tabs");
 const searchToggle = document.querySelector("#search-toggle");
 const searchDialog = document.querySelector("#search-dialog");
 const searchBackdrop = document.querySelector("#search-backdrop");
@@ -37,6 +37,7 @@ const settingsForm = document.querySelector("#settings-form");
 const settingsOptions = document.querySelector("#settings-options");
 
 const REVIEW_LATER_RECOMMENDATION_THRESHOLD = 3;
+const APPLICATION_STATUSES = new Set(["applied", "OA", "interview", "rejected", "offer"]);
 let hideEmpty = true;
 let trackerData = null;
 let masterResume = null;
@@ -128,6 +129,17 @@ function renderRoleTitle(title, url, className) {
   return `<a class="${className}" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${label}${renderLinkIcon()}</a>`;
 }
 
+function renderStats(stats) {
+  const items = [
+    ["companies", stats.companies_total],
+    ["jobs", stats.jobs_total],
+    ["applications", stats.applications_total],
+  ];
+  statsEl.innerHTML = items
+    .map(([label, value]) => `<dl class="stat"><dt>${escapeUiText(label)}</dt><dd>${value}</dd></dl>`)
+    .join("");
+}
+
 function renderMasterResume(resume, message = "") {
   masterResume = resume;
   resumeUploadButton.textContent = resume ? "replace" : "upload";
@@ -207,15 +219,6 @@ function formatFileSize(bytes) {
   if (!Number.isFinite(bytes)) return "";
   if (bytes < 1024) return `${bytes} b`;
   return `${Math.round(bytes / 1024)} kb`;
-}
-
-function renderTabs(statuses) {
-  statusTabsEl.innerHTML = statuses
-    .map(
-      (status) =>
-        `<button class="status-tab" type="button" data-target="${escapeHtml(status.key)}" data-bucket="${escapeHtml(status.key)}">${escapeUiText(status.label)} <strong>${status.count}</strong></button>`,
-    )
-    .join("");
 }
 
 function renderStatuses(statuses) {
@@ -326,7 +329,7 @@ function render(data) {
   trackerData = data;
   searchInput.value = data.query;
   updateSearchButton();
-  renderTabs(data.statuses);
+  renderStats(data.stats);
   renderStatuses(data.statuses);
   updateToggleAllButton();
   updateReviewButton(data.statuses);
@@ -683,15 +686,6 @@ scanAllButton.addEventListener("click", () => {
   startScanAll();
 });
 
-statusTabsEl.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-target]");
-  if (!button) return;
-  document.querySelector(`#status-${button.dataset.target}`)?.scrollIntoView({
-    behavior: "smooth",
-    block: "start",
-  });
-});
-
 statusListEl.addEventListener("click", (event) => {
   const action = event.target.closest(".job-action");
   if (action) {
@@ -746,6 +740,7 @@ function applyRoleStatusUpdate(updatedRole, currentJobEl) {
   const nextStatus = updatedRole.role_status;
   const movedRole = moveRoleInTrackerData(updatedRole, previousStatus, nextStatus);
   updateStatusCounts(previousStatus, nextStatus);
+  updateApplicationStats(previousStatus, nextStatus);
   updateReviewButton(trackerData.statuses);
   moveRoleElement(currentJobEl, movedRole, previousStatus, nextStatus);
   updateToggleAllButton();
@@ -776,15 +771,26 @@ function updateStatusCounts(previousStatus, nextStatus) {
     pane?.classList.toggle("empty", status.count === 0);
     const paneCount = pane?.querySelector(".count");
     if (paneCount) paneCount.textContent = status.count;
-
-    const tabCount = statusTabsEl.querySelector(`[data-bucket="${CSS.escape(status.key)}"] strong`);
-    if (tabCount) tabCount.textContent = status.count;
   });
 
   [previousStatus, nextStatus].forEach((status) => {
     const pane = document.querySelector(`#status-${CSS.escape(status)}`);
     refreshEmptyMessage(pane);
   });
+}
+
+function updateApplicationStats(previousStatus, nextStatus) {
+  if (!trackerData.stats) return;
+  const wasApplication = APPLICATION_STATUSES.has(previousStatus);
+  const isApplication = APPLICATION_STATUSES.has(nextStatus);
+  if (wasApplication === isApplication) {
+    renderStats(trackerData.stats);
+    return;
+  }
+
+  trackerData.stats.applications_total =
+    Number(trackerData.stats.applications_total ?? 0) + (isApplication ? 1 : -1);
+  renderStats(trackerData.stats);
 }
 
 function moveRoleElement(currentJobEl, movedRole, previousStatus, nextStatus) {
