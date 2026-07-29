@@ -116,6 +116,9 @@ def test_cover_letter_prompt_includes_resume_job_and_tool_results() -> None:
                 "similarity": 0.8,
             }
         ],
+        previous_cover_letter_latex=(
+            "\\documentclass{letter}\\begin{document}Old draft\\end{document}"
+        ),
     )
 
     assert "resume_context" in prompt
@@ -141,10 +144,15 @@ def test_cover_letter_prompt_includes_resume_job_and_tool_results() -> None:
     assert "\\documentclass[letterpaper,11pt]{article}" in prompt
     assert "\\pdfgentounicode" in prompt
     assert "plain ASCII apostrophes and quotes" in prompt
+    assert "never use em dashes" in prompt
+    assert "\\textemdash" in prompt
     assert "R\\&D" in prompt
     assert "50\\%" in prompt
     assert "regeneration_tweaks" in prompt
     assert "Make the tone warmer and emphasize ML infrastructure." in prompt
+    assert "previous_cover_letter_context" in prompt
+    assert "revise this prior draft according to regeneration_tweaks" in prompt
+    assert "Old draft" in prompt
 
 
 def test_cover_letter_agent_queries_example_tool_and_passes_documents() -> None:
@@ -167,8 +175,13 @@ def test_cover_letter_agent_queries_example_tool_and_passes_documents() -> None:
             assert isinstance(prompt, str)
             prompts.append(prompt)
             return {
-                "latex": "\\documentclass{letter}\\begin{document}Hi\\end{document}",
-                "summary": "drafted",
+                "latex": (
+                    "\\documentclass{letter}\\begin{document}"
+                    "AI infrastructure \u2014 distributed systems --- backend tooling "
+                    "\\textemdash{} platform work"
+                    "\\end{document}"
+                ),
+                "summary": "drafted \u2014 no edits",
                 "example_ids": [7],
             }
 
@@ -186,17 +199,26 @@ def test_cover_letter_agent_queries_example_tool_and_passes_documents() -> None:
             },
             resume_content="Python backend resume",
             tweaks="Cut one paragraph and make the intro more direct.",
+            previous_cover_letter_latex=(
+                "\\documentclass{letter}\\begin{document}Previous draft body\\end{document}"
+            ),
         )
     )
 
     assert len(calls) == 2
     assert response.example_ids == [7]
+    assert "\u2014" not in response.latex
+    assert "---" not in response.latex
+    assert "\\textemdash" not in response.latex
+    assert "\u2014" not in response.summary
     assert "Dear Backend Team" in prompts[0]
     assert "cover_letter_example_tool_results" in prompts[0]
     assert "primary writing-style reference" in prompts[0]
-    assert "do not use em dashes" in prompts[0]
+    assert "never use em dashes" in prompts[0]
     assert "fits on one page" in prompts[0]
     assert "Cut one paragraph and make the intro more direct." in prompts[0]
+    assert "previous_cover_letter_context" in prompts[0]
+    assert "Previous draft body" in prompts[0]
 
 
 def test_resume_feedback_prompt_includes_recommendation_history() -> None:

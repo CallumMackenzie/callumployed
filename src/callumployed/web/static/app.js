@@ -1296,9 +1296,16 @@ function renderPrepCoverLetter(role, state = {}) {
     <section class="prep-cover-letter" aria-label="cover letter">
       <div class="prep-analysis-header">
         <h3>cover letter</h3>
-        <button type="button" data-prep-cover-letter="${role.id}">
-          ${draft ? "regenerate" : "generate"}
-        </button>
+        <div class="prep-cover-actions">
+          ${
+            draft
+              ? `<button type="button" data-prep-cover-letter-save="${role.id}">save latex</button>`
+              : ""
+          }
+          <button type="button" data-prep-cover-letter="${role.id}">
+            ${draft ? "regenerate" : "generate"}
+          </button>
+        </div>
       </div>
       ${
         draft
@@ -1310,9 +1317,16 @@ function renderPrepCoverLetter(role, state = {}) {
                 data-prep-cover-letter-tweaks="${role.id}"
                 rows="3"
                 placeholder="make it warmer, cut a paragraph, emphasize systems work..."
-              >${escapeUiText(tweaks)}</textarea>
+              >${escapeHtml(tweaks)}</textarea>
             </label>
             <p class="prep-cover-path">${escapeUiText(draft.path ?? "")}</p>
+            <label class="prep-cover-latex">
+              <span>latex</span>
+              <textarea
+                data-prep-cover-letter-latex="${role.id}"
+                spellcheck="false"
+              >${escapeHtml(draft.latex ?? "")}</textarea>
+            </label>
             ${
               draft.pdf_base64
                 ? `
@@ -1323,7 +1337,6 @@ function renderPrepCoverLetter(role, state = {}) {
                 `
                 : '<p class="prep-cover-path">PDF preview unavailable.</p>'
             }
-            <pre>${escapeUiText(draft.latex ?? "")}</pre>
           `
           : '<p class="prep-overview">generate a LaTeX cover letter from the resume, posting, and stored examples.</p>'
       }
@@ -1567,13 +1580,23 @@ async function generatePrepResumePdf(roleId) {
   return response.json();
 }
 
-async function generatePrepCoverLetter(roleId, tweaks = "") {
+async function generatePrepCoverLetter(roleId, tweaks = "", previousLatex = "") {
   const response = await fetch(`/api/roles/${encodeURIComponent(roleId)}/cover-letter`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ tweaks }),
+    body: JSON.stringify({ tweaks, previous_latex: previousLatex }),
   });
   if (!response.ok) throw new Error("Cover letter generation failed");
+  return response.json();
+}
+
+async function savePrepCoverLetter(roleId, latex) {
+  const response = await fetch(`/api/roles/${encodeURIComponent(roleId)}/cover-letter/save`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ latex }),
+  });
+  if (!response.ok) throw new Error("Cover letter save failed");
   return response.json();
 }
 
@@ -1647,9 +1670,13 @@ prepView.addEventListener("click", async (event) => {
     const coverSection = prepCard.querySelector(".prep-cover-letter");
     const tweaks =
       coverSection?.querySelector(`[data-prep-cover-letter-tweaks="${roleId}"]`)?.value ?? "";
+    const previousLatex =
+      tweaks.trim()
+        ? coverSection?.querySelector(`[data-prep-cover-letter-latex="${roleId}"]`)?.value ?? ""
+        : "";
     coverSection?.replaceWith(htmlToElement(renderPrepCoverLetter(prepQueue[0], { loading: true })));
     try {
-      const payload = await generatePrepCoverLetter(roleId, tweaks);
+      const payload = await generatePrepCoverLetter(roleId, tweaks, previousLatex);
       prepCoverLetterByRoleId.set(roleId, payload.cover_letter);
       prepCard.querySelector(".prep-cover-letter")?.replaceWith(
         htmlToElement(renderPrepCoverLetter(prepQueue[0], { coverLetter: payload.cover_letter })),
@@ -1663,6 +1690,34 @@ prepView.addEventListener("click", async (event) => {
           }),
         ),
       );
+    }
+    return;
+  }
+
+  const coverLetterSaveButton = event.target.closest("[data-prep-cover-letter-save]");
+  if (coverLetterSaveButton && prepQueue[0]) {
+    const roleId = prepQueue[0].id;
+    const coverSection = prepCard.querySelector(".prep-cover-letter");
+    const latex =
+      coverSection?.querySelector(`[data-prep-cover-letter-latex="${roleId}"]`)?.value ?? "";
+    const tweaks =
+      coverSection?.querySelector(`[data-prep-cover-letter-tweaks="${roleId}"]`)?.value ?? "";
+    coverLetterSaveButton.disabled = true;
+    const originalLabel = coverLetterSaveButton.textContent;
+    coverLetterSaveButton.textContent = "saving...";
+    try {
+      const payload = await savePrepCoverLetter(roleId, latex);
+      prepCoverLetterByRoleId.set(roleId, { ...payload.cover_letter, tweaks });
+      prepCard.querySelector(".prep-cover-letter")?.replaceWith(
+        htmlToElement(
+          renderPrepCoverLetter(prepQueue[0], {
+            coverLetter: { ...payload.cover_letter, tweaks },
+          }),
+        ),
+      );
+    } catch {
+      coverLetterSaveButton.disabled = false;
+      coverLetterSaveButton.textContent = originalLabel;
     }
     return;
   }

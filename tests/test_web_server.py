@@ -108,8 +108,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="toolbar-summary"' in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=20260728-2" in markup
-        assert "/assets/app.js?v=20260728-2" in markup
+        assert "/assets/app.css?v=20260729-1" in markup
+        assert "/assets/app.js?v=20260729-1" in markup
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -363,6 +363,7 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
 
     async def fake_generate_cover_letter(**kwargs: object) -> object:
         captured["tweaks"] = kwargs.get("tweaks")
+        captured["previous_cover_letter_latex"] = kwargs.get("previous_cover_letter_latex")
 
         class Draft:
             latex = "\\documentclass{letter}\\begin{document}Dear Acme\\end{document}"
@@ -406,7 +407,14 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         request = Request(
             f"http://127.0.0.1:{port}/api/roles/1/cover-letter",
             data=json.dumps(
-                {"tweaks": "Make it warmer and shorten the Amazon paragraph."}
+                {
+                    "tweaks": "Make it warmer and shorten the Amazon paragraph.",
+                    "previous_latex": (
+                        "\\documentclass{letter}\\begin{document}"
+                        "Previous Acme draft"
+                        "\\end{document}"
+                    ),
+                }
             ).encode(),
             headers={"Content-Type": "application/json"},
             method="POST",
@@ -429,9 +437,78 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         assert cover_letter["pdf_base64"]
         assert cover_letter["tweaks"] == "Make it warmer and shorten the Amazon paragraph."
         assert captured["tweaks"] == "Make it warmer and shorten the Amazon paragraph."
+        assert captured["previous_cover_letter_latex"] == (
+            "\\documentclass{letter}\\begin{document}Previous Acme draft\\end{document}"
+        )
         saved_latex = (resume_root / "role-1" / "cover-letter.tex").read_text()
         assert "Dear Acme" in saved_latex
         assert "\\setlength{\\parskip}{0.85em}" in saved_latex
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_cover_letter_save_endpoint_writes_edited_latex(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-cover-letter-save.sqlite3"
+    resume_root = tmp_path / "prepared-resumes"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    monkeypatch.setattr(web_server.shutil, "which", lambda _name: "/usr/bin/pdflatex")
+
+    def fake_run(command: object, **kwargs: object) -> object:
+        cwd = Path(kwargs["cwd"])
+        (cwd / "cover-letter.pdf").write_bytes(b"edited cover pdf")
+
+        class Completed:
+            returncode = 0
+
+        return Completed()
+
+    monkeypatch.setattr(web_server.subprocess, "run", fake_run)
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Backend Intern", "https://example.com/jobs/backend"],
+        env=env,
+    )
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        request = Request(
+            f"http://127.0.0.1:{port}/api/roles/1/cover-letter/save",
+            data=json.dumps(
+                {
+                    "latex": (
+                        "\\documentclass{letter}\n"
+                        "\\begin{document}\n"
+                        "Edited Acme letter\n"
+                        "\\end{document}"
+                    )
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode())
+
+        cover_letter = payload["cover_letter"]
+        assert response.status == 200
+        assert cover_letter["source"] == "edited_cover_letter"
+        assert cover_letter["summary"] == "Saved edited cover letter for Backend Intern at Acme."
+        assert cover_letter["pdf_base64"]
+        assert "Edited Acme letter" in cover_letter["latex"]
+        assert (resume_root / "role-1" / "cover-letter.tex").read_text() == cover_letter["latex"]
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -613,13 +690,19 @@ def test_cover_letter_latex_normalizer_strips_em_dashes() -> None:
     normalized = web_server._normalize_cover_letter_latex(
         "\\documentclass{letter}\n"
         "\\begin{document}\n"
-        "AI infrastructure \u2014 distributed systems --- backend tooling\n"
+        "AI infrastructure \u2014 distributed systems --- backend tooling "
+        "\\textemdash{} platform work -- reliability\n"
         "\\end{document}"
     )
 
     assert "\u2014" not in normalized
     assert "---" not in normalized
-    assert "AI infrastructure  -  distributed systems  -  backend tooling" in normalized
+    assert "--" not in normalized
+    assert "\\textemdash" not in normalized
+    assert (
+        "AI infrastructure, distributed systems, backend tooling, platform work, reliability"
+        in normalized
+    )
 
 
 def test_cover_letter_latex_normalizer_left_aligns_sender_header() -> None:

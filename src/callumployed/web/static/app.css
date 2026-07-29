@@ -1641,17 +1641,43 @@ a:hover .role-link-icon {
   white-space: pre-wrap;
 }
 
-.prep-cover-letter pre {
-  max-height: 260px;
+.prep-cover-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: end;
+  gap: 8px;
+}
+
+.prep-cover-latex {
+  display: grid;
+  gap: 6px;
+}
+
+.prep-cover-latex span {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 950;
+  text-transform: lowercase;
+}
+
+.prep-cover-latex textarea {
+  width: 100%;
+  min-height: 260px;
   overflow: auto;
   margin: 0;
+  resize: vertical;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 10px;
   background: rgb(255 255 255 / 0.86);
   color: var(--text);
   font: 0.74rem/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  white-space: pre-wrap;
+  text-transform: none;
+}
+
+.prep-cover-latex textarea:focus {
+  outline: 2px solid rgb(45 224 111 / 0.28);
+  outline-offset: 1px;
 }
 
 .prep-cover-pdf {
@@ -1707,6 +1733,7 @@ a:hover .role-link-icon {
   font: inherit;
   font-size: 0.82rem;
   line-height: 1.35;
+  text-transform: none;
 }
 
 .prep-cover-tweaks textarea:focus {

@@ -25,7 +25,10 @@ from zipfile import BadZipFile, ZipFile
 
 from platformdirs import user_data_path
 
-from callumployed.agents.cover_letter import generate_cover_letter
+from callumployed.agents.cover_letter import (
+    generate_cover_letter,
+    strip_cover_letter_dash_punctuation,
+)
 from callumployed.agents.resume_feedback import evaluate_resume_feedback
 from callumployed.data import db
 from callumployed.data.models import CoverLetterExample, MasterResume, RoleStatus
@@ -306,6 +309,15 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 and path_parts[3] == "cover-letter"
             ):
                 self._generate_cover_letter(path_parts[2])
+                return
+            if (
+                len(path_parts) == 5
+                and path_parts[0] == "api"
+                and path_parts[1] == "roles"
+                and path_parts[3] == "cover-letter"
+                and path_parts[4] == "save"
+            ):
+                self._save_cover_letter(path_parts[2])
                 return
             if (
                 len(path_parts) == 4
@@ -603,6 +615,9 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             if payload is None:
                 return
             tweaks = _optional_cover_letter_tweaks(payload.get("tweaks"))
+            previous_latex = None
+            if tweaks:
+                previous_latex = _optional_cover_letter_latex(payload.get("previous_latex"))
             try:
                 with db.connect() as connection:
                     role = get_role(connection, role_id)
@@ -617,7 +632,45 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             role_payload = role.model_dump(mode="json")
             role_payload["company_name"] = company.name
             try:
-                cover_letter = build_role_cover_letter(role_payload, resume, tweaks=tweaks)
+                cover_letter = build_role_cover_letter(
+                    role_payload,
+                    resume,
+                    tweaks=tweaks,
+                    previous_cover_letter_latex=previous_latex,
+                )
+            except RuntimeError as error:
+                self._send_json_with_status(
+                    {"error": str(error)},
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+                return
+            self._send_json({"cover_letter": cover_letter})
+
+        def _save_cover_letter(self, role_id_text: str) -> None:
+            try:
+                role_id = int(role_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
+                return
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            try:
+                latex = _required_cover_letter_latex(payload.get("latex"))
+            except ValueError as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            try:
+                with db.connect() as connection:
+                    role = get_role(connection, role_id)
+                    company = get_company(connection, role.company_id)
+            except LookupError:
+                self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
+                return
+            role_payload = role.model_dump(mode="json")
+            role_payload["company_name"] = company.name
+            try:
+                cover_letter = save_role_cover_letter(role_payload, latex)
             except RuntimeError as error:
                 self._send_json_with_status(
                     {"error": str(error)},
@@ -1158,6 +1211,7 @@ def build_role_cover_letter(
     resume: MasterResume,
     *,
     tweaks: str | None = None,
+    previous_cover_letter_latex: str | None = None,
 ) -> dict[str, Any]:
     role_id = role.get("id")
     if not isinstance(role_id, int):
@@ -1179,6 +1233,7 @@ def build_role_cover_letter(
                 resume_content=resume.content,
                 search_tool=search_cover_letters,
                 tweaks=tweaks,
+                previous_cover_letter_latex=previous_cover_letter_latex,
             )
         )
         latex = _normalize_cover_letter_latex(draft.latex)
@@ -1188,6 +1243,37 @@ def build_role_cover_letter(
         latex = _normalize_cover_letter_latex(_fallback_cover_letter_latex(role, resume))
         example_ids = []
         source = "local_cover_letter_fallback"
+
+    return _write_role_cover_letter(
+        role,
+        latex,
+        source=source,
+        example_ids=example_ids,
+        tweaks=tweaks,
+    )
+
+
+def save_role_cover_letter(role: dict[str, Any], latex: str) -> dict[str, Any]:
+    return _write_role_cover_letter(
+        role,
+        _normalize_cover_letter_latex(latex),
+        source="edited_cover_letter",
+        example_ids=[],
+        tweaks=None,
+    )
+
+
+def _write_role_cover_letter(
+    role: dict[str, Any],
+    latex: str,
+    *,
+    source: str,
+    example_ids: list[int],
+    tweaks: str | None,
+) -> dict[str, Any]:
+    role_id = role.get("id")
+    if not isinstance(role_id, int):
+        raise RuntimeError("Role did not include an ID")
     summary = _cover_letter_display_summary(
         role,
         source=source,
@@ -1236,7 +1322,7 @@ def _normalize_cover_letter_latex(latex: str) -> str:
 
 
 def _strip_cover_letter_em_dashes(latex: str) -> str:
-    return latex.replace("\u2014", " - ").replace("---", " - ")
+    return strip_cover_letter_dash_punctuation(latex)
 
 
 def _normalize_cover_letter_text_characters(latex: str) -> str:
@@ -1495,6 +1581,8 @@ def _cover_letter_display_summary(
     role_label = f"{title} at {company}" if company else title
     if source == "local_cover_letter_fallback":
         return f"Drafted fallback cover letter for {role_label}; AI generation was unavailable."
+    if source == "edited_cover_letter":
+        return f"Saved edited cover letter for {role_label}."
     if example_count > 0:
         examples = f"{example_count} stored cover letter example"
         if example_count != 1:
@@ -1571,6 +1659,20 @@ def _optional_cover_letter_tweaks(value: object) -> str | None:
         return None
     cleaned = value.strip()
     return cleaned or None
+
+
+def _optional_cover_letter_latex(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _required_cover_letter_latex(value: object) -> str:
+    latex = _optional_cover_letter_latex(value)
+    if latex is None:
+        raise ValueError("Expected cover letter LaTeX")
+    return latex
 
 
 def _prepared_resumes_root() -> Path:
