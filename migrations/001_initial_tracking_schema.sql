@@ -39,6 +39,15 @@ CREATE TABLE IF NOT EXISTS cover_letter_examples (
 CREATE INDEX IF NOT EXISTS idx_cover_letter_examples_updated_at
     ON cover_letter_examples (updated_at);
 
+CREATE TABLE IF NOT EXISTS cover_letter_example_vectors (
+    cover_letter_example_id INTEGER PRIMARY KEY,
+    knowledge_text TEXT NOT NULL,
+    vector_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (cover_letter_example_id) REFERENCES cover_letter_examples (id)
+        ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS company_career_pages (
     id INTEGER PRIMARY KEY,
     company_id INTEGER NOT NULL,
@@ -86,6 +95,34 @@ CREATE TABLE IF NOT EXISTS roles (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_company_url ON roles (company_id, role_url);
 CREATE INDEX IF NOT EXISTS idx_roles_company_status ON roles (company_id, role_status);
 CREATE INDEX IF NOT EXISTS idx_roles_last_seen_at ON roles (last_seen_at);
+
+CREATE TABLE IF NOT EXISTS resume_feedback_history (
+    id INTEGER PRIMARY KEY,
+    role_id INTEGER,
+    company_id INTEGER,
+    role_title TEXT NOT NULL,
+    role_url TEXT,
+    role_description TEXT,
+    feedback_index INTEGER NOT NULL,
+    feedback_label TEXT,
+    feedback_title TEXT NOT NULL,
+    feedback_detail TEXT NOT NULL,
+    target_text TEXT,
+    replacement_text TEXT,
+    latex_addition TEXT,
+    response TEXT NOT NULL CHECK (response IN ('accepted', 'ignored')),
+    comment TEXT,
+    knowledge_text TEXT NOT NULL,
+    vector_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (role_id) REFERENCES roles (id) ON DELETE SET NULL,
+    FOREIGN KEY (company_id) REFERENCES companies (id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_resume_feedback_history_created_at
+    ON resume_feedback_history (created_at);
+CREATE INDEX IF NOT EXISTS idx_resume_feedback_history_role_id
+    ON resume_feedback_history (role_id);
 
 CREATE TABLE IF NOT EXISTS scan_runs (
     id INTEGER PRIMARY KEY,

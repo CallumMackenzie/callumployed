@@ -1,5 +1,7 @@
 import hashlib
 import json
+import math
+import re
 from pathlib import PurePath
 
 import turso
@@ -39,6 +41,22 @@ APPLICATION_STATUSES = (
 )
 REVIEW_LATER_EVENT_TYPE = "review_later"
 MASTER_RESUME_ID = 1
+RESUME_FEEDBACK_HISTORY_LIMIT = 50
+RESUME_FEEDBACK_RESPONSE_VALUES = {"accepted", "ignored"}
+_VECTOR_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9+#.-]{2,}")
+_VECTOR_STOP_WORDS = {
+    "and",
+    "are",
+    "for",
+    "from",
+    "job",
+    "resume",
+    "role",
+    "that",
+    "the",
+    "this",
+    "with",
+}
 
 
 def _lastrowid(cursor: turso.Cursor) -> int:
@@ -142,6 +160,216 @@ def delete_config_value(connection: turso.Connection, key: str) -> None:
     connection.commit()
 
 
+def record_resume_feedback_history(
+    connection: turso.Connection,
+    *,
+    role: Role,
+    feedback_index: int,
+    feedback: dict[str, object],
+    response: str,
+    comment: str | None = None,
+) -> int:
+    if response not in RESUME_FEEDBACK_RESPONSE_VALUES:
+        raise ValueError("feedback response must be accepted or ignored")
+    title = _feedback_text(feedback.get("title")) or "untitled feedback"
+    detail = _feedback_text(feedback.get("detail")) or ""
+    label = _feedback_text(feedback.get("label"))
+    cleaned_comment = comment.strip() if isinstance(comment, str) else None
+    if cleaned_comment == "":
+        cleaned_comment = None
+    knowledge_text = _resume_feedback_knowledge_text(
+        role=role,
+        feedback_title=title,
+        feedback_detail=detail,
+        response=response,
+        comment=cleaned_comment,
+    )
+    cursor = connection.execute(
+        """
+        INSERT INTO resume_feedback_history (
+            role_id,
+            company_id,
+            role_title,
+            role_url,
+            role_description,
+            feedback_index,
+            feedback_label,
+            feedback_title,
+            feedback_detail,
+            target_text,
+            replacement_text,
+            latex_addition,
+            response,
+            comment,
+            knowledge_text,
+            vector_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            role.id,
+            role.company_id,
+            role.title,
+            role.role_url,
+            role.description,
+            feedback_index,
+            label,
+            title,
+            detail,
+            _feedback_text(feedback.get("target_text")),
+            _feedback_text(feedback.get("replacement_text")),
+            _feedback_text(feedback.get("latex_addition")),
+            response,
+            cleaned_comment,
+            knowledge_text,
+            json.dumps(_text_vector(knowledge_text), sort_keys=True),
+        ),
+    )
+    connection.commit()
+    return _lastrowid(cursor)
+
+
+def list_resume_feedback_knowledge(
+    connection: turso.Connection,
+    *,
+    role: Role | dict[str, object],
+    resume_content: str,
+    limit: int = 5,
+) -> list[dict[str, object]]:
+    role_title = _role_value(role, "title")
+    role_description = _role_value(role, "description")
+    role_location = _role_value(role, "location")
+    query_vector = _text_vector(
+        " ".join([role_title, role_description, role_location, resume_content])
+    )
+    rows = connection.execute(
+        """
+        SELECT
+            id,
+            role_id,
+            role_title,
+            feedback_title,
+            feedback_detail,
+            response,
+            comment,
+            knowledge_text,
+            vector_json,
+            created_at
+        FROM resume_feedback_history
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?
+        """,
+        (RESUME_FEEDBACK_HISTORY_LIMIT,),
+    ).fetchall()
+    matches: list[dict[str, object]] = []
+    for row in rows:
+        row_dict = dict(row)
+        similarity = _cosine_similarity(query_vector, _load_vector(row_dict["vector_json"]))
+        matches.append(
+            {
+                "id": row_dict["id"],
+                "role_id": row_dict["role_id"],
+                "role_title": row_dict["role_title"],
+                "feedback_title": row_dict["feedback_title"],
+                "feedback_detail": row_dict["feedback_detail"],
+                "response": row_dict["response"],
+                "comment": row_dict["comment"],
+                "knowledge_text": row_dict["knowledge_text"],
+                "created_at": row_dict["created_at"],
+                "similarity": similarity,
+            }
+        )
+    matches.sort(
+        key=lambda item: (float(item["similarity"]), str(item["created_at"])),
+        reverse=True,
+    )
+    return matches[:limit]
+
+
+def count_resume_feedback_history(connection: turso.Connection) -> int:
+    row = connection.execute(
+        "SELECT COUNT(*) AS count FROM resume_feedback_history"
+    ).fetchone()
+    return int(row["count"]) if row is not None else 0
+
+
+def clear_resume_feedback_history(connection: turso.Connection) -> int:
+    deleted_count = count_resume_feedback_history(connection)
+    connection.execute("DELETE FROM resume_feedback_history")
+    connection.commit()
+    return deleted_count
+
+
+def _resume_feedback_knowledge_text(
+    *,
+    role: Role,
+    feedback_title: str,
+    feedback_detail: str,
+    response: str,
+    comment: str | None,
+) -> str:
+    parts = [
+        f"user {response} resume feedback",
+        f"role title: {role.title}",
+        f"job description: {role.description or ''}",
+        f"feedback: {feedback_title}",
+        f"detail: {feedback_detail}",
+    ]
+    if comment:
+        parts.append(f"user comment: {comment}")
+    return "\n".join(parts)
+
+
+def _feedback_text(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _role_value(role: Role | dict[str, object], field: str) -> str:
+    value = role.get(field) if isinstance(role, dict) else getattr(role, field)
+    return value if isinstance(value, str) else ""
+
+
+def _text_vector(text: str) -> dict[str, int]:
+    vector: dict[str, int] = {}
+    for token in _VECTOR_TOKEN_RE.findall(text.lower()):
+        if token in _VECTOR_STOP_WORDS:
+            continue
+        vector[token] = vector.get(token, 0) + 1
+    return vector
+
+
+def _load_vector(value: object) -> dict[str, int]:
+    if not isinstance(value, str):
+        return {}
+    try:
+        raw_vector = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(raw_vector, dict):
+        return {}
+    return {
+        str(token): int(count)
+        for token, count in raw_vector.items()
+        if isinstance(count, int | float)
+    }
+
+
+def _cosine_similarity(left: dict[str, int], right: dict[str, int]) -> float:
+    if not left or not right:
+        return 0.0
+    dot = sum(count * right.get(token, 0) for token, count in left.items())
+    if dot == 0:
+        return 0.0
+    left_norm = math.sqrt(sum(count * count for count in left.values()))
+    right_norm = math.sqrt(sum(count * count for count in right.values()))
+    if left_norm == 0 or right_norm == 0:
+        return 0.0
+    return dot / (left_norm * right_norm)
+
+
 def get_master_resume(connection: turso.Connection) -> MasterResume | None:
     row = connection.execute(
         """
@@ -239,7 +467,105 @@ def add_cover_letter_example(
     ).fetchone()
     if row is None:
         raise RuntimeError("stored cover letter example could not be loaded")
-    return CoverLetterExample.model_validate(dict(row))
+    example = CoverLetterExample.model_validate(dict(row))
+    _upsert_cover_letter_example_vector(connection, example)
+    connection.commit()
+    return example
+
+
+def list_cover_letter_example_knowledge(
+    connection: turso.Connection,
+    *,
+    query: str,
+    limit: int = 5,
+) -> list[dict[str, object]]:
+    _backfill_cover_letter_example_vectors(connection)
+    query_vector = _text_vector(query)
+    rows = connection.execute(
+        """
+        SELECT
+            cover_letter_examples.id,
+            cover_letter_examples.filename,
+            cover_letter_examples.content,
+            cover_letter_example_vectors.knowledge_text,
+            cover_letter_example_vectors.vector_json,
+            cover_letter_example_vectors.updated_at
+        FROM cover_letter_example_vectors
+        JOIN cover_letter_examples
+            ON cover_letter_examples.id = cover_letter_example_vectors.cover_letter_example_id
+        ORDER BY cover_letter_example_vectors.updated_at DESC,
+            cover_letter_examples.id DESC
+        """
+    ).fetchall()
+    matches: list[dict[str, object]] = []
+    for row in rows:
+        row_dict = dict(row)
+        similarity = _cosine_similarity(query_vector, _load_vector(row_dict["vector_json"]))
+        matches.append(
+            {
+                "id": row_dict["id"],
+                "filename": row_dict["filename"],
+                "content": row_dict["content"],
+                "knowledge_text": row_dict["knowledge_text"],
+                "similarity": similarity,
+            }
+        )
+    matches.sort(key=lambda item: float(item["similarity"]), reverse=True)
+    return matches[:limit]
+
+
+def _backfill_cover_letter_example_vectors(connection: turso.Connection) -> None:
+    rows = connection.execute(
+        """
+        SELECT id, filename, content, content_sha256, created_at, updated_at
+        FROM cover_letter_examples
+        WHERE id NOT IN (
+            SELECT cover_letter_example_id
+            FROM cover_letter_example_vectors
+        )
+        """
+    ).fetchall()
+    for row in rows:
+        _upsert_cover_letter_example_vector(
+            connection,
+            CoverLetterExample.model_validate(dict(row)),
+        )
+    if rows:
+        connection.commit()
+
+
+def _upsert_cover_letter_example_vector(
+    connection: turso.Connection,
+    example: CoverLetterExample,
+) -> None:
+    if example.id is None:
+        return
+    knowledge_text = "\n".join(
+        [
+            f"cover letter example: {example.filename}",
+            example.content,
+        ]
+    )
+    connection.execute(
+        """
+        INSERT INTO cover_letter_example_vectors (
+            cover_letter_example_id,
+            knowledge_text,
+            vector_json,
+            updated_at
+        )
+        VALUES (?, ?, ?, datetime('now'))
+        ON CONFLICT(cover_letter_example_id) DO UPDATE SET
+            knowledge_text = excluded.knowledge_text,
+            vector_json = excluded.vector_json,
+            updated_at = datetime('now')
+        """,
+        (
+            example.id,
+            knowledge_text,
+            json.dumps(_text_vector(knowledge_text), sort_keys=True),
+        ),
+    )
 
 
 def set_include_graduate_degree_roles(connection: turso.Connection, enabled: bool) -> None:

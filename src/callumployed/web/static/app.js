@@ -46,6 +46,8 @@ const settingsCloseButton = document.querySelector("#settings-close");
 const settingsStatus = document.querySelector("#settings-status");
 const settingsForm = document.querySelector("#settings-form");
 const settingsOptions = document.querySelector("#settings-options");
+const recommendationHistorySummary = document.querySelector("#recommendation-history-summary");
+const clearRecommendationHistoryButton = document.querySelector("#clear-recommendation-history");
 
 const REVIEW_LATER_RECOMMENDATION_THRESHOLD = 3;
 const APPLICATION_STATUSES = new Set(["applied", "OA", "interview", "rejected", "offer"]);
@@ -58,6 +60,7 @@ let reviewQueue = [];
 let prepQueue = [];
 let prepAnalysisByRoleId = new Map();
 let prepFeedbackIndexByRoleId = new Map();
+let prepCoverLetterByRoleId = new Map();
 let materialsInitialized = false;
 let scanStatusPoll = null;
 let wasScanning = false;
@@ -367,6 +370,7 @@ function renderDiscoveredActions(job) {
 function renderInterestedActions(job) {
   return `
     <div class="job-actions" aria-label="interested role actions">
+      <button class="job-action success" type="button" data-prep-role-id="${job.id}">prep</button>
       <button class="job-action" type="button" data-role-id="${job.id}" data-status="applied">applied</button>
       <button class="job-action" type="button" data-role-id="${job.id}" data-status="disinterested">disinterested</button>
       <button class="job-action danger" type="button" data-role-id="${job.id}" data-status="closed">closed</button>
@@ -451,6 +455,12 @@ function renderSettings(payload, message = "") {
   const settings = Array.isArray(payload?.settings) ? payload.settings : [];
   settingsStatus.textContent = message;
   settingsStatus.classList.toggle("is-empty", !message);
+  const historyCount = Number(payload?.recommendation_history_count ?? 0);
+  recommendationHistorySummary.textContent =
+    historyCount > 0
+      ? `${historyCount} saved ${historyCount === 1 ? "feedback decision" : "feedback decisions"}`
+      : "no saved resume feedback decisions";
+  clearRecommendationHistoryButton.disabled = historyCount === 0;
   settingsOptions.innerHTML = settings
     .map((setting) => renderSettingOption(setting))
     .join("");
@@ -578,6 +588,23 @@ async function saveSetting(control) {
     }
     settingsStatus.textContent = "could not save settings.";
     setSettingsDisabled(false);
+  }
+}
+
+async function clearRecommendationHistory() {
+  clearRecommendationHistoryButton.disabled = true;
+  settingsStatus.textContent = "clearing recommendation history...";
+  settingsStatus.classList.remove("is-empty");
+  try {
+    const response = await fetch("/api/recommendation-history/clear", {
+      method: "POST",
+    });
+    if (!response.ok) throw new Error("Recommendation history clear failed");
+    const payload = await response.json();
+    renderSettings(payload.config, `cleared ${payload.deleted_count} saved decisions.`);
+  } catch {
+    settingsStatus.textContent = "could not clear recommendation history.";
+    clearRecommendationHistoryButton.disabled = false;
   }
 }
 
@@ -820,6 +847,12 @@ scanAllButton.addEventListener("click", () => {
 });
 
 statusListEl.addEventListener("click", (event) => {
+  const prepAction = event.target.closest("[data-prep-role-id]");
+  if (prepAction) {
+    openPrepView(prepAction.dataset.prepRoleId);
+    return;
+  }
+
   const action = event.target.closest(".job-action");
   if (action) {
     updateRoleStatus(action);
@@ -1006,8 +1039,17 @@ function closeReviewView() {
   reviewQueue = [];
 }
 
-function openPrepView() {
-  prepQueue = [...getInterestedJobs()];
+function openPrepView(focusedRoleId = null) {
+  const interestedJobs = [...getInterestedJobs()];
+  const focusedId = focusedRoleId == null ? null : String(focusedRoleId);
+  if (focusedId) {
+    const focusedIndex = interestedJobs.findIndex((role) => String(role.id) === focusedId);
+    if (focusedIndex > 0) {
+      const [focusedRole] = interestedJobs.splice(focusedIndex, 1);
+      interestedJobs.unshift(focusedRole);
+    }
+  }
+  prepQueue = interestedJobs;
   prepView.hidden = false;
   document.body.classList.add("prep-open");
   renderPrepRole();
@@ -1208,7 +1250,8 @@ async function renderPrepRole(message = "") {
       <p class="review-company">${escapeUiText(current.company_name)}</p>
       ${renderRoleTitle(current.title, current.role_url, "review-role-title")}
     </div>
-    ${renderPrepAnalysis(current, { loading: true })}
+    ${renderPrepAnalysis(current)}
+    ${renderPrepCoverLetter(current)}
     <dl class="review-details review-primary-details">
       ${renderReviewDetail("location", current.location, false, "review-location-detail")}
       ${renderReviewDetail("last", formatCompactDate(current.last_seen_at))}
@@ -1217,20 +1260,93 @@ async function renderPrepRole(message = "") {
     ${renderReviewDescription(current.description)}
   `;
 
-  try {
-    const analysis = await loadPrepAnalysis(current.id);
-    if (prepQueue[0]?.id !== current.id) return;
-    prepCard.querySelector(".prep-analysis")?.replaceWith(
-      htmlToElement(renderPrepAnalysis(current, { analysis })),
-    );
-  } catch {
-    prepCard.querySelector(".prep-analysis")?.replaceWith(
-      htmlToElement(renderPrepAnalysis(current, { error: true })),
-    );
+  loadPrepCoverLetter(current.id)
+    .then((coverLetter) => {
+      if (!coverLetter || prepQueue[0]?.id !== current.id) return;
+      prepCoverLetterByRoleId.set(current.id, coverLetter);
+      prepCard.querySelector(".prep-cover-letter")?.replaceWith(
+        htmlToElement(renderPrepCoverLetter(current, { coverLetter })),
+      );
+    })
+    .catch(() => {});
+}
+
+function renderPrepCoverLetter(role, state = {}) {
+  const savedDraft = prepCoverLetterByRoleId.get(role.id);
+  const draft = state.coverLetter ?? savedDraft;
+  const tweaks = state.tweaks ?? draft?.tweaks ?? "";
+  const pdfUrl = `/api/roles/${encodeURIComponent(role.id)}/cover-letter.pdf`;
+  if (state.loading) {
+    return `
+      <section class="prep-cover-letter" aria-label="cover letter">
+        <div class="prep-analysis-header">
+          <h3>cover letter</h3>
+          <span>generating</span>
+        </div>
+        <div class="prep-fit-loading" aria-label="generating cover letter">
+          <span aria-hidden="true"></span>
+          <span aria-hidden="true"></span>
+          <span aria-hidden="true"></span>
+          <p>generating latex cover letter...</p>
+        </div>
+      </section>
+    `;
   }
+  return `
+    <section class="prep-cover-letter" aria-label="cover letter">
+      <div class="prep-analysis-header">
+        <h3>cover letter</h3>
+        <button type="button" data-prep-cover-letter="${role.id}">
+          ${draft ? "regenerate" : "generate"}
+        </button>
+      </div>
+      ${
+        draft
+          ? `
+            <p class="prep-overview">${escapeUiText(draft.summary ?? "cover letter generated")}</p>
+            <label class="prep-cover-tweaks">
+              <span>tweaks</span>
+              <textarea
+                data-prep-cover-letter-tweaks="${role.id}"
+                rows="3"
+                placeholder="make it warmer, cut a paragraph, emphasize systems work..."
+              >${escapeUiText(tweaks)}</textarea>
+            </label>
+            <p class="prep-cover-path">${escapeUiText(draft.path ?? "")}</p>
+            ${
+              draft.pdf_base64
+                ? `
+                  <a class="prep-cover-pdf-link" href="${escapeHtml(pdfUrl)}" target="_blank" rel="noreferrer">
+                    open PDF
+                  </a>
+                  <iframe class="prep-cover-pdf" title="cover letter PDF preview" src="data:application/pdf;base64,${escapeHtml(draft.pdf_base64)}"></iframe>
+                `
+                : '<p class="prep-cover-path">PDF preview unavailable.</p>'
+            }
+            <pre>${escapeUiText(draft.latex ?? "")}</pre>
+          `
+          : '<p class="prep-overview">generate a LaTeX cover letter from the resume, posting, and stored examples.</p>'
+      }
+    </section>
+  `;
 }
 
 function renderPrepAnalysis(role, state = {}) {
+  const savedAnalysis = prepAnalysisByRoleId.get(role.id);
+  if (!state.loading && !state.error && !state.analysis && savedAnalysis) {
+    return renderPrepAnalysis(role, { analysis: savedAnalysis });
+  }
+  if (!state.loading && !state.error && !state.analysis) {
+    return `
+      <section class="prep-analysis" aria-label="ai analysis">
+        <div class="prep-analysis-header">
+          <h3>ai analysis</h3>
+          <button type="button" data-prep-analysis="${role.id}">check fit</button>
+        </div>
+        <p class="prep-overview">check resume fit when you are ready to review AI feedback.</p>
+      </section>
+    `;
+  }
   if (state.loading) {
     return `
       <section class="prep-analysis" aria-label="ai analysis">
@@ -1283,12 +1399,25 @@ function renderPrepAnalysis(role, state = {}) {
               <h4>${escapeUiText(item.title)}</h4>
               <p>${escapeUiText(item.detail)}</p>
               ${renderPrepProposedEdit(item)}
+              <label class="prep-feedback-comment">
+                <span>response comment</span>
+                <textarea
+                  data-prep-feedback-comment
+                  rows="2"
+                  placeholder="why accept or ignore this?"
+                ></textarea>
+              </label>
             </article>
             <div class="prep-feedback-controls">
-              <button type="button" data-prep-feedback="previous" ${currentIndex === 0 ? "disabled" : ""}>previous</button>
-              <span>${currentIndex + 1}/${items.length}</span>
-              <button type="button" data-prep-feedback="next" ${currentIndex >= items.length - 1 ? "disabled" : ""}>next</button>
-              <button type="button" data-prep-feedback="accept">accept</button>
+              <div class="prep-feedback-nav">
+                <button type="button" data-prep-feedback="previous" ${currentIndex === 0 ? "disabled" : ""}>previous</button>
+                <span>${currentIndex + 1}/${items.length}</span>
+                <button type="button" data-prep-feedback="next" ${currentIndex >= items.length - 1 ? "disabled" : ""}>next</button>
+              </div>
+              <div class="prep-feedback-decisions">
+                <button type="button" data-prep-feedback="ignore">ignore</button>
+                <button type="button" data-prep-feedback="accept">accept</button>
+              </div>
             </div>
           `
           : '<p class="prep-overview">ready to apply with the current resume.</p>'
@@ -1410,13 +1539,23 @@ async function handlePrepAction(action) {
   }
 }
 
-async function acceptPrepFeedback(roleId, feedbackIndex, feedbackItem) {
+async function acceptPrepFeedback(roleId, feedbackIndex, feedbackItem, comment) {
   const response = await fetch(`/api/roles/${encodeURIComponent(roleId)}/prep-feedback`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ feedback_index: feedbackIndex, feedback_item: feedbackItem }),
+    body: JSON.stringify({ feedback_index: feedbackIndex, feedback_item: feedbackItem, comment }),
   });
   if (!response.ok) throw new Error("Prep feedback update failed");
+  return response.json();
+}
+
+async function ignorePrepFeedback(roleId, feedbackIndex, feedbackItem, comment) {
+  const response = await fetch(`/api/roles/${encodeURIComponent(roleId)}/prep-feedback-ignore`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ feedback_index: feedbackIndex, feedback_item: feedbackItem, comment }),
+  });
+  if (!response.ok) throw new Error("Prep feedback ignore failed");
   return response.json();
 }
 
@@ -1426,6 +1565,27 @@ async function generatePrepResumePdf(roleId) {
   });
   if (!response.ok) throw new Error("Resume PDF generation failed");
   return response.json();
+}
+
+async function generatePrepCoverLetter(roleId, tweaks = "") {
+  const response = await fetch(`/api/roles/${encodeURIComponent(roleId)}/cover-letter`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tweaks }),
+  });
+  if (!response.ok) throw new Error("Cover letter generation failed");
+  return response.json();
+}
+
+async function loadPrepCoverLetter(roleId) {
+  if (prepCoverLetterByRoleId.has(roleId)) return prepCoverLetterByRoleId.get(roleId);
+  const response = await fetch(`/api/roles/${encodeURIComponent(roleId)}/cover-letter`);
+  if (!response.ok) throw new Error("Cover letter request failed");
+  const payload = await response.json();
+  if (payload.cover_letter) {
+    prepCoverLetterByRoleId.set(roleId, payload.cover_letter);
+  }
+  return payload.cover_letter;
 }
 
 async function recordRoleReviewLater(roleId) {
@@ -1461,6 +1621,52 @@ reviewView.addEventListener("click", (event) => {
 });
 
 prepView.addEventListener("click", async (event) => {
+  const analysisButton = event.target.closest("[data-prep-analysis]");
+  if (analysisButton && prepQueue[0]) {
+    const roleId = prepQueue[0].id;
+    prepCard.querySelector(".prep-analysis")?.replaceWith(
+      htmlToElement(renderPrepAnalysis(prepQueue[0], { loading: true })),
+    );
+    try {
+      const analysis = await loadPrepAnalysis(roleId);
+      if (prepQueue[0]?.id !== roleId) return;
+      prepCard.querySelector(".prep-analysis")?.replaceWith(
+        htmlToElement(renderPrepAnalysis(prepQueue[0], { analysis })),
+      );
+    } catch {
+      prepCard.querySelector(".prep-analysis")?.replaceWith(
+        htmlToElement(renderPrepAnalysis(prepQueue[0], { error: true })),
+      );
+    }
+    return;
+  }
+
+  const coverLetterButton = event.target.closest("[data-prep-cover-letter]");
+  if (coverLetterButton && prepQueue[0]) {
+    const roleId = prepQueue[0].id;
+    const coverSection = prepCard.querySelector(".prep-cover-letter");
+    const tweaks =
+      coverSection?.querySelector(`[data-prep-cover-letter-tweaks="${roleId}"]`)?.value ?? "";
+    coverSection?.replaceWith(htmlToElement(renderPrepCoverLetter(prepQueue[0], { loading: true })));
+    try {
+      const payload = await generatePrepCoverLetter(roleId, tweaks);
+      prepCoverLetterByRoleId.set(roleId, payload.cover_letter);
+      prepCard.querySelector(".prep-cover-letter")?.replaceWith(
+        htmlToElement(renderPrepCoverLetter(prepQueue[0], { coverLetter: payload.cover_letter })),
+      );
+    } catch {
+      prepCard.querySelector(".prep-cover-letter")?.replaceWith(
+        htmlToElement(
+          renderPrepCoverLetter(prepQueue[0], {
+            coverLetter: prepCoverLetterByRoleId.get(roleId),
+            tweaks,
+          }),
+        ),
+      );
+    }
+    return;
+  }
+
   const actionButton = event.target.closest("[data-prep-action]");
   if (actionButton) {
     handlePrepAction(actionButton.dataset.prepAction);
@@ -1473,17 +1679,33 @@ prepView.addEventListener("click", async (event) => {
   const analysis = prepAnalysisByRoleId.get(roleId);
   const itemCount = Array.isArray(analysis?.feedback_items) ? analysis.feedback_items.length : 0;
   const currentIndex = prepFeedbackIndexByRoleId.get(roleId) ?? 0;
-  if (feedbackButton.dataset.prepFeedback === "accept") {
+  if (
+    feedbackButton.dataset.prepFeedback === "accept"
+    || feedbackButton.dataset.prepFeedback === "ignore"
+  ) {
     const feedbackItem = analysis?.feedback_items?.[currentIndex];
     if (!feedbackItem) return;
+    const comment = prepCard.querySelector("[data-prep-feedback-comment]")?.value ?? "";
+    const responseAction = feedbackButton.dataset.prepFeedback;
+    const originalLabel = responseAction;
     feedbackButton.disabled = true;
-    feedbackButton.textContent = "accepting...";
+    feedbackButton.textContent = responseAction === "accept" ? "accepting..." : "ignoring...";
     try {
-      await acceptPrepFeedback(roleId, currentIndex, feedbackItem);
-      feedbackButton.textContent = "accepted";
+      if (responseAction === "accept") {
+        const payload = await acceptPrepFeedback(roleId, currentIndex, feedbackItem, comment);
+        const currentJobEl = document.querySelector(`.job[data-role-id="${CSS.escape(String(roleId))}"]`);
+        if (payload.role) {
+          prepQueue[0] = payload.role;
+          applyRoleStatusUpdate(payload.role, currentJobEl);
+        }
+        removePrepFeedbackItem(roleId, currentIndex, analysis);
+      } else {
+        await ignorePrepFeedback(roleId, currentIndex, feedbackItem, comment);
+        removePrepFeedbackItem(roleId, currentIndex, analysis);
+      }
     } catch {
       feedbackButton.disabled = false;
-      feedbackButton.textContent = "accept";
+      feedbackButton.textContent = originalLabel;
     }
     return;
   }
@@ -1497,6 +1719,23 @@ prepView.addEventListener("click", async (event) => {
     htmlToElement(renderPrepAnalysis(prepQueue[0], { analysis })),
   );
 });
+
+function removePrepFeedbackItem(roleId, feedbackIndex, analysis) {
+  const remainingItems = analysis.feedback_items.filter(
+    (_item, itemIndex) => itemIndex !== feedbackIndex,
+  );
+  const nextIndex = Math.min(feedbackIndex, Math.max(remainingItems.length - 1, 0));
+  const nextAnalysis = {
+    ...analysis,
+    feedback_items: remainingItems,
+    verdict: remainingItems.length === 0 ? "ready_to_apply" : analysis.verdict,
+  };
+  prepFeedbackIndexByRoleId.set(roleId, nextIndex);
+  prepAnalysisByRoleId.set(roleId, nextAnalysis);
+  prepCard.querySelector(".prep-analysis")?.replaceWith(
+    htmlToElement(renderPrepAnalysis(prepQueue[0], { analysis: nextAnalysis })),
+  );
+}
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !searchDialog.hidden) closeSearchDialog();
@@ -1560,6 +1799,8 @@ settingsForm.addEventListener("change", (event) => {
   if (!control) return;
   saveSetting(control);
 });
+
+clearRecommendationHistoryButton.addEventListener("click", clearRecommendationHistory);
 
 loadTracker().catch(() => {
   statusListEl.innerHTML = '<p class="empty-copy">could not load jobs.</p>';

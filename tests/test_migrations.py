@@ -24,6 +24,7 @@ def test_initial_schema_creates_minimal_tracking_tables() -> None:
         "companies",
         "app_config",
         "cover_letter_examples",
+        "cover_letter_example_vectors",
         "company_career_pages",
         "roles",
         "scan_runs",
@@ -31,6 +32,7 @@ def test_initial_schema_creates_minimal_tracking_tables() -> None:
         "scan_candidates",
         "role_discovery_attempts",
         "events",
+        "resume_feedback_history",
     }.issubset(tables)
 
     role_discovery_columns = {

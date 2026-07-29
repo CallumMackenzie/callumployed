@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import os
 from io import BytesIO
 from pathlib import Path
 from threading import Event, Thread
@@ -14,11 +15,13 @@ from typer.testing import CliRunner
 import callumployed.web.server as web_server
 from callumployed.cli import app
 from callumployed.data import db
-from callumployed.data.models import Company
+from callumployed.data.models import Company, Role
 from callumployed.data.repositories import (
     add_company,
+    count_resume_feedback_history,
     create_scan_run,
     list_cover_letter_examples,
+    record_resume_feedback_history,
 )
 from callumployed.web.server import (
     LocalThreadingHTTPServer,
@@ -105,8 +108,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="toolbar-summary"' in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=20260727-4" in markup
-        assert "/assets/app.js?v=20260727-9" in markup
+        assert "/assets/app.css?v=20260728-2" in markup
+        assert "/assets/app.js?v=20260728-2" in markup
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -176,10 +179,66 @@ def test_prep_analysis_endpoint_reports_resume_fit(
         titles = [item["title"] for item in payload["analysis"]["feedback_items"]]
         assert any(title.startswith("change wording to align with posting") for title in titles)
         assert any(title.startswith("add skills matching the posting") for title in titles)
+        assert not (tmp_path / "prepared-resumes" / "role-1" / "resume.tex").exists()
     finally:
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+def test_prep_analysis_passes_recommendation_history_to_agent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-prep-analysis-history.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    captured: dict[str, object] = {}
+
+    def fake_list_knowledge(*args: object, **kwargs: object) -> list[dict[str, object]]:
+        return [
+            {
+                "response": "ignored",
+                "comment": "too generic",
+                "feedback_title": "add skills matching the posting: React",
+                "feedback_detail": "add React",
+                "knowledge_text": "ignored because too generic",
+                "similarity": 0.9,
+            }
+        ]
+
+    async def fake_evaluate_resume_feedback(**kwargs: object) -> object:
+        captured["knowledge_base"] = kwargs.get("knowledge_base")
+
+        class Response:
+            def model_dump(self, **_kwargs: object) -> dict[str, object]:
+                return {
+                    "verdict": "ready_to_apply",
+                    "overview": "ready",
+                    "feedback_items": [],
+                }
+
+        return Response()
+
+    monkeypatch.setattr(web_server, "list_resume_feedback_knowledge", fake_list_knowledge)
+    monkeypatch.setattr(web_server, "evaluate_resume_feedback", fake_evaluate_resume_feedback)
+
+    analysis = web_server.build_prep_analysis(
+        {
+            "id": 1,
+            "company_id": 1,
+            "title": "Backend Intern",
+            "role_url": "https://example.com/jobs/backend",
+            "description": "Python backend",
+        },
+        web_server.MasterResume(
+            filename="resume.tex",
+            content="Python backend",
+            content_sha256="abc",
+        ),
+    )
+
+    assert analysis["recommendation_history_matches"] == 1
+    assert captured["knowledge_base"] == fake_list_knowledge()
 
 
 def test_prep_feedback_acceptance_updates_role_resume_copy(
@@ -242,6 +301,7 @@ def test_prep_feedback_acceptance_updates_role_resume_copy(
                         "detail": "mention distributed systems experience",
                         "latex_addition": "\\noindent Distributed systems experience.",
                     },
+                    "comment": "good targeted edit",
                 }
             ).encode(),
             headers={"Content-Type": "application/json"},
@@ -254,6 +314,7 @@ def test_prep_feedback_acceptance_updates_role_resume_copy(
         resume_path = Path(payload["resume_path"])
         assert response.status == 200
         assert payload["accepted"] is True
+        assert payload["role"]["role_status"] == "prepared"
         assert resume_path == resume_root / "role-1" / "resume.tex"
         resume_content = resume_path.read_text()
         assert "% callumployed accepted prep feedback" in resume_content
@@ -261,6 +322,518 @@ def test_prep_feedback_acceptance_updates_role_resume_copy(
         addition_index = resume_content.index("\\noindent Distributed systems experience.")
         end_document_index = resume_content.index("\\end{document}")
         assert addition_index < end_document_index
+        with db.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT response, comment, feedback_title
+                FROM resume_feedback_history
+                """
+            ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["response"] == "accepted"
+        assert rows[0]["comment"] == "good targeted edit"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_cover_letter_endpoint_generates_role_specific_latex(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-cover-letter-generate.sqlite3"
+    resume_root = tmp_path / "prepared-resumes"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    monkeypatch.setattr(web_server.shutil, "which", lambda _name: "/usr/bin/pdflatex")
+
+    def fake_run(command: object, **kwargs: object) -> object:
+        cwd = Path(kwargs["cwd"])
+        (cwd / "cover-letter.pdf").write_bytes(b"cover pdf")
+
+        class Completed:
+            returncode = 0
+
+        return Completed()
+
+    monkeypatch.setattr(web_server.subprocess, "run", fake_run)
+
+    captured: dict[str, object] = {}
+
+    async def fake_generate_cover_letter(**kwargs: object) -> object:
+        captured["tweaks"] = kwargs.get("tweaks")
+
+        class Draft:
+            latex = "\\documentclass{letter}\\begin{document}Dear Acme\\end{document}"
+            summary = "generated from examples"
+            example_ids = [1]
+
+        search_tool = kwargs["search_tool"]
+        search_tool("Python backend", limit=1)
+        return Draft()
+
+    monkeypatch.setattr(web_server, "generate_cover_letter", fake_generate_cover_letter)
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Backend Intern", "https://example.com/jobs/backend"],
+        env=env,
+    )
+    with db.connect() as connection:
+        connection.execute(
+            """
+            UPDATE roles
+            SET description = 'Python backend internship'
+            WHERE id = 1
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO master_resumes (id, filename, content, content_sha256)
+            VALUES (1, 'resume.tex', 'Python backend resume', 'abc')
+            """
+        )
+        connection.commit()
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        request = Request(
+            f"http://127.0.0.1:{port}/api/roles/1/cover-letter",
+            data=json.dumps(
+                {"tweaks": "Make it warmer and shorten the Amazon paragraph."}
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode())
+
+        cover_letter = payload["cover_letter"]
+        assert response.status == 200
+        assert (
+            cover_letter["summary"]
+            == (
+                "Drafted cover letter for Backend Intern at Acme using resume, "
+                "job description, and 1 stored cover letter example."
+            )
+        )
+        assert cover_letter["path"] == str(resume_root / "role-1" / "cover-letter.tex")
+        assert cover_letter["pdf_path"] == str(resume_root / "role-1" / "cover-letter.pdf")
+        assert cover_letter["pdf_base64"]
+        assert cover_letter["tweaks"] == "Make it warmer and shorten the Amazon paragraph."
+        assert captured["tweaks"] == "Make it warmer and shorten the Amazon paragraph."
+        saved_latex = (resume_root / "role-1" / "cover-letter.tex").read_text()
+        assert "Dear Acme" in saved_latex
+        assert "\\setlength{\\parskip}{0.85em}" in saved_latex
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_cover_letter_display_summary_does_not_use_agent_blurb() -> None:
+    summary = web_server._cover_letter_display_summary(
+        {
+            "title": "Campus AI Research Engineer - Research Automation (Intern)",
+            "company_name": "Jump Trading Group",
+        },
+        source="ai_cover_letter",
+        example_count=2,
+    )
+
+    assert summary == (
+        "Drafted cover letter for Campus AI Research Engineer - Research Automation "
+        "(Intern) at Jump Trading Group using resume, job description, and 2 stored "
+        "cover letter examples."
+    )
+    assert "concise, professional latex cover letter" not in summary
+
+
+def test_cover_letter_endpoint_loads_saved_role_cover_letter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-cover-letter-load.sqlite3"
+    resume_root = tmp_path / "prepared-resumes"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Backend Intern", "https://example.com/jobs/backend"],
+        env=env,
+    )
+    db.ensure_initialized()
+
+    role_dir = resume_root / "role-1"
+    role_dir.mkdir(parents=True)
+    (role_dir / "cover-letter.tex").write_text("\\documentclass{letter}")
+    (role_dir / "cover-letter.pdf").write_bytes(b"pdf")
+
+    def fake_generate_pdf(path: Path) -> tuple[Path, str]:
+        pdf_path = path.with_suffix(".pdf")
+        pdf_path.write_bytes(b"fresh pdf")
+        return pdf_path, base64.b64encode(b"fresh pdf").decode()
+
+    monkeypatch.setattr(web_server, "_generate_cover_letter_pdf_preview", fake_generate_pdf)
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        with urlopen(f"http://127.0.0.1:{port}/api/roles/1/cover-letter", timeout=5) as response:
+            payload = json.loads(response.read().decode())
+
+        cover_letter = payload["cover_letter"]
+        assert response.status == 200
+        assert cover_letter["source"] == "saved_cover_letter"
+        assert "\\documentclass{letter}" in cover_letter["latex"]
+        assert cover_letter["pdf_base64"]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_cover_letter_endpoint_recompiles_stale_saved_pdf(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-cover-letter-stale-pdf.sqlite3"
+    resume_root = tmp_path / "prepared-resumes"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Backend Intern", "https://example.com/jobs/backend"],
+        env=env,
+    )
+    db.ensure_initialized()
+
+    role_dir = resume_root / "role-1"
+    role_dir.mkdir(parents=True)
+    cover_letter_path = role_dir / "cover-letter.tex"
+    pdf_path = role_dir / "cover-letter.pdf"
+    cover_letter_path.write_text("\\documentclass{letter}\\begin{document}new\\end{document}")
+    pdf_path.write_bytes(b"stale pdf")
+    os.utime(pdf_path, (1, 1))
+
+    def fake_generate_pdf(path: Path) -> tuple[Path, str]:
+        assert path == cover_letter_path
+        pdf_path.write_bytes(b"fresh pdf")
+        return pdf_path, base64.b64encode(b"fresh pdf").decode()
+
+    monkeypatch.setattr(web_server, "_generate_cover_letter_pdf_preview", fake_generate_pdf)
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        with urlopen(f"http://127.0.0.1:{port}/api/roles/1/cover-letter", timeout=5) as response:
+            payload = json.loads(response.read().decode())
+
+        assert response.status == 200
+        assert base64.b64decode(payload["cover_letter"]["pdf_base64"]) == b"fresh pdf"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_cover_letter_pdf_endpoint_serves_saved_role_pdf(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-cover-letter-pdf.sqlite3"
+    resume_root = tmp_path / "prepared-resumes"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Backend Intern", "https://example.com/jobs/backend"],
+        env=env,
+    )
+    db.ensure_initialized()
+
+    role_dir = resume_root / "role-1"
+    role_dir.mkdir(parents=True)
+    (role_dir / "cover-letter.tex").write_text("\\documentclass{letter}")
+    (role_dir / "cover-letter.pdf").write_bytes(b"%PDF saved cover letter")
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        with urlopen(
+            f"http://127.0.0.1:{port}/api/roles/1/cover-letter.pdf",
+            timeout=5,
+        ) as response:
+            body = response.read()
+
+        assert response.status == 200
+        assert response.headers["Content-Type"] == "application/pdf"
+        assert response.headers["Content-Disposition"].startswith("inline;")
+        assert body == b"%PDF saved cover letter"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_cover_letter_latex_normalizer_adds_compact_one_page_layout() -> None:
+    normalized = web_server._normalize_cover_letter_latex(
+        "\\documentclass{letter}\n\\begin{document}\nHello\n\\end{document}"
+    )
+
+    assert "\\documentclass{letter}" in normalized
+    assert "\\usepackage[margin=1in]{geometry}" in normalized
+    assert "\\setlength{\\parskip}{0.85em}" in normalized
+    assert "\\setlength{\\parindent}{0pt}" in normalized
+    assert "\\linespread{0.97}" not in normalized
+    assert "\\pagestyle{empty}" in normalized
+    assert normalized.index("\\setlength{\\parskip}") < normalized.index("\\begin{document}")
+
+
+def test_cover_letter_latex_normalizer_strips_em_dashes() -> None:
+    normalized = web_server._normalize_cover_letter_latex(
+        "\\documentclass{letter}\n"
+        "\\begin{document}\n"
+        "AI infrastructure \u2014 distributed systems --- backend tooling\n"
+        "\\end{document}"
+    )
+
+    assert "\u2014" not in normalized
+    assert "---" not in normalized
+    assert "AI infrastructure  -  distributed systems  -  backend tooling" in normalized
+
+
+def test_cover_letter_latex_normalizer_left_aligns_sender_header() -> None:
+    normalized = web_server._normalize_cover_letter_latex(
+        "\\documentclass[11pt]{letter}\n"
+        "\\address{Callum Mackenzie \\\\ callum@camackenzie.com}\n"
+        "\\date{\\today}\n"
+        "\\begin{document}\n"
+        "\\begin{letter}{Hiring Team}\n"
+        "\\opening{Dear Hiring Team,}\n"
+        "Hi\n"
+        "\\end{letter}\n"
+        "\\end{document}"
+    )
+
+    assert "\\address{" not in normalized
+    assert "\\date{" not in normalized
+    assert "\\noindent\\begin{tabular}{@{}l@{}}" in normalized
+    assert "Callum Mackenzie\\\\\ncallum@camackenzie.com" in normalized
+    assert normalized.index("\\end{tabular}") < normalized.index("\\begin{letter}")
+
+
+def test_cover_letter_latex_normalizer_escapes_header_ampersands() -> None:
+    normalized = web_server._normalize_cover_letter_latex(
+        "\\documentclass{letter}\n"
+        "\\address{Callum Mackenzie \\\\ BSc Computer Science & Statistics}\n"
+        "\\begin{document}\n"
+        "\\begin{letter}{Hiring Team}\n"
+        "Hi\n"
+        "\\end{letter}\n"
+        "\\end{document}"
+    )
+
+    assert "Computer Science \\& Statistics" in normalized
+    assert "Computer Science & Statistics" not in normalized
+
+
+def test_cover_letter_latex_normalizer_escapes_body_ampersands() -> None:
+    normalized = web_server._normalize_cover_letter_latex(
+        "\\documentclass{article}\n"
+        "\\begin{document}\n"
+        "I contributed to General Dynamics' defense R&D team and improved reliability.\n"
+        "\\end{document}"
+    )
+
+    assert "R\\&D team" in normalized
+    assert "R&D team" not in normalized
+
+
+def test_cover_letter_latex_normalizer_strips_resume_pdf_compatibility_commands() -> None:
+    normalized = web_server._normalize_cover_letter_latex(
+        "\\documentclass{article}\n"
+        "\\usepackage[margin=1in]{geometry}\n"
+        "\\pdfgentounicode=1\n"
+        "\\input{glyphtounicode}\n"
+        "\\providecommand{\\pdfglyphtounicode}[2]{}\n"
+        "\\begin{document}\n"
+        "Dear Hiring Team,\n"
+        "\\end{document}"
+    )
+
+    assert "\\pdfgentounicode" not in normalized
+    assert "glyphtounicode" not in normalized
+
+
+def test_cover_letter_latex_normalizer_repairs_invalid_text_characters() -> None:
+    normalized = web_server._normalize_cover_letter_latex(
+        "\\documentclass{article}\n"
+        "\\begin{document}\n"
+        "I am drawn to Jump\x19s research culture and the team's focus.\n"
+        "\\end{document}"
+    )
+
+    assert "Jump's research culture" in normalized
+    assert "\x19" not in normalized
+
+
+def test_cover_letter_latex_normalizer_migrates_manual_minipage_header() -> None:
+    normalized = web_server._normalize_cover_letter_latex(
+        "\\documentclass{letter}\n"
+        "\\begin{document}\n"
+        "\\noindent\\begin{minipage}{\\textwidth}\n"
+        "Callum Mackenzie \\\\ BSc Computer Science & Statistics\\\\\n"
+        "\\today\n"
+        "\\end{minipage}\n"
+        "\\vspace{1em}\n"
+        "\\begin{letter}{Hiring Team}\n"
+        "Hi\n"
+        "\\end{letter}\n"
+        "\\end{document}"
+    )
+
+    assert "\\begin{minipage}" not in normalized
+    assert "\\noindent\\begin{tabular}{@{}l@{}}" in normalized
+    assert "Computer Science \\& Statistics" in normalized
+
+
+def test_cover_letter_latex_normalizer_repairs_generated_broken_header() -> None:
+    normalized = web_server._normalize_cover_letter_latex(
+        "\\documentclass[11pt]{letter}\n"
+        "\\usepackage[margin=1in]{geometry}\n"
+        "\\usepackage{hyperref}\n"
+        "\\signature{Callum Mackenzie}\n"
+        "{callum@camackenzie.com} \\\\ +1 403-473-1818 \\\\ "
+        "\\href{https://camackenzie.com}{camackenzie.com}}\n"
+        "\\begin{document}\n"
+        "\\noindent\\begin{tabular}{@{}l@{}}\n"
+        "Callum Mackenzie\\\\\n"
+        "\\href{mailto:callum@camackenzie.com\n"
+        "\\end{tabular}\n"
+        "\\vspace{1em}\n"
+        "\\begin{letter}{Hiring Team}\n"
+        "Hi\n"
+        "\\end{letter}\n"
+        "\\end{document}"
+    )
+
+    assert "{callum@camackenzie.com} \\\\ +1" not in normalized
+    assert "\\signature{Callum Mackenzie}" in normalized
+    assert "\\href{mailto:callum@camackenzie.com}{callum@camackenzie.com}" in normalized
+
+
+def test_cover_letter_latex_normalizer_repairs_single_slash_article_header() -> None:
+    normalized = web_server._normalize_cover_letter_latex(
+        "\\documentclass[11pt]{article}\n"
+        "\\usepackage[empty]{fullpage}\n"
+        "\\usepackage{parskip}\n"
+        "\\begin{document}\n"
+        "% Sender Information\n"
+        "Callum Mackenzie \\\n"
+        "University of British Columbia \\\n"
+        "BSc Computer Science \\& Statistics \\\n"
+        "\\href{mailto:callum@camackenzie.com}{callum@camackenzie.com} \\\n"
+        "\\href{https://camackenzie.com}{camackenzie.com} \\\\[12pt]\n"
+        "\\vspace{1em}\n"
+        "Dear Hiring Team,\n"
+        "\n"
+        "First paragraph improved reliability by 50%.\n"
+        "\n"
+        "Second paragraph.\n"
+        "\n"
+        "Sincerely, \\\n"
+        "Callum Mackenzie\n"
+        "\\end{document}"
+    )
+
+    assert "\\usepackage[empty]{fullpage}" not in normalized
+    assert "\\usepackage{parskip}" not in normalized
+    assert "% Sender Information" not in normalized
+    assert "camackenzie.com}{camackenzie.com}" not in normalized
+    assert "mailto:callum@camackenzie.com" in normalized
+    assert "\\href{mailto:callum@camackenzie.com}{callum@camackenzie.com}\\\\[12pt]" in normalized
+    assert "50\\%." in normalized
+    assert "\\setlength{\\parskip}{0.85em}" in normalized
+    assert "Callum Mackenzie\\\\\nUniversity of British Columbia\\\\" in normalized
+    assert "Sincerely,\\\\\nCallum Mackenzie" in normalized
+
+
+def test_prep_feedback_ignore_records_comment_without_updating_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-prep-feedback-ignore.sqlite3"
+    resume_root = tmp_path / "prepared-resumes"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Backend Intern", "https://example.com/jobs/backend"],
+        env=env,
+    )
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        request = Request(
+            f"http://127.0.0.1:{port}/api/roles/1/prep-feedback-ignore",
+            data=json.dumps(
+                {
+                    "feedback_index": 1,
+                    "feedback_item": {
+                        "label": "add_skills",
+                        "title": "add skills matching the posting: Kubernetes",
+                        "detail": "mention Kubernetes if supported",
+                    },
+                    "comment": "not actually supported by the resume",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode())
+
+        assert response.status == 200
+        assert payload["ignored"] is True
+        assert not (resume_root / "role-1" / "resume.tex").exists()
+        with db.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT response, comment, feedback_title
+                FROM resume_feedback_history
+                """
+            ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["response"] == "ignored"
+        assert rows[0]["comment"] == "not actually supported by the resume"
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -412,6 +985,43 @@ def test_tectonic_resume_input_adds_pdftex_compatibility(tmp_path: Path) -> None
     assert "\\newcount\\pdfgentounicode" in compile_content
 
 
+def test_resume_pdf_uses_temporary_resume_when_role_has_no_custom_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resume_root = tmp_path / "prepared-resumes"
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    monkeypatch.setattr(web_server, "_resume_resources_root", lambda: tmp_path / "resources")
+    monkeypatch.setattr(web_server.shutil, "which", lambda _name: "/usr/bin/pdflatex")
+    monkeypatch.setattr(web_server.Path, "home", lambda: tmp_path)
+
+    def fake_run(command: object, **kwargs: object) -> object:
+        cwd = Path(kwargs["cwd"])
+        (cwd / "resume.pdf").write_bytes(b"pdf")
+
+        class Completed:
+            returncode = 0
+
+        return Completed()
+
+    monkeypatch.setattr(web_server.subprocess, "run", fake_run)
+
+    pdf_path = web_server._generate_role_resume_pdf(
+        {"id": 1, "title": "Backend Intern"},
+        web_server.MasterResume(
+            filename="resume.tex",
+            content="\\documentclass{article}\\begin{document}hi\\end{document}",
+            content_sha256="abc",
+        ),
+    )
+
+    assert pdf_path == downloads / "callumployed-1-backend-intern-resume.pdf"
+    assert pdf_path.read_bytes() == b"pdf"
+    assert not (resume_root / "role-1" / "resume.tex").exists()
+
+
 def test_role_resume_resource_list_hides_compile_artifacts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -439,6 +1049,7 @@ def test_config_payload_returns_current_settings(
     defaults = build_config_payload()
 
     assert defaults["values"] == {}
+    assert defaults["recommendation_history_count"] == 0
     assert defaults["settings"] == [
         {
             "key": "include_graduate_degree_roles",
@@ -546,6 +1157,58 @@ def test_config_endpoint_updates_settings(
             "internship_mode": False,
             "location_filter": "north_america",
         }
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_recommendation_history_clear_endpoint_removes_feedback_decisions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "web-recommendation-history-clear.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        company = add_company(connection, Company(name="Acme"))
+        role = Role(
+            company_id=company.id or 1,
+            title="Backend Intern",
+            role_url="https://example.com/jobs/backend",
+            description="Python systems",
+        )
+        record_resume_feedback_history(
+            connection,
+            role=role,
+            feedback_index=0,
+            feedback={
+                "title": "add skills matching the posting: Python",
+                "detail": "add Python",
+            },
+            response="accepted",
+        )
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        request = Request(
+            f"http://127.0.0.1:{port}/api/recommendation-history/clear",
+            data=b"{}",
+            method="POST",
+        )
+
+        with urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode())
+
+        assert response.status == 200
+        assert payload["cleared"] is True
+        assert payload["deleted_count"] == 1
+        assert payload["config"]["recommendation_history_count"] == 0
+        with db.connect() as connection:
+            assert count_resume_feedback_history(connection) == 0
     finally:
         server.shutdown()
         thread.join(timeout=5)

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from callumployed.agents.cover_letter import CoverLetterAgent, build_cover_letter_prompt
 from callumployed.agents.posting_link_classifier import (
     PostingLinkClassificationBatch,
     PostingLinkClassificationDecision,
@@ -93,6 +94,140 @@ def test_resume_feedback_prompt_includes_verdict_rules_and_context() -> None:
     assert "job_context" in prompt
     assert "Python distributed systems internship" in prompt
     assert "Python systems projects in LaTeX" in prompt
+
+
+def test_cover_letter_prompt_includes_resume_job_and_tool_results() -> None:
+    prompt = build_cover_letter_prompt(
+        role={
+            "id": 1,
+            "company_name": "Acme",
+            "title": "Backend Intern",
+            "role_url": "https://example.com/jobs/backend",
+            "location": "Vancouver",
+            "description": "Python distributed systems internship",
+        },
+        resume_content="Python systems resume",
+        tweaks="Make the tone warmer and emphasize ML infrastructure.",
+        cover_letter_examples=[
+            {
+                "id": 7,
+                "filename": "stripe.tex",
+                "content": "Dear Stripe, I build backend systems.",
+                "similarity": 0.8,
+            }
+        ],
+    )
+
+    assert "resume_context" in prompt
+    assert "job_context" in prompt
+    assert "cover_letter_example_tool_results" in prompt
+    assert "Python distributed systems internship" in prompt
+    assert "Dear Stripe" in prompt
+    assert "fits on one page" in prompt
+    assert "225-275 words" in prompt
+    assert "1in margins" in prompt
+    assert "sender block, recipient/date block" in prompt
+    assert "sender/contact header must contain only" in prompt
+    assert "callum@camackenzie.com" in prompt
+    assert "do not include the user's personal website, GitHub, LinkedIn" in prompt
+    assert "Integrate the context deliberately" in prompt
+    assert "tailor every body paragraph to the specific position" in prompt
+    assert "sent unchanged to another company" in prompt
+    assert "too generic" in prompt
+    assert "must name the exact company and role" in prompt
+    assert "specific responsibilities or requirements from the posting" in prompt
+    assert "avoid generic filler" in prompt
+    assert "Use this exact LaTeX scaffold" in prompt
+    assert "\\documentclass[letterpaper,11pt]{article}" in prompt
+    assert "\\pdfgentounicode" in prompt
+    assert "plain ASCII apostrophes and quotes" in prompt
+    assert "R\\&D" in prompt
+    assert "50\\%" in prompt
+    assert "regeneration_tweaks" in prompt
+    assert "Make the tone warmer and emphasize ML infrastructure." in prompt
+
+
+def test_cover_letter_agent_queries_example_tool_and_passes_documents() -> None:
+    calls: list[str] = []
+    prompts: list[str] = []
+
+    def search_tool(query: str, *, limit: int = 3) -> list[dict[str, object]]:
+        calls.append(query)
+        return [
+            {
+                "id": 7,
+                "filename": "backend-cover.tex",
+                "content": "Dear Backend Team, I write about distributed systems.",
+                "similarity": 0.91,
+            }
+        ]
+
+    class FakeCoverLetterModel:
+        async def ainvoke(self, prompt: object) -> dict[str, object]:
+            assert isinstance(prompt, str)
+            prompts.append(prompt)
+            return {
+                "latex": "\\documentclass{letter}\\begin{document}Hi\\end{document}",
+                "summary": "drafted",
+                "example_ids": [7],
+            }
+
+    response = asyncio.run(
+        CoverLetterAgent(
+            search_tool=search_tool,
+            chat_model_factory=lambda _settings: FakeCoverLetterModel(),
+        ).generate(
+            role={
+                "id": 1,
+                "company_name": "Acme",
+                "title": "Backend Intern",
+                "location": "Vancouver",
+                "description": "Python distributed systems internship",
+            },
+            resume_content="Python backend resume",
+            tweaks="Cut one paragraph and make the intro more direct.",
+        )
+    )
+
+    assert len(calls) == 2
+    assert response.example_ids == [7]
+    assert "Dear Backend Team" in prompts[0]
+    assert "cover_letter_example_tool_results" in prompts[0]
+    assert "primary writing-style reference" in prompts[0]
+    assert "do not use em dashes" in prompts[0]
+    assert "fits on one page" in prompts[0]
+    assert "Cut one paragraph and make the intro more direct." in prompts[0]
+
+
+def test_resume_feedback_prompt_includes_recommendation_history() -> None:
+    prompt = build_resume_feedback_prompt(
+        role={
+            "id": 1,
+            "company_id": 2,
+            "title": "Backend Intern",
+            "role_url": "https://example.com/jobs/backend",
+            "location": "Vancouver",
+            "description": "Python distributed systems internship",
+        },
+        resume_content="Python systems projects in LaTeX",
+        knowledge_base=[
+            {
+                "response": "ignored",
+                "comment": "do not suggest generic skills blocks",
+                "role_title": "Backend Intern",
+                "feedback_title": "add skills matching the posting: Kubernetes",
+                "feedback_detail": "add Kubernetes where supported",
+                "knowledge_text": "user ignored this because it was unsupported",
+                "similarity": 0.82,
+            }
+        ],
+    )
+
+    assert "recommendation_knowledge_base" in prompt
+    assert "ignored feedback means a similar recommendation was not useful" in prompt
+    assert "strong negative examples" in prompt
+    assert "do not suggest generic skills blocks" in prompt
+    assert "user ignored this because it was unsupported" in prompt
 
 
 def test_resume_feedback_response_requires_known_verdict() -> None:

@@ -31,6 +31,8 @@ def run_migrations(connection: turso.Connection) -> None:
     _ensure_app_config_table(connection)
     _ensure_master_resumes_table(connection)
     _ensure_cover_letter_examples_table(connection)
+    _ensure_cover_letter_example_vectors_table(connection)
+    _ensure_resume_feedback_history_table(connection)
     _ensure_company_browser_wait_column(connection)
     _ensure_role_information_columns(connection)
     _ensure_role_discovery_assessment_columns(connection)
@@ -82,6 +84,62 @@ def _ensure_cover_letter_examples_table(connection: turso.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_cover_letter_examples_updated_at
             ON cover_letter_examples (updated_at)
+        """
+    )
+
+
+def _ensure_cover_letter_example_vectors_table(connection: turso.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS cover_letter_example_vectors (
+            cover_letter_example_id INTEGER PRIMARY KEY,
+            knowledge_text TEXT NOT NULL,
+            vector_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (cover_letter_example_id) REFERENCES cover_letter_examples (id)
+                ON DELETE CASCADE
+        )
+        """
+    )
+
+
+def _ensure_resume_feedback_history_table(connection: turso.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS resume_feedback_history (
+            id INTEGER PRIMARY KEY,
+            role_id INTEGER,
+            company_id INTEGER,
+            role_title TEXT NOT NULL,
+            role_url TEXT,
+            role_description TEXT,
+            feedback_index INTEGER NOT NULL,
+            feedback_label TEXT,
+            feedback_title TEXT NOT NULL,
+            feedback_detail TEXT NOT NULL,
+            target_text TEXT,
+            replacement_text TEXT,
+            latex_addition TEXT,
+            response TEXT NOT NULL CHECK (response IN ('accepted', 'ignored')),
+            comment TEXT,
+            knowledge_text TEXT NOT NULL,
+            vector_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (role_id) REFERENCES roles (id) ON DELETE SET NULL,
+            FOREIGN KEY (company_id) REFERENCES companies (id) ON DELETE SET NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_resume_feedback_history_created_at
+            ON resume_feedback_history (created_at)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_resume_feedback_history_role_id
+            ON resume_feedback_history (role_id)
         """
     )
 

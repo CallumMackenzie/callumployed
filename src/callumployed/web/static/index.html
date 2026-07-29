@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>callumployed</title>
-    <link rel="stylesheet" href="/assets/app.css?v=20260727-4" />
+    <link rel="stylesheet" href="/assets/app.css?v=20260728-2" />
   </head>
   <body>
     <main class="shell">
@@ -173,10 +173,22 @@
         <div class="settings-status" id="settings-status" role="status" aria-live="polite"></div>
         <form class="settings-form" id="settings-form">
           <div class="settings-options" id="settings-options"></div>
+          <section class="settings-maintenance" aria-label="recommendation history">
+            <div class="setting-copy">
+              <span class="setting-label">recommendation history</span>
+              <span class="setting-description" id="recommendation-history-summary">
+                no saved resume feedback decisions
+              </span>
+              <span class="setting-default">used as feedback-agent knowledge base</span>
+            </div>
+            <button type="button" id="clear-recommendation-history">
+              clear recommendation history
+            </button>
+          </section>
         </form>
       </div>
     </section>
 
-    <script src="/assets/app.js?v=20260727-9" type="module"></script>
+    <script src="/assets/app.js?v=20260728-2" type="module"></script>
   </body>
 </html>

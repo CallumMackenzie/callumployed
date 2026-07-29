@@ -18,7 +18,9 @@ from callumployed.data.repositories import (
     add_role_discovery_attempt,
     add_scan_candidates,
     add_scan_page,
+    clear_resume_feedback_history,
     clear_roles,
+    count_resume_feedback_history,
     create_scan_run,
     finish_scan_run,
     get_company,
@@ -29,7 +31,9 @@ from callumployed.data.repositories import (
     list_companies,
     list_company_career_pages,
     list_config_values,
+    list_cover_letter_example_knowledge,
     list_cover_letter_examples,
+    list_resume_feedback_knowledge,
     list_role_discovery_attempts,
     list_role_events,
     list_role_items,
@@ -37,6 +41,7 @@ from callumployed.data.repositories import (
     list_scan_candidates,
     list_scan_pages,
     list_scan_runs,
+    record_resume_feedback_history,
     record_role_review_later,
     set_include_graduate_degree_roles,
     set_include_hardware_roles,
@@ -90,6 +95,56 @@ def test_company_repository_increases_browser_wait_time() -> None:
 
     assert updated_company.browser_extra_wait_ms == 2_000
     assert get_company(connection, company.id).browser_extra_wait_ms == 2_000
+
+
+def test_resume_feedback_history_records_ranks_and_clears_decisions() -> None:
+    connection = db.connect(":memory:")
+    db.run_migrations(connection)
+
+    company = add_company(connection, Company(name="Acme"))
+    role = add_role(
+        connection,
+        Role(
+            company_id=company.id or 1,
+            title="Backend Intern",
+            role_url="https://example.com/jobs/backend",
+            description="Python distributed systems internship",
+        ),
+    )
+
+    history_id = record_resume_feedback_history(
+        connection,
+        role=role,
+        feedback_index=0,
+        feedback={
+            "label": "change_wording",
+            "title": "change wording to align with posting: distributed systems",
+            "detail": "rewrite the systems project bullet",
+            "target_text": "Python systems",
+            "replacement_text": "Python distributed systems",
+        },
+        response="ignored",
+        comment="too generic for this resume",
+    )
+
+    assert history_id == 1
+    assert count_resume_feedback_history(connection) == 1
+    knowledge = list_resume_feedback_knowledge(
+        connection,
+        role=Role(
+            company_id=company.id or 1,
+            title="Distributed Systems Intern",
+            role_url="https://example.com/jobs/distributed",
+            description="Python backend distributed systems",
+        ),
+        resume_content="Python systems project",
+    )
+
+    assert knowledge[0]["response"] == "ignored"
+    assert knowledge[0]["comment"] == "too generic for this resume"
+    assert knowledge[0]["similarity"] > 0
+    assert clear_resume_feedback_history(connection) == 1
+    assert count_resume_feedback_history(connection) == 0
 
 
 def test_config_repository_filters_graduate_degree_roles_by_default() -> None:
@@ -299,6 +354,31 @@ def test_cover_letter_example_repository_adds_multiple_examples() -> None:
     ]
     assert examples[0].content == "Dear Stripe,"
     assert examples[0].content_sha256 != examples[1].content_sha256
+
+
+def test_cover_letter_example_repository_indexes_examples_for_similarity() -> None:
+    connection = db.connect(":memory:")
+    db.run_migrations(connection)
+
+    add_cover_letter_example(
+        connection,
+        filename="backend.tex",
+        content="I built Python distributed systems and backend APIs.",
+    )
+    add_cover_letter_example(
+        connection,
+        filename="hardware.tex",
+        content="I designed embedded firmware and hardware validation tools.",
+    )
+
+    matches = list_cover_letter_example_knowledge(
+        connection,
+        query="backend Python APIs",
+        limit=1,
+    )
+
+    assert matches[0]["filename"] == "backend.tex"
+    assert matches[0]["similarity"] > 0
 
 
 def test_cover_letter_example_repository_rejects_empty_content() -> None:

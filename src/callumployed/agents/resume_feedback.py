@@ -56,6 +56,7 @@ Use the resume context and job context directly. Evaluate:
 - whether the strongest matching experience appears early enough
 - whether the resume avoids adding unsupported claims
 - whether changes are specific enough to improve this application
+- prior recommendation history from the knowledge base, if provided
 
 When the verdict is "tweak", return concise feedback items one by one. Each item must
 be a concrete resume-edit operation, not generic application advice. Use one of these
@@ -72,6 +73,16 @@ Prefer target_text + replacement_text when an exact resume phrase should be repl
 Use latex_addition only when a small standalone LaTeX line or bullet should be
 inserted. Do not invent experience.
 
+Use the recommendation knowledge base as preference memory:
+- accepted feedback means a similar recommendation was useful before
+- ignored feedback means a similar recommendation was not useful
+- user comments explain why a recommendation was accepted or ignored
+- treat ignored feedback with comments as strong negative examples
+- do not repeat a recommendation when the knowledge base says the user ignored
+  that kind of edit as too generic, unsupported, irrelevant, or already covered
+- avoid repeating ignored recommendation patterns unless the current job clearly
+  changes the context
+
 Return only JSON matching:
 {"verdict":"tweak","overview":"...","feedback_items":[{"label":"add_skills","title":"...",
 "detail":"...","target_text":null,"replacement_text":null,"latex_addition":"..."}]}
@@ -82,6 +93,7 @@ def build_resume_feedback_prompt(
     *,
     role: dict[str, Any],
     resume_content: str,
+    knowledge_base: list[dict[str, Any]] | None = None,
 ) -> str:
     payload = {
         "job_context": {
@@ -96,6 +108,18 @@ def build_resume_feedback_prompt(
             "format": "latex",
             "content": resume_content,
         },
+        "recommendation_knowledge_base": [
+            {
+                "response": item.get("response"),
+                "comment": item.get("comment"),
+                "role_title": item.get("role_title"),
+                "feedback_title": item.get("feedback_title"),
+                "feedback_detail": item.get("feedback_detail"),
+                "knowledge_text": item.get("knowledge_text"),
+                "similarity": item.get("similarity"),
+            }
+            for item in knowledge_base or []
+        ],
     }
     return f"{SYSTEM_PROMPT}\n\nContext:\n{json.dumps(payload, indent=2, sort_keys=True)}"
 
@@ -118,6 +142,7 @@ class ResumeFeedbackAgent:
         *,
         role: dict[str, Any],
         resume_content: str,
+        knowledge_base: list[dict[str, Any]] | None = None,
     ) -> ResumeFeedbackResponse:
         model = (
             self.chat_model_factory(self.settings)
@@ -125,7 +150,11 @@ class ResumeFeedbackAgent:
             else build_chat_model(self.settings).with_structured_output(ResumeFeedbackResponse)
         )
         result = await model.ainvoke(
-            build_resume_feedback_prompt(role=role, resume_content=resume_content)
+            build_resume_feedback_prompt(
+                role=role,
+                resume_content=resume_content,
+                knowledge_base=knowledge_base,
+            )
         )
         response = ResumeFeedbackResponse.model_validate(result)
         if response.verdict == "ready_to_apply":
@@ -145,13 +174,14 @@ async def evaluate_resume_feedback(
     *,
     role: dict[str, Any],
     resume_content: str,
+    knowledge_base: list[dict[str, Any]] | None = None,
     settings: LlmSettings | None = None,
     chat_model_factory: ChatModelFactory | None = None,
 ) -> ResumeFeedbackResponse:
     return await ResumeFeedbackAgent(
         settings=settings,
         chat_model_factory=chat_model_factory,
-    ).evaluate(role=role, resume_content=resume_content)
+    ).evaluate(role=role, resume_content=resume_content, knowledge_base=knowledge_base)
 
 
 def _normalize_feedback_title(item: ResumeFeedbackItem) -> ResumeFeedbackItem:

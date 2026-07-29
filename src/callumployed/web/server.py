@@ -4,9 +4,12 @@ import asyncio
 import base64
 import binascii
 import json
+import re
 import shutil
 import subprocess
+import tempfile
 import threading
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from http import HTTPStatus
@@ -22,20 +25,27 @@ from zipfile import BadZipFile, ZipFile
 
 from platformdirs import user_data_path
 
+from callumployed.agents.cover_letter import generate_cover_letter
 from callumployed.agents.resume_feedback import evaluate_resume_feedback
 from callumployed.data import db
 from callumployed.data.models import CoverLetterExample, MasterResume, RoleStatus
 from callumployed.data.repositories import (
     add_cover_letter_example,
+    clear_resume_feedback_history,
+    count_resume_feedback_history,
+    get_company,
     get_location_filter,
     get_master_resume,
     get_role,
     get_tracking_stats,
     list_companies,
     list_config_values,
+    list_cover_letter_example_knowledge,
     list_cover_letter_examples,
+    list_resume_feedback_knowledge,
     list_role_items,
     list_scan_runs,
+    record_resume_feedback_history,
     record_role_review_later,
     set_include_graduate_degree_roles,
     set_include_hardware_roles,
@@ -231,6 +241,22 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             ):
                 self._send_prep_analysis(path_parts[2])
                 return
+            if (
+                len(path_parts) == 4
+                and path_parts[0] == "api"
+                and path_parts[1] == "roles"
+                and path_parts[3] == "cover-letter"
+            ):
+                self._send_cover_letter(path_parts[2])
+                return
+            if (
+                len(path_parts) == 4
+                and path_parts[0] == "api"
+                and path_parts[1] == "roles"
+                and path_parts[3] == "cover-letter.pdf"
+            ):
+                self._send_cover_letter_pdf(path_parts[2])
+                return
             if parsed_url.path.startswith("/assets/"):
                 filename = PurePosixPath(parsed_url.path).name
                 content_type = _content_type_for(filename)
@@ -261,9 +287,25 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 len(path_parts) == 4
                 and path_parts[0] == "api"
                 and path_parts[1] == "roles"
+                and path_parts[3] == "prep-feedback-ignore"
+            ):
+                self._ignore_prep_feedback(path_parts[2])
+                return
+            if (
+                len(path_parts) == 4
+                and path_parts[0] == "api"
+                and path_parts[1] == "roles"
                 and path_parts[3] == "resume-pdf"
             ):
                 self._generate_resume_pdf(path_parts[2])
+                return
+            if (
+                len(path_parts) == 4
+                and path_parts[0] == "api"
+                and path_parts[1] == "roles"
+                and path_parts[3] == "cover-letter"
+            ):
+                self._generate_cover_letter(path_parts[2])
                 return
             if (
                 len(path_parts) == 4
@@ -295,6 +337,13 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
             if len(path_parts) == 2 and path_parts == ["api", "config"]:
                 self._update_config()
+                return
+            if len(path_parts) == 3 and path_parts == [
+                "api",
+                "recommendation-history",
+                "clear",
+            ]:
+                self._clear_recommendation_history()
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -410,8 +459,6 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
 
             analysis = build_prep_analysis(role.model_dump(mode="json"), resume)
-            if resume is not None:
-                _ensure_role_resume_copy(role.id or role_id, resume)
             self._send_json(
                 {
                     "analysis": analysis,
@@ -457,11 +504,66 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 self.send_error(HTTPStatus.BAD_REQUEST, "Invalid feedback item")
                 return
             resume_path = _apply_feedback_to_role_resume(role.id or role_id, resume, feedback)
+            with db.connect() as connection:
+                record_resume_feedback_history(
+                    connection,
+                    role=role,
+                    feedback_index=feedback_index,
+                    feedback=feedback,
+                    response="accepted",
+                    comment=_optional_comment(payload.get("comment")),
+                )
+                role = set_role_status(
+                    connection,
+                    role_id,
+                    RoleStatus.PREPARED,
+                    summary="Custom resume prepared from accepted AI feedback.",
+                )
             self._send_json(
                 {
                     "accepted": True,
                     "feedback_index": feedback_index,
                     "resume_path": str(resume_path),
+                    "role": role.model_dump(mode="json"),
+                }
+            )
+
+        def _ignore_prep_feedback(self, role_id_text: str) -> None:
+            try:
+                role_id = int(role_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
+                return
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            feedback_index = payload.get("feedback_index")
+            feedback = payload.get("feedback_item")
+            if not isinstance(feedback_index, int):
+                self.send_error(HTTPStatus.BAD_REQUEST, "Expected feedback_index")
+                return
+            if not isinstance(feedback, dict):
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid feedback item")
+                return
+            try:
+                with db.connect() as connection:
+                    role = get_role(connection, role_id)
+                    history_id = record_resume_feedback_history(
+                        connection,
+                        role=role,
+                        feedback_index=feedback_index,
+                        feedback=feedback,
+                        response="ignored",
+                        comment=_optional_comment(payload.get("comment")),
+                    )
+            except LookupError:
+                self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
+                return
+            self._send_json(
+                {
+                    "ignored": True,
+                    "feedback_index": feedback_index,
+                    "history_id": history_id,
                 }
             )
 
@@ -491,6 +593,86 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
             self._send_json({"pdf_path": str(pdf_path)})
 
+        def _generate_cover_letter(self, role_id_text: str) -> None:
+            try:
+                role_id = int(role_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
+                return
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            tweaks = _optional_cover_letter_tweaks(payload.get("tweaks"))
+            try:
+                with db.connect() as connection:
+                    role = get_role(connection, role_id)
+                    company = get_company(connection, role.company_id)
+                    resume = get_master_resume(connection)
+            except LookupError:
+                self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
+                return
+            if resume is None:
+                self.send_error(HTTPStatus.BAD_REQUEST, "No master resume stored")
+                return
+            role_payload = role.model_dump(mode="json")
+            role_payload["company_name"] = company.name
+            try:
+                cover_letter = build_role_cover_letter(role_payload, resume, tweaks=tweaks)
+            except RuntimeError as error:
+                self._send_json_with_status(
+                    {"error": str(error)},
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+                return
+            self._send_json({"cover_letter": cover_letter})
+
+        def _send_cover_letter(self, role_id_text: str) -> None:
+            try:
+                role_id = int(role_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
+                return
+            try:
+                with db.connect() as connection:
+                    get_role(connection, role_id)
+            except LookupError:
+                self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
+                return
+            self._send_json({"cover_letter": _saved_role_cover_letter(role_id)})
+
+        def _send_cover_letter_pdf(self, role_id_text: str) -> None:
+            try:
+                role_id = int(role_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
+                return
+            try:
+                with db.connect() as connection:
+                    get_role(connection, role_id)
+            except LookupError:
+                self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
+                return
+            cover_letter_path = _role_cover_letter_tex_path(role_id)
+            pdf_path = cover_letter_path.with_suffix(".pdf")
+            pdf_is_stale = (
+                pdf_path.exists()
+                and cover_letter_path.exists()
+                and pdf_path.stat().st_mtime < cover_letter_path.stat().st_mtime
+            )
+            if (not pdf_path.exists() or pdf_is_stale) and cover_letter_path.exists():
+                try:
+                    pdf_path, _ = _generate_cover_letter_pdf_preview(cover_letter_path)
+                except RuntimeError as error:
+                    self._send_json_with_status(
+                        {"error": str(error)},
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                    )
+                    return
+            if not pdf_path.exists():
+                self.send_error(HTTPStatus.NOT_FOUND, "Cover letter PDF not found")
+                return
+            self._send_pdf_file(pdf_path, filename=f"callumployed-role-{role_id}-cover-letter.pdf")
+
         def _upload_resume_resource(self, role_id_text: str | None = None) -> None:
             role_id: int | None = None
             if role_id_text is not None:
@@ -516,7 +698,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                     self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
                     return
                 if resume is not None:
-                    _ensure_role_resume_copy(role.id or role_id, resume)
+                    _sync_resume_resources_to_role(role.id or role_id)
             try:
                 saved_path = (
                     _save_role_resume_resource(role.id or role_id, filename, content_base64)
@@ -676,6 +858,18 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
 
             self._send_json(build_config_payload())
 
+        def _clear_recommendation_history(self) -> None:
+            with db.connect() as connection:
+                db.run_migrations(connection)
+                deleted_count = clear_resume_feedback_history(connection)
+            self._send_json(
+                {
+                    "cleared": True,
+                    "deleted_count": deleted_count,
+                    "config": build_config_payload(),
+                }
+            )
+
         def _send_static_file(self, filename: str, content_type: str) -> None:
             try:
                 body = resources.files(STATIC_PACKAGE).joinpath(filename).read_bytes()
@@ -685,6 +879,15 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _send_pdf_file(self, path: Path, *, filename: str) -> None:
+            body = path.read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Disposition", f'inline; filename="{filename}"')
             self.end_headers()
             self.wfile.write(body)
 
@@ -738,8 +941,10 @@ def build_config_payload() -> dict[str, Any]:
         require_software_keywords = should_require_software_keywords(connection)
         internship_mode = should_use_internship_mode(connection)
         location_filter = get_location_filter(connection)
+        recommendation_history_count = count_resume_feedback_history(connection)
     return {
         "values": values,
+        "recommendation_history_count": recommendation_history_count,
         "settings": [
             {
                 "key": "include_graduate_degree_roles",
@@ -831,13 +1036,25 @@ def build_prep_analysis(
 ) -> dict[str, Any]:
     if use_agent and resume is not None:
         try:
+            with db.connect() as connection:
+                db.run_migrations(connection)
+                knowledge_base = list_resume_feedback_knowledge(
+                    connection,
+                    role=role,
+                    resume_content=resume.content,
+                )
             response = asyncio.run(
-                evaluate_resume_feedback(role=role, resume_content=resume.content)
+                evaluate_resume_feedback(
+                    role=role,
+                    resume_content=resume.content,
+                    knowledge_base=knowledge_base,
+                )
             )
             payload = response.model_dump(mode="json")
             return {
                 "role_id": role.get("id"),
                 "source": "ai_resume_feedback",
+                "recommendation_history_matches": len(knowledge_base),
                 "matched_terms": [],
                 "missing_terms": [],
                 **payload,
@@ -927,12 +1144,394 @@ def build_prep_analysis(
     return {
         "role_id": role.get("id"),
         "source": "local_resume_job_analysis",
+        "recommendation_history_matches": 0,
         "verdict": verdict,
         "overview": overview,
         "matched_terms": matched_terms,
         "missing_terms": missing_terms,
         "feedback_items": feedback_items,
     }
+
+
+def build_role_cover_letter(
+    role: dict[str, Any],
+    resume: MasterResume,
+    *,
+    tweaks: str | None = None,
+) -> dict[str, Any]:
+    role_id = role.get("id")
+    if not isinstance(role_id, int):
+        raise RuntimeError("Role did not include an ID")
+
+    def search_cover_letters(query: str, *, limit: int = 3) -> list[dict[str, object]]:
+        with db.connect() as connection:
+            db.run_migrations(connection)
+            return list_cover_letter_example_knowledge(
+                connection,
+                query=query,
+                limit=limit,
+            )
+
+    try:
+        draft = asyncio.run(
+            generate_cover_letter(
+                role=role,
+                resume_content=resume.content,
+                search_tool=search_cover_letters,
+                tweaks=tweaks,
+            )
+        )
+        latex = _normalize_cover_letter_latex(draft.latex)
+        example_ids = draft.example_ids
+        source = "ai_cover_letter"
+    except Exception:  # noqa: BLE001 - prep should degrade when the LLM is unavailable.
+        latex = _normalize_cover_letter_latex(_fallback_cover_letter_latex(role, resume))
+        example_ids = []
+        source = "local_cover_letter_fallback"
+    summary = _cover_letter_display_summary(
+        role,
+        source=source,
+        example_count=len(example_ids),
+    )
+
+    cover_letter_path = _role_cover_letter_tex_path(role_id)
+    cover_letter_path.parent.mkdir(parents=True, exist_ok=True)
+    cover_letter_path.write_text(latex)
+    pdf_path, pdf_base64 = _generate_cover_letter_pdf_preview(cover_letter_path)
+    return {
+        "role_id": role_id,
+        "source": source,
+        "summary": summary,
+        "latex": latex,
+        "example_ids": example_ids,
+        "tweaks": tweaks,
+        "path": str(cover_letter_path),
+        "pdf_path": str(pdf_path),
+        "pdf_base64": pdf_base64,
+    }
+
+
+def _normalize_cover_letter_latex(latex: str) -> str:
+    content = _normalize_cover_letter_text_characters(latex.strip())
+    content = _strip_cover_letter_em_dashes(content)
+    content = _strip_resume_pdf_compatibility_commands(content)
+    content = _strip_generated_cover_letter_comments(content)
+    content = _escape_unescaped_latex_percent(content)
+    content = _escape_unescaped_latex_ampersands(content)
+    content = _repair_single_cover_letter_line_breaks(content)
+    content = _remove_cover_letter_website_header_lines(content)
+    if "\\documentclass" not in content:
+        content = (
+            "\\documentclass[11pt]{letter}\n"
+            "\\usepackage[margin=1in]{geometry}\n"
+            "\\begin{document}\n"
+            f"{content}\n"
+            "\\end{document}\n"
+        )
+    content = _normalize_cover_letter_page_layout(content)
+    content = _normalize_cover_letter_signature(content)
+    content = _repair_broken_cover_letter_links(content)
+    content = _normalize_manual_cover_letter_header(_left_align_cover_letter_header(content))
+    return f"{content.rstrip()}\n"
+
+
+def _strip_cover_letter_em_dashes(latex: str) -> str:
+    return latex.replace("\u2014", " - ").replace("---", " - ")
+
+
+def _normalize_cover_letter_text_characters(latex: str) -> str:
+    content = (
+        latex.replace("\u2018", "'")
+        .replace("\u2019", "'")
+        .replace("\u201c", '"')
+        .replace("\u201d", '"')
+        .replace("\x19", "'")
+    )
+    return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x18\x1a-\x1f]", "", content)
+
+
+def _strip_resume_pdf_compatibility_commands(latex: str) -> str:
+    return re.sub(
+        r"(?m)^.*(?:glyphtounicode|pdfgentounicode|pdfglyphtounicode).*\n?",
+        "",
+        latex,
+    )
+
+
+def _strip_generated_cover_letter_comments(latex: str) -> str:
+    return re.sub(r"(?m)^\s*%.*\n?", "", latex)
+
+
+def _escape_unescaped_latex_percent(latex: str) -> str:
+    return re.sub(r"(?<!\\)%", r"\\%", latex)
+
+
+def _escape_unescaped_latex_ampersands(latex: str) -> str:
+    return re.sub(r"(?<!\\)&", r"\\&", latex)
+
+
+def _remove_cover_letter_website_header_lines(latex: str) -> str:
+    lines = []
+    for line in latex.splitlines():
+        normalized = line.lower()
+        has_personal_site = "camackenzie.com" in normalized
+        is_email = "@" in normalized or "mailto:" in normalized
+        if has_personal_site and not is_email:
+            if "[12pt]" in line and lines and lines[-1].rstrip().endswith("\\\\"):
+                lines[-1] = f"{lines[-1].rstrip()}[12pt]"
+            continue
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _normalize_cover_letter_page_layout(latex: str) -> str:
+    content = re.sub(
+        r"\\usepackage(?:\[[^\]]*\])?\{"
+        r"(?:fullpage|parskip|latexsym|titlesec|marvosym|color|verbatim|enumitem|fancyhdr)"
+        r"\}\s*",
+        "",
+        latex,
+    )
+    content = re.sub(
+        r"\\usepackage(?:\[[^\]]*\])?\{geometry\}",
+        r"\\usepackage[margin=1in]{geometry}",
+        content,
+        count=1,
+    )
+    if "\\usepackage" not in content or "\\usepackage[margin=1in]{geometry}" not in content:
+        content = re.sub(
+            r"(\\documentclass(?:\[[^\]]*\])?\{[^}]+\}\s*)",
+            lambda match: f"{match.group(1)}\\usepackage[margin=1in]{{geometry}}\n",
+            content,
+            count=1,
+        )
+    content = re.sub(r"\\setlength\{\\parskip\}\{[^}]*\}\s*", "", content)
+    content = re.sub(r"\\setlength\{\\parindent\}\{[^}]*\}\s*", "", content)
+    content = re.sub(r"\\linespread\{[^}]*\}\s*", "", content)
+    content = re.sub(r"\\pagestyle\{[^}]*\}\s*", "", content)
+    content = re.sub(r"\\fancyhf\{[^}]*\}\s*", "", content)
+    content = re.sub(r"\\fancyfoot\{[^}]*\}\s*", "", content)
+    content = re.sub(
+        r"\\renewcommand\{\\(?:headrulewidth|footrulewidth)\}\{[^}]*\}\s*",
+        "",
+        content,
+    )
+    content = re.sub(r"\\addtolength\{\\[^}]+\}\{[^}]*\}\s*", "", content)
+    content = re.sub(r"\\urlstyle\{[^}]*\}\s*", "", content)
+    content = re.sub(r"\\ragged(?:bottom|right)\s*", "", content)
+    content = re.sub(r"\\setlength\{\\tabcolsep\}\{[^}]*\}\s*", "", content)
+    content = re.sub(r"\\titleformat\{\\section\}.*?\n", "", content)
+    layout = (
+        "\\setlength{\\parskip}{0.85em}\n"
+        "\\setlength{\\parindent}{0pt}\n"
+        "\\pagestyle{empty}\n"
+    )
+    if "\\begin{document}" in content:
+        return content.replace("\\begin{document}", f"{layout}\\begin{{document}}", 1)
+    return f"{layout}{content}"
+
+
+def _repair_single_cover_letter_line_breaks(latex: str) -> str:
+    return re.sub(
+        r"(?m)(\S.*?)\s+\\$",
+        lambda match: f"{match.group(1)}\\\\",
+        latex,
+    )
+
+
+def _normalize_cover_letter_signature(latex: str) -> str:
+    return re.sub(
+        r"\\signature\{.*?(?=\\setlength\{\\parskip\}|\\begin\{document\})",
+        lambda _match: "\\signature{Callum Mackenzie}\n",
+        latex,
+        count=1,
+        flags=re.DOTALL,
+    )
+
+
+def _repair_broken_cover_letter_links(latex: str) -> str:
+    return re.sub(
+        r"\\href\{mailto:([^{}\s]+)(?=\s*(?:\\\\|\n\\end\{tabular\}))",
+        r"\\href{mailto:\1}{\1}",
+        latex,
+    )
+
+
+def _left_align_cover_letter_header(latex: str) -> str:
+    address_match = re.search(r"\\address\{(?P<address>.*?)\}\s*", latex, flags=re.DOTALL)
+    if address_match is None:
+        return latex
+
+    address = address_match.group("address").strip()
+    content = latex[: address_match.start()] + latex[address_match.end() :]
+    date_match = re.search(r"\\date\{(?P<date>.*?)\}\s*", content, flags=re.DOTALL)
+    date_text = ""
+    if date_match is not None:
+        date_text = date_match.group("date").strip()
+        content = content[: date_match.start()] + content[date_match.end() :]
+
+    header_lines = _latex_header_lines(address)
+    if date_text:
+        header_lines.append(_escape_latex_header_line(date_text))
+    header = (
+        "\\noindent\\begin{tabular}{@{}l@{}}\n"
+        + "\\\\\n".join(header_lines)
+        + "\n\\end{tabular}\n\\vspace{1em}\n"
+    )
+    if "\\begin{letter}" in content:
+        return content.replace("\\begin{letter}", f"{header}\\begin{{letter}}", 1)
+    if "\\begin{document}" in content:
+        return content.replace("\\begin{document}", f"\\begin{{document}}\n{header}", 1)
+    return f"{header}{content}"
+
+
+def _normalize_manual_cover_letter_header(latex: str) -> str:
+    header_match = re.search(
+        r"\\noindent\\begin\{minipage\}\{\\textwidth\}\n"
+        r"(?P<header>.*?)\n"
+        r"\\end\{minipage\}\n"
+        r"\\vspace\{1em\}\n",
+        latex,
+        flags=re.DOTALL,
+    )
+    if header_match is None:
+        return latex
+
+    header_lines: list[str] = []
+    for row in header_match.group("header").splitlines():
+        header_lines.extend(_latex_header_lines(row))
+    header = (
+        "\\noindent\\begin{tabular}{@{}l@{}}\n"
+        + "\\\\\n".join(header_lines)
+        + "\n\\end{tabular}\n\\vspace{1em}\n"
+    )
+    return latex[: header_match.start()] + header + latex[header_match.end() :]
+
+
+def _latex_header_lines(address: str) -> list[str]:
+    lines = re.split(r"\\\\", address)
+    return [_escape_latex_header_line(line.strip()) for line in lines if line.strip()]
+
+
+def _escape_latex_header_line(line: str) -> str:
+    return re.sub(r"(?<!\\)&", r"\\&", line)
+
+
+def _generate_cover_letter_pdf_preview(cover_letter_path: Path) -> tuple[Path, str]:
+    compiler = shutil.which("tectonic") or shutil.which("latexmk") or shutil.which("pdflatex")
+    if compiler is None:
+        raise RuntimeError("No LaTeX compiler found. Install tectonic, latexmk, or pdflatex.")
+
+    cover_letter_dir = cover_letter_path.parent
+    _copy_resume_resources_to_directory(cover_letter_dir)
+    _remove_latex_compile_artifacts(cover_letter_path)
+    compiler_name = Path(compiler).name
+    if compiler_name == "tectonic":
+        command = [compiler, "--keep-logs", "--keep-intermediates", cover_letter_path.name]
+    elif compiler_name == "latexmk":
+        command = [compiler, "-pdf", "-interaction=nonstopmode", cover_letter_path.name]
+    else:
+        command = [compiler, "-interaction=nonstopmode", cover_letter_path.name]
+    completed = subprocess.run(
+        command,
+        cwd=cover_letter_dir,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError("LaTeX failed to compile the role cover letter.")
+
+    pdf_path = cover_letter_path.with_suffix(".pdf")
+    if not pdf_path.exists():
+        raise RuntimeError(f"LaTeX did not produce {pdf_path.name}.")
+    return pdf_path, base64.b64encode(pdf_path.read_bytes()).decode()
+
+
+def _remove_latex_compile_artifacts(source_path: Path) -> None:
+    for suffix in (".aux", ".log", ".out", ".fls", ".fdb_latexmk", ".xdv"):
+        source_path.with_suffix(suffix).unlink(missing_ok=True)
+
+
+def _saved_role_cover_letter(role_id: int) -> dict[str, Any] | None:
+    cover_letter_path = _role_cover_letter_tex_path(role_id)
+    if not cover_letter_path.exists():
+        return None
+    saved_latex = cover_letter_path.read_text()
+    normalized_latex = _normalize_cover_letter_latex(saved_latex)
+    pdf_path = cover_letter_path.with_suffix(".pdf")
+    pdf_is_stale = (
+        pdf_path.exists() and pdf_path.stat().st_mtime < cover_letter_path.stat().st_mtime
+    )
+    if normalized_latex != saved_latex or not pdf_path.exists() or pdf_is_stale:
+        cover_letter_path.write_text(normalized_latex)
+        with suppress(RuntimeError):
+            pdf_path, _ = _generate_cover_letter_pdf_preview(cover_letter_path)
+    pdf_is_current = (
+        pdf_path.exists() and pdf_path.stat().st_mtime >= cover_letter_path.stat().st_mtime
+    )
+    pdf_base64 = base64.b64encode(pdf_path.read_bytes()).decode() if pdf_is_current else None
+    return {
+        "role_id": role_id,
+        "source": "saved_cover_letter",
+        "summary": "Saved cover letter for this role.",
+        "latex": normalized_latex,
+        "example_ids": [],
+        "path": str(cover_letter_path),
+        "pdf_path": str(pdf_path) if pdf_is_current else None,
+        "pdf_base64": pdf_base64,
+    }
+
+
+def _cover_letter_display_summary(
+    role: dict[str, Any],
+    *,
+    source: str,
+    example_count: int,
+) -> str:
+    title = str(role.get("title") or "this role").strip()
+    company = str(role.get("company_name") or "this company").strip()
+    role_label = f"{title} at {company}" if company else title
+    if source == "local_cover_letter_fallback":
+        return f"Drafted fallback cover letter for {role_label}; AI generation was unavailable."
+    if example_count > 0:
+        examples = f"{example_count} stored cover letter example"
+        if example_count != 1:
+            examples += "s"
+        return (
+            f"Drafted cover letter for {role_label} using resume, "
+            f"job description, and {examples}."
+        )
+    return f"Drafted cover letter for {role_label} using resume and job description."
+
+
+def _fallback_cover_letter_latex(role: dict[str, Any], resume: MasterResume) -> str:
+    title = str(role.get("title") or "this role")
+    company = str(role.get("company_name") or "your team")
+    description = str(role.get("description") or "")
+    resume_terms = sorted(_prep_keywords(resume.content))
+    job_terms = sorted(_prep_keywords(" ".join([title, description])))
+    matched_terms = ", ".join(sorted(set(resume_terms) & set(job_terms))[:5])
+    match_sentence = (
+        f"My background aligns especially around {matched_terms}."
+        if matched_terms
+        else "My resume includes software engineering experience relevant to this role."
+    )
+    return (
+        "\\documentclass[11pt]{letter}\n"
+        "\\usepackage[margin=1in]{geometry}\n"
+        "\\begin{document}\n"
+        f"\\begin{{letter}}{{{company}}}\n"
+        "\\opening{Dear Hiring Team,}\n\n"
+        f"I am excited to apply for the {title} position at {company}. "
+        f"{match_sentence} "
+        "I would welcome the opportunity to contribute to the team and tailor my "
+        "experience to the needs of this posting.\n\n"
+        "\\closing{Sincerely,\\\\Callum Mackenzie}\n"
+        "\\end{letter}\n"
+        "\\end{document}\n"
+    )
 
 
 def _prep_keywords(text: str) -> set[str]:
@@ -960,6 +1559,20 @@ def _prep_keywords(text: str) -> set[str]:
     }
 
 
+def _optional_comment(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _optional_cover_letter_tweaks(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
 def _prepared_resumes_root() -> Path:
     return user_data_path("callumployed", appauthor=False) / "prepared-resumes"
 
@@ -974,6 +1587,10 @@ def _role_resume_dir(role_id: int) -> Path:
 
 def _role_resume_tex_path(role_id: int) -> Path:
     return _role_resume_dir(role_id) / "resume.tex"
+
+
+def _role_cover_letter_tex_path(role_id: int) -> Path:
+    return _role_resume_dir(role_id) / "cover-letter.tex"
 
 
 def _resume_resource_summary(path: Path) -> dict[str, Any]:
@@ -1136,7 +1753,36 @@ def _generate_role_resume_pdf(role: dict[str, Any], resume: MasterResume) -> Pat
     if compiler is None:
         raise RuntimeError("No LaTeX compiler found. Install tectonic, latexmk, or pdflatex.")
 
-    resume_path = _ensure_role_resume_copy(role_id, resume)
+    persistent_resume_path = _role_resume_tex_path(role_id)
+    if persistent_resume_path.exists():
+        _sync_resume_resources_to_role(role_id)
+        return _compile_role_resume_pdf(
+            role=role,
+            role_id=role_id,
+            compiler=compiler,
+            resume_path=persistent_resume_path,
+        )
+
+    with tempfile.TemporaryDirectory(prefix=f"callumployed-role-{role_id}-") as temp_dir:
+        temp_path = Path(temp_dir)
+        resume_path = temp_path / "resume.tex"
+        resume_path.write_text(resume.content)
+        _copy_resume_resources_to_directory(temp_path)
+        return _compile_role_resume_pdf(
+            role=role,
+            role_id=role_id,
+            compiler=compiler,
+            resume_path=resume_path,
+        )
+
+
+def _compile_role_resume_pdf(
+    *,
+    role: dict[str, Any],
+    role_id: int,
+    compiler: str,
+    resume_path: Path,
+) -> Path:
     resume_dir = resume_path.parent
     compiler_name = Path(compiler).name
     if compiler_name == "tectonic":
@@ -1168,6 +1814,15 @@ def _generate_role_resume_pdf(role: dict[str, Any], resume: MasterResume) -> Pat
     target_path = downloads_dir / f"callumployed-{role_id}-{safe_title}-resume.pdf"
     shutil.copyfile(generated_pdf, target_path)
     return target_path
+
+
+def _copy_resume_resources_to_directory(target_dir: Path) -> None:
+    resource_dir = _resume_resources_root()
+    if not resource_dir.exists():
+        return
+    for resource_path in resource_dir.iterdir():
+        if resource_path.is_file():
+            shutil.copyfile(resource_path, target_dir / resource_path.name)
 
 
 def _write_tectonic_resume_input(resume_path: Path) -> Path:
