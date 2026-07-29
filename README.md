@@ -23,6 +23,38 @@ to the same local data.
 
 ## Install dependencies
 
+For the easiest install, run the installer from the GitHub repo:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/CallumMackenzie/callumployed/master/scripts/install.sh | bash
+```
+
+The installer clones callumployed into `~/.local/share/callumployed/source`,
+creates a Python 3.12 environment with `uv`, installs the CLI, installs Playwright's
+Chromium browser, and creates a `~/.local/bin/callumployed` launcher.
+
+It prompts for:
+
+- `OPENAI_API_KEY` - required for agent-backed classification and resume feedback.
+- `BROWSERBASE_API_KEY` - optional. Leave blank to use local Playwright rendering.
+
+Resume PDF rendering requires an external LaTeX compiler. The installer checks for
+`tectonic`, `latexmk`, or `pdflatex`. On macOS with Homebrew, it can install the
+recommended `tectonic` compiler for you; otherwise install one of those compilers
+before rerunning the installer.
+
+Advanced install options:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/CallumMackenzie/callumployed/master/scripts/install.sh | \
+  CALLUMPLOYED_REPO_URL=https://github.com/your-fork/callumployed.git \
+  CALLUMPLOYED_INSTALL_ROOT="$HOME/.local/share/callumployed" \
+  CALLUMPLOYED_BIN_DIR="$HOME/.local/bin" \
+  bash
+```
+
+### Manual install
+
 With standard Python tooling:
 
 ```bash
