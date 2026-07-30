@@ -31,7 +31,13 @@ from callumployed.agents.cover_letter import (
 )
 from callumployed.agents.resume_feedback import evaluate_resume_feedback
 from callumployed.data import db
-from callumployed.data.models import CoverLetterExample, MasterResume, RoleStatus
+from callumployed.data.models import (
+    CoverLetterExample,
+    MasterResume,
+    Role,
+    RoleListItem,
+    RoleStatus,
+)
 from callumployed.data.repositories import (
     add_cover_letter_example,
     clear_resume_feedback_history,
@@ -187,7 +193,7 @@ def build_tracker_payload(query: str | None = None) -> dict[str, Any]:
 
     grouped_roles: dict[str, list[dict[str, Any]]] = {status.value: [] for status in RoleStatus}
     for role in roles:
-        grouped_roles[role.role_status.value].append(role.model_dump(mode="json"))
+        grouped_roles[role.role_status.value].append(_role_payload(role))
 
     statuses = [
         {
@@ -437,7 +443,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
                 return
 
-            self._send_json({"role": role.model_dump(mode="json")})
+            self._send_json({"role": _role_payload(role)})
 
         def _record_review_later(self, role_id_text: str) -> None:
             try:
@@ -453,7 +459,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
                 return
 
-            self._send_json({"role": role.model_dump(mode="json")})
+            self._send_json({"role": _role_payload(role)})
 
         def _send_prep_analysis(self, role_id_text: str) -> None:
             try:
@@ -536,7 +542,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                     "accepted": True,
                     "feedback_index": feedback_index,
                     "resume_path": str(resume_path),
-                    "role": role.model_dump(mode="json"),
+                    "role": _role_payload(role),
                 }
             )
 
@@ -2050,6 +2056,13 @@ def _datetime_or_none(value: datetime | None) -> str | None:
         return None
     value = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
     return value.isoformat().replace("+00:00", "Z")
+
+
+def _role_payload(role: Role | RoleListItem) -> dict[str, Any]:
+    payload = role.model_dump(mode="json")
+    for key in ("first_seen_at", "last_seen_at", "created_at", "updated_at"):
+        payload[key] = _datetime_or_none(getattr(role, key))
+    return payload
 
 
 def _latest_datetime(*values: datetime | None) -> datetime | None:

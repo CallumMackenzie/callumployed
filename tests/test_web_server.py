@@ -1413,7 +1413,10 @@ def test_tracker_payload_groups_roles_by_status(
     assert applied["jobs"][0]["location"] == "Vancouver"
     assert applied["jobs"][0]["notes"] == "Remote-friendly team."
     assert applied["jobs"][0]["first_seen_at"] is not None
+    assert applied["jobs"][0]["first_seen_at"].endswith("Z")
     assert applied["jobs"][0]["created_at"] is not None
+    assert applied["jobs"][0]["created_at"].endswith("Z")
+    assert applied["jobs"][0]["updated_at"].endswith("Z")
 
 
 def test_tracker_status_endpoint_moves_role(
@@ -1446,7 +1449,9 @@ def test_tracker_status_endpoint_moves_role(
         )
 
         with urlopen(request, timeout=5) as response:
+            response_payload = json.loads(response.read().decode())
             assert response.status == 200
+        assert response_payload["role"]["updated_at"].endswith("Z")
     finally:
         server.shutdown()
         thread.join(timeout=5)
