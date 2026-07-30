@@ -18,9 +18,11 @@ from callumployed.data import db
 from callumployed.data.models import Company, Role
 from callumployed.data.repositories import (
     add_company,
+    add_experience_note,
     count_resume_feedback_history,
     create_scan_run,
     list_cover_letter_examples,
+    list_experience_notes,
     record_resume_feedback_history,
 )
 from callumployed.web.server import (
@@ -105,11 +107,14 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="settings-options"' in markup
         assert 'id="stats"' in markup
         assert 'class="stats-grid"' in markup
+        assert 'id="experience-note-upload"' in markup
+        assert 'id="experience-note-upload-button"' in markup
+        assert "projects / employment history notes" in markup
         assert 'id="toolbar-summary"' in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=20260729-1" in markup
-        assert "/assets/app.js?v=20260729-1" in markup
+        assert "/assets/app.css?v=20260729-12" in markup
+        assert "/assets/app.js?v=20260729-12" in markup
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -208,6 +213,7 @@ def test_prep_analysis_passes_recommendation_history_to_agent(
 
     async def fake_evaluate_resume_feedback(**kwargs: object) -> object:
         captured["knowledge_base"] = kwargs.get("knowledge_base")
+        captured["other_experience_context"] = kwargs.get("other_experience_context")
 
         class Response:
             def model_dump(self, **_kwargs: object) -> dict[str, object]:
@@ -221,6 +227,13 @@ def test_prep_analysis_passes_recommendation_history_to_agent(
 
     monkeypatch.setattr(web_server, "list_resume_feedback_knowledge", fake_list_knowledge)
     monkeypatch.setattr(web_server, "evaluate_resume_feedback", fake_evaluate_resume_feedback)
+    db.ensure_initialized()
+    with db.connect() as connection:
+        add_experience_note(
+            connection,
+            filename="projects.md",
+            content="Built a Kubernetes scheduler that is not on the current resume.",
+        )
 
     analysis = web_server.build_prep_analysis(
         {
@@ -239,6 +252,16 @@ def test_prep_analysis_passes_recommendation_history_to_agent(
 
     assert analysis["recommendation_history_matches"] == 1
     assert captured["knowledge_base"] == fake_list_knowledge()
+    other_experience_context = captured["other_experience_context"]
+    assert isinstance(other_experience_context, list)
+    assert len(other_experience_context) == 1
+    assert other_experience_context == [
+        {
+            "filename": "projects.md",
+            "content": "Built a Kubernetes scheduler that is not on the current resume.",
+            "updated_at": other_experience_context[0]["updated_at"],
+        }
+    ]
 
 
 def test_prep_feedback_acceptance_updates_role_resume_copy(
@@ -917,6 +940,87 @@ def test_prep_feedback_ignore_records_comment_without_updating_resume(
         assert len(rows) == 1
         assert rows[0]["response"] == "ignored"
         assert rows[0]["comment"] == "not actually supported by the resume"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_role_resume_endpoint_loads_and_saves_editable_latex(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-role-resume.sqlite3"
+    resume_root = tmp_path / "prepared-resumes"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    monkeypatch.setattr(web_server.shutil, "which", lambda _name: "/usr/bin/pdflatex")
+
+    def fake_run(command: object, **kwargs: object) -> object:
+        cwd = Path(kwargs["cwd"])
+        (cwd / "resume.pdf").write_bytes(b"role resume pdf")
+
+        class Completed:
+            returncode = 0
+
+        return Completed()
+
+    monkeypatch.setattr(web_server.subprocess, "run", fake_run)
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Backend Intern", "https://example.com/jobs/backend"],
+        env=env,
+    )
+    with db.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO master_resumes (id, filename, content, content_sha256)
+            VALUES (1, 'resume.tex', ?, 'abc')
+            """,
+            ("\\documentclass{article}\\begin{document}Python systems\\end{document}",),
+        )
+        connection.commit()
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        with urlopen(f"http://127.0.0.1:{port}/api/roles/1/resume", timeout=5) as response:
+            payload = json.loads(response.read().decode())
+
+        resume = payload["resume"]
+        assert response.status == 200
+        assert "Python systems" in resume["latex"]
+        assert resume["pdf_base64"]
+        assert base64.b64decode(resume["pdf_base64"]) == b"role resume pdf"
+        assert (resume_root / "role-1" / "resume.tex").exists()
+
+        request = Request(
+            f"http://127.0.0.1:{port}/api/roles/1/resume/save",
+            data=json.dumps(
+                {
+                    "latex": (
+                        "\\documentclass{article}\\begin{document}"
+                        "Edited role resume"
+                        "\\end{document}"
+                    )
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urlopen(request, timeout=5) as response:
+            save_payload = json.loads(response.read().decode())
+
+        saved_resume = save_payload["resume"]
+        assert response.status == 200
+        assert "Edited role resume" in saved_resume["latex"]
+        assert (resume_root / "role-1" / "resume.tex").read_text() == saved_resume["latex"]
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -1647,6 +1751,73 @@ def test_cover_letter_examples_endpoint_uploads_multiple_examples(
         server.server_close()
 
 
+def test_experience_notes_endpoint_uploads_multiple_notes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-experience-notes.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        base_url = f"http://127.0.0.1:{port}/api/experience-notes"
+
+        with urlopen(base_url, timeout=5) as response:
+            empty_payload = json.loads(response.read().decode())
+        assert empty_payload == {"experience_notes": []}
+
+        first_request = Request(
+            base_url,
+            data=json.dumps(
+                {
+                    "filename": "/tmp/projects.md",
+                    "content": "Built a Kubernetes scheduler.",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(first_request, timeout=5) as response:
+            first_payload = json.loads(response.read().decode())
+
+        second_request = Request(
+            base_url,
+            data=json.dumps(
+                {
+                    "filename": "employment-history.txt",
+                    "content": "Maintained Redis-backed operations tools.",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(second_request, timeout=5) as response:
+            second_payload = json.loads(response.read().decode())
+
+        assert first_payload["experience_note"]["filename"] == "projects.md"
+        assert first_payload["experience_note"]["content_bytes"] == len(
+            b"Built a Kubernetes scheduler."
+        )
+        assert [item["filename"] for item in second_payload["experience_notes"]] == [
+            "employment-history.txt",
+            "projects.md",
+        ]
+        with db.connect() as connection:
+            notes = list_experience_notes(connection)
+        assert [note.content for note in notes] == [
+            "Maintained Redis-backed operations tools.",
+            "Built a Kubernetes scheduler.",
+        ]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_application_materials_endpoint_reports_default_collapsed_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1672,8 +1843,10 @@ def test_application_materials_endpoint_reports_default_collapsed_state(
         assert empty_payload["ui"]["default_collapsed"] is False
         assert empty_payload["ui"]["has_master_resume"] is False
         assert empty_payload["ui"]["cover_letter_example_count"] == 0
+        assert empty_payload["ui"]["experience_note_count"] == 0
         assert empty_payload["ui"]["resume_resource_count"] == 0
         assert empty_payload["resume_resources"] == []
+        assert empty_payload["experience_notes"] == []
 
         resume_request = Request(
             f"{base_url}/api/master-resume",
@@ -1703,13 +1876,26 @@ def test_application_materials_endpoint_reports_default_collapsed_state(
         with urlopen(cover_letter_request, timeout=5):
             pass
 
+        note_request = Request(
+            f"{base_url}/api/experience-notes",
+            data=json.dumps(
+                {"filename": "projects.md", "content": "Built data platform tools."}
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(note_request, timeout=5):
+            pass
+
         with urlopen(f"{base_url}/api/application-materials", timeout=5) as response:
             ready_payload = json.loads(response.read().decode())
         assert ready_payload["ui"]["default_collapsed"] is True
         assert ready_payload["ui"]["cover_letter_example_count"] == 1
+        assert ready_payload["ui"]["experience_note_count"] == 1
         assert ready_payload["ui"]["resume_resource_count"] == 0
         assert ready_payload["master_resume"]["filename"] == "resume.tex"
         assert ready_payload["cover_letter_examples"][0]["filename"] == "cover.md"
+        assert ready_payload["experience_notes"][0]["filename"] == "projects.md"
     finally:
         server.shutdown()
         thread.join(timeout=5)

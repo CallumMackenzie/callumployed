@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>callumployed</title>
-    <link rel="stylesheet" href="/assets/app.css?v=20260729-1" />
+    <link rel="stylesheet" href="/assets/app.css?v=20260729-12" />
   </head>
   <body>
     <main class="shell">
@@ -64,6 +64,21 @@
               multiple
             />
             <button type="button" id="cover-letter-upload-button">upload</button>
+          </div>
+          <div class="material-row">
+            <div class="material-status">
+              <p class="material-label">projects / employment history notes</p>
+              <p class="material-meta" id="experience-note-meta">no notes uploaded</p>
+              <ul class="examples-list" id="experience-note-list"></ul>
+            </div>
+            <input
+              class="sr-only"
+              id="experience-note-upload"
+              type="file"
+              accept=".txt,.md,text/plain,text/markdown"
+              multiple
+            />
+            <button type="button" id="experience-note-upload-button">upload</button>
           </div>
         </div>
       </section>
@@ -152,7 +167,6 @@
       </div>
       <div class="review-actions prep-actions" aria-label="prep actions">
         <button class="review-action" type="button" data-prep-action="later">prep later</button>
-        <button class="review-action" type="button" data-prep-action="pdf">generate PDF</button>
         <button class="review-action success" type="button" data-prep-action="applied">move to applied</button>
       </div>
     </section>
@@ -189,6 +203,6 @@
       </div>
     </section>
 
-    <script src="/assets/app.js?v=20260729-1" type="module"></script>
+    <script src="/assets/app.js?v=20260729-12" type="module"></script>
   </body>
 </html>

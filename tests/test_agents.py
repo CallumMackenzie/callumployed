@@ -96,6 +96,33 @@ def test_resume_feedback_prompt_includes_verdict_rules_and_context() -> None:
     assert "Python systems projects in LaTeX" in prompt
 
 
+def test_resume_feedback_prompt_includes_other_experience_context() -> None:
+    prompt = build_resume_feedback_prompt(
+        role={
+            "id": 1,
+            "company_id": 2,
+            "title": "Backend Intern",
+            "role_url": "https://example.com/jobs/backend",
+            "location": "Vancouver",
+            "description": "Python distributed systems internship",
+        },
+        resume_content="Python systems projects in LaTeX",
+        other_experience_context=[
+            {
+                "filename": "projects.md",
+                "content": "Built an internal scheduler with Kubernetes and Redis.",
+                "updated_at": "2026-07-29T12:00:00Z",
+            }
+        ],
+    )
+
+    assert "other_experience_context" in prompt
+    assert "projects / employment history notes" in prompt
+    assert "may or" in prompt
+    assert "may not already be on the resume" in prompt
+    assert "Built an internal scheduler with Kubernetes and Redis." in prompt
+
+
 def test_cover_letter_prompt_includes_resume_job_and_tool_results() -> None:
     prompt = build_cover_letter_prompt(
         role={

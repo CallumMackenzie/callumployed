@@ -21,6 +21,10 @@ const coverLetterMeta = document.querySelector("#cover-letter-meta");
 const coverLetterUpload = document.querySelector("#cover-letter-upload");
 const coverLetterUploadButton = document.querySelector("#cover-letter-upload-button");
 const coverLetterList = document.querySelector("#cover-letter-list");
+const experienceNoteMeta = document.querySelector("#experience-note-meta");
+const experienceNoteUpload = document.querySelector("#experience-note-upload");
+const experienceNoteUploadButton = document.querySelector("#experience-note-upload-button");
+const experienceNoteList = document.querySelector("#experience-note-list");
 const reviewDiscoveredButton = document.querySelector("#review-discovered");
 const prepInterestedButton = document.querySelector("#prep-interested");
 const reviewView = document.querySelector("#review-view");
@@ -50,17 +54,22 @@ const recommendationHistorySummary = document.querySelector("#recommendation-his
 const clearRecommendationHistoryButton = document.querySelector("#clear-recommendation-history");
 
 const REVIEW_LATER_RECOMMENDATION_THRESHOLD = 3;
+const COVER_LETTER_AUTOSAVE_DELAY_MS = 1200;
 const APPLICATION_STATUSES = new Set(["applied", "OA", "interview", "rejected", "offer"]);
 let hideEmpty = true;
 let trackerData = null;
 let masterResume = null;
 let resumeResources = [];
 let coverLetterExamples = [];
+let experienceNotes = [];
 let reviewQueue = [];
 let prepQueue = [];
 let prepAnalysisByRoleId = new Map();
 let prepFeedbackIndexByRoleId = new Map();
+let prepResumeByRoleId = new Map();
 let prepCoverLetterByRoleId = new Map();
+let prepResumeSaveStateByRoleId = new Map();
+let prepCoverLetterSaveStateByRoleId = new Map();
 let materialsInitialized = false;
 let scanStatusPoll = null;
 let wasScanning = false;
@@ -231,6 +240,38 @@ function renderCoverLetterExamples(examples, message = "") {
   }
 }
 
+function renderExperienceNotes(notes, message = "") {
+  experienceNotes = Array.isArray(notes) ? notes : [];
+  experienceNoteUploadButton.textContent = experienceNotes.length > 0 ? "add" : "upload";
+  if (message) {
+    experienceNoteMeta.textContent = message;
+  } else if (experienceNotes.length === 0) {
+    experienceNoteMeta.textContent = "no notes uploaded";
+  } else {
+    experienceNoteMeta.textContent = `${experienceNotes.length} ${experienceNotes.length === 1 ? "note" : "notes"} stored`;
+  }
+
+  const visibleNotes = experienceNotes.slice(0, 3);
+  const hiddenCount = Math.max(experienceNotes.length - visibleNotes.length, 0);
+  experienceNoteList.innerHTML = visibleNotes
+    .map((note) => {
+      const size = formatFileSize(note.content_bytes);
+      return `
+        <li title="${escapeUiText(note.filename)}">
+          <span>${escapeUiText(note.filename)}</span>
+          <small>${escapeHtml(size)}</small>
+        </li>
+      `;
+    })
+    .join("");
+  if (hiddenCount > 0) {
+    experienceNoteList.insertAdjacentHTML(
+      "beforeend",
+      `<li class="examples-more"><span>+${hiddenCount} more</span></li>`,
+    );
+  }
+}
+
 function renderResumeResources(resources, message = "") {
   resumeResources = Array.isArray(resources) ? resources : [];
   resumeResourceUploadButton.textContent = resumeResources.length > 0 ? "add" : "upload";
@@ -267,6 +308,7 @@ function renderApplicationMaterials(payload, options = {}) {
   renderMasterResume(payload?.master_resume ?? null);
   renderResumeResources(payload?.resume_resources ?? []);
   renderCoverLetterExamples(payload?.cover_letter_examples ?? []);
+  renderExperienceNotes(payload?.experience_notes ?? []);
   updateMaterialsSummary();
   if (!materialsInitialized || options.applyDefaultCollapsed) {
     setMaterialsCollapsed(Boolean(payload?.ui?.default_collapsed));
@@ -285,7 +327,12 @@ function updateMaterialsSummary() {
     exampleCount === 0
       ? "no cover letters"
       : `${exampleCount} cover ${exampleCount === 1 ? "letter" : "letters"}`;
-  materialsSummary.textContent = `${resumeText} | ${resourceText} | ${coverText}`;
+  const noteCount = experienceNotes.length;
+  const noteText =
+    noteCount === 0
+      ? "no notes"
+      : `${noteCount} experience ${noteCount === 1 ? "note" : "notes"}`;
+  materialsSummary.textContent = `${resumeText} | ${resourceText} | ${coverText} | ${noteText}`;
 }
 
 function setMaterialsCollapsed(collapsed) {
@@ -676,6 +723,13 @@ async function loadCoverLetterExamples() {
   renderCoverLetterExamples(payload.cover_letter_examples);
 }
 
+async function loadExperienceNotes() {
+  const response = await fetch("/api/experience-notes");
+  if (!response.ok) throw new Error("Experience notes request failed");
+  const payload = await response.json();
+  renderExperienceNotes(payload.experience_notes);
+}
+
 async function loadApplicationMaterials(options = {}) {
   const response = await fetch("/api/application-materials");
   if (!response.ok) throw new Error("Application materials request failed");
@@ -778,6 +832,37 @@ async function uploadCoverLetterExamples(files) {
   }
 }
 
+async function uploadExperienceNotes(files) {
+  const selectedFiles = Array.from(files ?? []);
+  if (selectedFiles.length === 0) return;
+
+  experienceNoteUploadButton.disabled = true;
+  renderExperienceNotes(
+    experienceNotes,
+    `uploading ${selectedFiles.length} ${selectedFiles.length === 1 ? "note" : "notes"}...`,
+  );
+  try {
+    for (const file of selectedFiles) {
+      const response = await fetch("/api/experience-notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          filename: file.name,
+          content: await file.text(),
+        }),
+      });
+      if (!response.ok) throw new Error("Experience note upload failed");
+    }
+    await loadApplicationMaterials();
+  } catch {
+    renderExperienceNotes(experienceNotes, "could not save every note.");
+    updateMaterialsSummary();
+  } finally {
+    experienceNoteUpload.value = "";
+    experienceNoteUploadButton.disabled = false;
+  }
+}
+
 function readFileAsBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -836,6 +921,14 @@ coverLetterUploadButton.addEventListener("click", () => {
 
 coverLetterUpload.addEventListener("change", () => {
   uploadCoverLetterExamples(coverLetterUpload.files);
+});
+
+experienceNoteUploadButton.addEventListener("click", () => {
+  experienceNoteUpload.click();
+});
+
+experienceNoteUpload.addEventListener("change", () => {
+  uploadExperienceNotes(experienceNoteUpload.files);
 });
 
 materialsToggle.addEventListener("click", () => {
@@ -1250,15 +1343,25 @@ async function renderPrepRole(message = "") {
       <p class="review-company">${escapeUiText(current.company_name)}</p>
       ${renderRoleTitle(current.title, current.role_url, "review-role-title")}
     </div>
-    ${renderPrepAnalysis(current)}
-    ${renderPrepCoverLetter(current)}
     <dl class="review-details review-primary-details">
       ${renderReviewDetail("location", current.location, false, "review-location-detail")}
       ${renderReviewDetail("last", formatCompactDate(current.last_seen_at))}
       ${renderReviewDetail("updated", formatCompactDate(current.updated_at))}
     </dl>
-    ${renderReviewDescription(current.description)}
+    ${renderPrepResume(current)}
+    ${renderPrepCoverLetter(current)}
+    ${renderPrepDescription(current.description)}
   `;
+
+  loadPrepResume(current.id)
+    .then((resume) => {
+      if (!resume || prepQueue[0]?.id !== current.id) return;
+      prepResumeByRoleId.set(current.id, resume);
+      prepCard.querySelector(".prep-resume")?.replaceWith(
+        htmlToElement(renderPrepResume(current, { resume })),
+      );
+    })
+    .catch(() => {});
 
   loadPrepCoverLetter(current.id)
     .then((coverLetter) => {
@@ -1271,6 +1374,73 @@ async function renderPrepRole(message = "") {
     .catch(() => {});
 }
 
+function renderPrepResume(role, state = {}) {
+  const savedResume = prepResumeByRoleId.get(role.id);
+  const resume = state.resume ?? savedResume;
+  const pdfUrl = `/api/roles/${encodeURIComponent(role.id)}/resume.pdf`;
+  if (!resume) {
+    return `
+      <details class="prep-panel prep-resume" open>
+        <summary class="prep-analysis-header">
+          <span class="prep-accordion-icon" aria-hidden="true"></span>
+          <h3>resume</h3>
+          <span>loading</span>
+        </summary>
+        <div class="prep-fit-loading" aria-label="loading resume">
+          <span aria-hidden="true"></span>
+          <span aria-hidden="true"></span>
+          <span aria-hidden="true"></span>
+          <p>loading role resume...</p>
+        </div>
+      </details>
+    `;
+  }
+  return `
+    <details class="prep-panel prep-resume" open>
+      <summary class="prep-analysis-header">
+        <span class="prep-accordion-icon" aria-hidden="true"></span>
+        <h3>resume</h3>
+        <div class="prep-summary-actions">
+          <span>${resume.pdf_base64 ? "preview ready" : "latex ready"}</span>
+          ${
+            resume.pdf_base64
+              ? `<a class="prep-summary-action prep-cover-pdf-link" href="${escapeHtml(pdfUrl)}" target="_blank" rel="noreferrer">view</a>`
+              : ""
+          }
+        </div>
+      </summary>
+      <p class="prep-overview">${escapeUiText(resume.summary ?? "Saved resume for this role.")}</p>
+      ${renderPrepAnalysis(role)}
+      <label class="prep-cover-latex">
+        <span>latex</span>
+        <textarea
+          data-prep-resume-latex="${role.id}"
+          spellcheck="false"
+        >${escapeHtml(resume.latex ?? "")}</textarea>
+      </label>
+      ${
+        resume.pdf_base64
+          ? `
+            <iframe class="prep-cover-pdf" title="resume PDF preview" src="data:application/pdf;base64,${escapeHtml(resume.pdf_base64)}"></iframe>
+          `
+          : '<p class="prep-cover-path">PDF preview unavailable.</p>'
+      }
+    </details>
+  `;
+}
+
+function renderPrepDescription(description) {
+  return `
+    <details class="prep-panel prep-description-panel">
+      <summary class="prep-analysis-header">
+        <span class="prep-accordion-icon" aria-hidden="true"></span>
+        <h3>description</h3>
+      </summary>
+      ${renderReviewDescription(description)}
+    </details>
+  `;
+}
+
 function renderPrepCoverLetter(role, state = {}) {
   const savedDraft = prepCoverLetterByRoleId.get(role.id);
   const draft = state.coverLetter ?? savedDraft;
@@ -1278,39 +1448,48 @@ function renderPrepCoverLetter(role, state = {}) {
   const pdfUrl = `/api/roles/${encodeURIComponent(role.id)}/cover-letter.pdf`;
   if (state.loading) {
     return `
-      <section class="prep-cover-letter" aria-label="cover letter">
-        <div class="prep-analysis-header">
+      <details class="prep-panel prep-cover-letter" open>
+        <summary class="prep-analysis-header">
+          <span class="prep-accordion-icon" aria-hidden="true"></span>
           <h3>cover letter</h3>
           <span>generating</span>
-        </div>
+        </summary>
         <div class="prep-fit-loading" aria-label="generating cover letter">
           <span aria-hidden="true"></span>
           <span aria-hidden="true"></span>
           <span aria-hidden="true"></span>
           <p>generating latex cover letter...</p>
         </div>
-      </section>
+      </details>
     `;
   }
   return `
-    <section class="prep-cover-letter" aria-label="cover letter">
-      <div class="prep-analysis-header">
+    <details class="prep-panel prep-cover-letter" open>
+      <summary class="prep-analysis-header">
+        <span class="prep-accordion-icon" aria-hidden="true"></span>
         <h3>cover letter</h3>
-        <div class="prep-cover-actions">
+        <div class="prep-summary-actions">
+          <span>${draft?.pdf_base64 ? "preview ready" : draft ? "latex ready" : "not generated"}</span>
           ${
-            draft
-              ? `<button type="button" data-prep-cover-letter-save="${role.id}">save latex</button>`
+            draft?.pdf_base64
+              ? `<a class="prep-summary-action prep-cover-pdf-link" href="${escapeHtml(pdfUrl)}" target="_blank" rel="noreferrer">view</a>`
               : ""
           }
-          <button type="button" data-prep-cover-letter="${role.id}">
-            ${draft ? "regenerate" : "generate"}
-          </button>
         </div>
+      </summary>
+      ${
+        draft
+          ? `<p class="prep-overview">${escapeUiText(draft.summary ?? "cover letter generated")}</p>`
+          : '<p class="prep-overview">generate a LaTeX cover letter from the resume, posting, and stored examples.</p>'
+      }
+      <div class="prep-cover-actions">
+        <button type="button" data-prep-cover-letter="${role.id}">
+          ${draft ? "regenerate" : "generate"}
+        </button>
       </div>
       ${
         draft
           ? `
-            <p class="prep-overview">${escapeUiText(draft.summary ?? "cover letter generated")}</p>
             <label class="prep-cover-tweaks">
               <span>tweaks</span>
               <textarea
@@ -1319,7 +1498,6 @@ function renderPrepCoverLetter(role, state = {}) {
                 placeholder="make it warmer, cut a paragraph, emphasize systems work..."
               >${escapeHtml(tweaks)}</textarea>
             </label>
-            <p class="prep-cover-path">${escapeUiText(draft.path ?? "")}</p>
             <label class="prep-cover-latex">
               <span>latex</span>
               <textarea
@@ -1330,17 +1508,14 @@ function renderPrepCoverLetter(role, state = {}) {
             ${
               draft.pdf_base64
                 ? `
-                  <a class="prep-cover-pdf-link" href="${escapeHtml(pdfUrl)}" target="_blank" rel="noreferrer">
-                    open PDF
-                  </a>
                   <iframe class="prep-cover-pdf" title="cover letter PDF preview" src="data:application/pdf;base64,${escapeHtml(draft.pdf_base64)}"></iframe>
                 `
                 : '<p class="prep-cover-path">PDF preview unavailable.</p>'
             }
           `
-          : '<p class="prep-overview">generate a LaTeX cover letter from the resume, posting, and stored examples.</p>'
+          : ""
       }
-    </section>
+    </details>
   `;
 }
 
@@ -1493,28 +1668,6 @@ async function handlePrepAction(action) {
   const current = prepQueue[0];
   if (!current) return;
 
-  if (action === "pdf") {
-    const pdfButton = prepView.querySelector('[data-prep-action="pdf"]');
-    const originalLabel = pdfButton?.textContent ?? "generate PDF";
-    if (pdfButton) {
-      pdfButton.disabled = true;
-      pdfButton.textContent = "generating...";
-    }
-    try {
-      const payload = await generatePrepResumePdf(current.id);
-      renderPrepRole(`saved PDF to ${payload.pdf_path}`);
-    } catch {
-      renderPrepRole("could not generate PDF. install pdflatex or latexmk.");
-    } finally {
-      const nextPdfButton = prepView.querySelector('[data-prep-action="pdf"]');
-      if (nextPdfButton) {
-        nextPdfButton.disabled = false;
-        nextPdfButton.textContent = originalLabel;
-      }
-    }
-    return;
-  }
-
   const buttons = prepView.querySelectorAll(".review-action");
   buttons.forEach((button) => {
     button.disabled = true;
@@ -1572,12 +1725,87 @@ async function ignorePrepFeedback(roleId, feedbackIndex, feedbackItem, comment) 
   return response.json();
 }
 
-async function generatePrepResumePdf(roleId) {
-  const response = await fetch(`/api/roles/${encodeURIComponent(roleId)}/resume-pdf`, {
+async function loadPrepResume(roleId, { force = false } = {}) {
+  if (!force && prepResumeByRoleId.has(roleId)) return prepResumeByRoleId.get(roleId);
+  const response = await fetch(`/api/roles/${encodeURIComponent(roleId)}/resume`);
+  if (!response.ok) throw new Error("Resume request failed");
+  const payload = await response.json();
+  if (payload.resume) {
+    prepResumeByRoleId.set(roleId, payload.resume);
+  }
+  return payload.resume;
+}
+
+async function savePrepResume(roleId, latex) {
+  const response = await fetch(`/api/roles/${encodeURIComponent(roleId)}/resume/save`, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ latex }),
   });
-  if (!response.ok) throw new Error("Resume PDF generation failed");
+  if (!response.ok) throw new Error("Resume save failed");
   return response.json();
+}
+
+function queuePrepResumeAutosave(roleId, latex, delay = COVER_LETTER_AUTOSAVE_DELAY_MS) {
+  const state = prepResumeSaveStateByRoleId.get(roleId) ?? {
+    timer: null,
+    saving: false,
+    version: 0,
+    latex: "",
+  };
+  state.version += 1;
+  state.latex = latex;
+  if (state.timer) {
+    clearTimeout(state.timer);
+  }
+  state.timer = setTimeout(() => {
+    state.timer = null;
+    void runPrepResumeAutosave(roleId);
+  }, delay);
+  prepResumeSaveStateByRoleId.set(roleId, state);
+}
+
+async function runPrepResumeAutosave(roleId) {
+  const state = prepResumeSaveStateByRoleId.get(roleId);
+  if (!state || state.saving) return;
+  state.saving = true;
+  const saveVersion = state.version;
+  const latex = state.latex;
+  try {
+    const payload = await savePrepResume(roleId, latex);
+    if (state.version === saveVersion) {
+      prepResumeByRoleId.set(roleId, payload.resume);
+      updatePrepPdfPreview("resume", roleId, payload.resume);
+    }
+  } catch {
+    // Keep editing uninterrupted; a later edit or blur will retry.
+  } finally {
+    state.saving = false;
+    if (state.version !== saveVersion) {
+      queuePrepResumeAutosave(roleId, state.latex, 0);
+    }
+  }
+}
+
+function updatePrepPdfPreview(kind, roleId, payload) {
+  if (!payload?.pdf_base64) return;
+  const selector =
+    kind === "resume"
+      ? `[data-prep-resume-latex="${roleId}"]`
+      : `[data-prep-cover-letter-latex="${roleId}"]`;
+  const editor = prepCard.querySelector(selector);
+  const panel = editor?.closest(".prep-panel");
+  const iframe = panel?.querySelector(".prep-cover-pdf");
+  const link = panel?.querySelector(".prep-cover-pdf-link");
+  if (iframe) {
+    iframe.src = `data:application/pdf;base64,${payload.pdf_base64}`;
+  }
+  if (link) {
+    link.href =
+      kind === "resume"
+        ? `/api/roles/${encodeURIComponent(roleId)}/resume.pdf`
+        : `/api/roles/${encodeURIComponent(roleId)}/cover-letter.pdf`;
+  }
 }
 
 async function generatePrepCoverLetter(roleId, tweaks = "", previousLatex = "") {
@@ -1598,6 +1826,50 @@ async function savePrepCoverLetter(roleId, latex) {
   });
   if (!response.ok) throw new Error("Cover letter save failed");
   return response.json();
+}
+
+function queuePrepCoverLetterAutosave(roleId, latex, tweaks = "", delay = COVER_LETTER_AUTOSAVE_DELAY_MS) {
+  const state = prepCoverLetterSaveStateByRoleId.get(roleId) ?? {
+    timer: null,
+    saving: false,
+    version: 0,
+    latex: "",
+    tweaks: "",
+  };
+  state.version += 1;
+  state.latex = latex;
+  state.tweaks = tweaks;
+  if (state.timer) {
+    clearTimeout(state.timer);
+  }
+  state.timer = setTimeout(() => {
+    state.timer = null;
+    void runPrepCoverLetterAutosave(roleId);
+  }, delay);
+  prepCoverLetterSaveStateByRoleId.set(roleId, state);
+}
+
+async function runPrepCoverLetterAutosave(roleId) {
+  const state = prepCoverLetterSaveStateByRoleId.get(roleId);
+  if (!state || state.saving) return;
+  state.saving = true;
+  const saveVersion = state.version;
+  const latex = state.latex;
+  const tweaks = state.tweaks;
+  try {
+    const payload = await savePrepCoverLetter(roleId, latex);
+    if (state.version === saveVersion) {
+      prepCoverLetterByRoleId.set(roleId, { ...payload.cover_letter, tweaks });
+      updatePrepPdfPreview("coverLetter", roleId, payload.cover_letter);
+    }
+  } catch {
+    // Keep the editor uninterrupted; the next edit will retry autosave.
+  } finally {
+    state.saving = false;
+    if (state.version !== saveVersion) {
+      queuePrepCoverLetterAutosave(roleId, state.latex, state.tweaks, 0);
+    }
+  }
 }
 
 async function loadPrepCoverLetter(roleId) {
@@ -1641,6 +1913,50 @@ reviewView.addEventListener("click", (event) => {
   const button = event.target.closest("[data-review-action]");
   if (!button) return;
   handleReviewAction(button.dataset.reviewAction);
+});
+
+prepView.addEventListener("click", (event) => {
+  if (event.target.closest(".prep-summary-action")) {
+    event.stopPropagation();
+  }
+});
+
+prepView.addEventListener("input", (event) => {
+  const resumeEditor = event.target.closest("[data-prep-resume-latex]");
+  if (resumeEditor) {
+    const roleId = Number(resumeEditor.dataset.prepResumeLatex);
+    if (!Number.isFinite(roleId)) return;
+    queuePrepResumeAutosave(roleId, resumeEditor.value);
+    return;
+  }
+
+  const latexEditor = event.target.closest("[data-prep-cover-letter-latex]");
+  if (!latexEditor) return;
+  const roleId = Number(latexEditor.dataset.prepCoverLetterLatex);
+  if (!Number.isFinite(roleId)) return;
+  const coverSection = latexEditor.closest(".prep-cover-letter");
+  const tweaks =
+    coverSection?.querySelector(`[data-prep-cover-letter-tweaks="${roleId}"]`)?.value ?? "";
+  queuePrepCoverLetterAutosave(roleId, latexEditor.value, tweaks);
+});
+
+prepView.addEventListener("focusout", (event) => {
+  const resumeEditor = event.target.closest("[data-prep-resume-latex]");
+  if (resumeEditor) {
+    const roleId = Number(resumeEditor.dataset.prepResumeLatex);
+    if (!Number.isFinite(roleId)) return;
+    queuePrepResumeAutosave(roleId, resumeEditor.value, 0);
+    return;
+  }
+
+  const latexEditor = event.target.closest("[data-prep-cover-letter-latex]");
+  if (!latexEditor) return;
+  const roleId = Number(latexEditor.dataset.prepCoverLetterLatex);
+  if (!Number.isFinite(roleId)) return;
+  const coverSection = latexEditor.closest(".prep-cover-letter");
+  const tweaks =
+    coverSection?.querySelector(`[data-prep-cover-letter-tweaks="${roleId}"]`)?.value ?? "";
+  queuePrepCoverLetterAutosave(roleId, latexEditor.value, tweaks, 0);
 });
 
 prepView.addEventListener("click", async (event) => {
@@ -1694,34 +2010,6 @@ prepView.addEventListener("click", async (event) => {
     return;
   }
 
-  const coverLetterSaveButton = event.target.closest("[data-prep-cover-letter-save]");
-  if (coverLetterSaveButton && prepQueue[0]) {
-    const roleId = prepQueue[0].id;
-    const coverSection = prepCard.querySelector(".prep-cover-letter");
-    const latex =
-      coverSection?.querySelector(`[data-prep-cover-letter-latex="${roleId}"]`)?.value ?? "";
-    const tweaks =
-      coverSection?.querySelector(`[data-prep-cover-letter-tweaks="${roleId}"]`)?.value ?? "";
-    coverLetterSaveButton.disabled = true;
-    const originalLabel = coverLetterSaveButton.textContent;
-    coverLetterSaveButton.textContent = "saving...";
-    try {
-      const payload = await savePrepCoverLetter(roleId, latex);
-      prepCoverLetterByRoleId.set(roleId, { ...payload.cover_letter, tweaks });
-      prepCard.querySelector(".prep-cover-letter")?.replaceWith(
-        htmlToElement(
-          renderPrepCoverLetter(prepQueue[0], {
-            coverLetter: { ...payload.cover_letter, tweaks },
-          }),
-        ),
-      );
-    } catch {
-      coverLetterSaveButton.disabled = false;
-      coverLetterSaveButton.textContent = originalLabel;
-    }
-    return;
-  }
-
   const actionButton = event.target.closest("[data-prep-action]");
   if (actionButton) {
     handlePrepAction(actionButton.dataset.prepAction);
@@ -1753,6 +2041,15 @@ prepView.addEventListener("click", async (event) => {
           prepQueue[0] = payload.role;
           applyRoleStatusUpdate(payload.role, currentJobEl);
         }
+        prepResumeByRoleId.delete(roleId);
+        loadPrepResume(roleId, { force: true })
+          .then((resume) => {
+            if (!resume || prepQueue[0]?.id !== roleId) return;
+            prepCard.querySelector(".prep-resume")?.replaceWith(
+              htmlToElement(renderPrepResume(prepQueue[0], { resume })),
+            );
+          })
+          .catch(() => {});
         removePrepFeedbackItem(roleId, currentIndex, analysis);
       } else {
         await ignorePrepFeedback(roleId, currentIndex, feedbackItem, comment);

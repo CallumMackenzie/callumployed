@@ -53,6 +53,7 @@ Reply with exactly one verdict:
 Use the resume context and job context directly. Evaluate:
 - visible overlap with the role's required skills, domains, and seniority
 - missing important keywords that are honestly supported by the resume
+- other experience notes that may support optional additions not currently visible
 - whether the strongest matching experience appears early enough
 - whether the resume avoids adding unsupported claims
 - whether changes are specific enough to improve this application
@@ -72,6 +73,11 @@ operation styles:
 Prefer target_text + replacement_text when an exact resume phrase should be replaced.
 Use latex_addition only when a small standalone LaTeX line or bullet should be
 inserted. Do not invent experience.
+
+Use other_experience_context as projects / employment history notes that may or
+may not already be on the resume. You may suggest adding supported experience
+from those notes, but mark it as optional and only if accurate. Do not assume
+those notes are already present in the resume.
 
 Use the recommendation knowledge base as preference memory:
 - accepted feedback means a similar recommendation was useful before
@@ -94,6 +100,7 @@ def build_resume_feedback_prompt(
     role: dict[str, Any],
     resume_content: str,
     knowledge_base: list[dict[str, Any]] | None = None,
+    other_experience_context: list[dict[str, Any]] | None = None,
 ) -> str:
     payload = {
         "job_context": {
@@ -108,6 +115,14 @@ def build_resume_feedback_prompt(
             "format": "latex",
             "content": resume_content,
         },
+        "other_experience_context": [
+            {
+                "filename": item.get("filename"),
+                "content": item.get("content"),
+                "updated_at": item.get("updated_at"),
+            }
+            for item in other_experience_context or []
+        ],
         "recommendation_knowledge_base": [
             {
                 "response": item.get("response"),
@@ -143,6 +158,7 @@ class ResumeFeedbackAgent:
         role: dict[str, Any],
         resume_content: str,
         knowledge_base: list[dict[str, Any]] | None = None,
+        other_experience_context: list[dict[str, Any]] | None = None,
     ) -> ResumeFeedbackResponse:
         model = (
             self.chat_model_factory(self.settings)
@@ -154,6 +170,7 @@ class ResumeFeedbackAgent:
                 role=role,
                 resume_content=resume_content,
                 knowledge_base=knowledge_base,
+                other_experience_context=other_experience_context,
             )
         )
         response = ResumeFeedbackResponse.model_validate(result)
@@ -175,13 +192,19 @@ async def evaluate_resume_feedback(
     role: dict[str, Any],
     resume_content: str,
     knowledge_base: list[dict[str, Any]] | None = None,
+    other_experience_context: list[dict[str, Any]] | None = None,
     settings: LlmSettings | None = None,
     chat_model_factory: ChatModelFactory | None = None,
 ) -> ResumeFeedbackResponse:
     return await ResumeFeedbackAgent(
         settings=settings,
         chat_model_factory=chat_model_factory,
-    ).evaluate(role=role, resume_content=resume_content, knowledge_base=knowledge_base)
+    ).evaluate(
+        role=role,
+        resume_content=resume_content,
+        knowledge_base=knowledge_base,
+        other_experience_context=other_experience_context,
+    )
 
 
 def _normalize_feedback_title(item: ResumeFeedbackItem) -> ResumeFeedbackItem:

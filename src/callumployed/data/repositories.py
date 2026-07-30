@@ -12,6 +12,7 @@ from callumployed.data.models import (
     CoverLetterExample,
     Event,
     EventSource,
+    ExperienceNote,
     MasterResume,
     Role,
     RoleDiscoveryAttempt,
@@ -471,6 +472,55 @@ def add_cover_letter_example(
     _upsert_cover_letter_example_vector(connection, example)
     connection.commit()
     return example
+
+
+def list_experience_notes(connection: turso.Connection) -> list[ExperienceNote]:
+    rows = connection.execute(
+        """
+        SELECT id, filename, content, content_sha256, created_at, updated_at
+        FROM experience_notes
+        ORDER BY updated_at DESC, id DESC
+        """
+    ).fetchall()
+    return [ExperienceNote.model_validate(dict(row)) for row in rows]
+
+
+def add_experience_note(
+    connection: turso.Connection,
+    *,
+    filename: str,
+    content: str,
+) -> ExperienceNote:
+    cleaned_filename = PurePath(filename).name.strip()
+    if not cleaned_filename:
+        raise ValueError("experience note filename cannot be empty")
+    if not content.strip():
+        raise ValueError("experience note content cannot be empty")
+
+    content_sha256 = hashlib.sha256(content.encode()).hexdigest()
+    cursor = connection.execute(
+        """
+        INSERT INTO experience_notes (
+            filename,
+            content,
+            content_sha256
+        )
+        VALUES (?, ?, ?)
+        """,
+        (cleaned_filename, content, content_sha256),
+    )
+    connection.commit()
+    row = connection.execute(
+        """
+        SELECT id, filename, content, content_sha256, created_at, updated_at
+        FROM experience_notes
+        WHERE id = ?
+        """,
+        (_lastrowid(cursor),),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("stored experience note could not be loaded")
+    return ExperienceNote.model_validate(dict(row))
 
 
 def list_cover_letter_example_knowledge(

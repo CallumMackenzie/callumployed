@@ -75,6 +75,15 @@ class CoverLetterExample(AppModel):
     updated_at: datetime | None = None
 
 
+class ExperienceNote(AppModel):
+    id: int | None = None
+    filename: str
+    content: str
+    content_sha256: str
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
 class Role(AppModel):
     id: int | None = None
     company_id: int

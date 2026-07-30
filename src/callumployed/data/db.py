@@ -32,6 +32,7 @@ def run_migrations(connection: turso.Connection) -> None:
     _ensure_master_resumes_table(connection)
     _ensure_cover_letter_examples_table(connection)
     _ensure_cover_letter_example_vectors_table(connection)
+    _ensure_experience_notes_table(connection)
     _ensure_resume_feedback_history_table(connection)
     _ensure_company_browser_wait_column(connection)
     _ensure_role_information_columns(connection)
@@ -99,6 +100,27 @@ def _ensure_cover_letter_example_vectors_table(connection: turso.Connection) -> 
             FOREIGN KEY (cover_letter_example_id) REFERENCES cover_letter_examples (id)
                 ON DELETE CASCADE
         )
+        """
+    )
+
+
+def _ensure_experience_notes_table(connection: turso.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS experience_notes (
+            id INTEGER PRIMARY KEY,
+            filename TEXT NOT NULL,
+            content TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_experience_notes_updated_at
+            ON experience_notes (updated_at)
         """
     )
 

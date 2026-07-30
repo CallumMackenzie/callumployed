@@ -664,6 +664,14 @@ h1 {
   border-left: 1px solid var(--line);
 }
 
+.material-row:nth-child(odd) {
+  border-left: 0;
+}
+
+.material-row:nth-child(n + 3) {
+  border-top: 1px solid var(--line);
+}
+
 .material-status {
   min-width: 0;
   flex: 1 1 auto;
@@ -686,9 +694,13 @@ h1 {
 }
 
 .materials-panel .material-row button {
+  display: inline-grid;
+  place-items: center;
   flex: 0 0 auto;
   min-width: 78px;
+  min-height: 36px;
   padding: 8px 10px;
+  white-space: nowrap;
 }
 
 .materials-panel .material-row button:disabled,
@@ -1430,7 +1442,7 @@ a:hover .role-link-icon {
 }
 
 .prep-actions {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .review-action {
@@ -1442,7 +1454,7 @@ a:hover .role-link-icon {
 }
 
 .prep-analysis,
-.prep-cover-letter {
+.prep-panel {
   display: grid;
   gap: 10px;
   margin: 0 0 12px;
@@ -1450,6 +1462,70 @@ a:hover .role-link-icon {
   border-radius: var(--radius);
   padding: 12px;
   background: linear-gradient(145deg, rgb(255 255 255 / 0.86), rgb(226 255 240 / 0.38));
+}
+
+.prep-panel summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.prep-panel > .prep-analysis-header {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+}
+
+.prep-panel summary::-webkit-details-marker {
+  display: none;
+}
+
+.prep-accordion-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  color: var(--purple);
+  transform: rotate(0deg);
+  transition: transform 160ms ease;
+}
+
+.prep-accordion-icon::before {
+  content: ">";
+  font-size: 0.82rem;
+  font-weight: 950;
+  line-height: 1;
+}
+
+.prep-panel[open] > summary .prep-accordion-icon {
+  transform: rotate(90deg);
+}
+
+.prep-panel[open] > summary {
+  margin-bottom: 2px;
+  border-bottom: 1px solid rgb(0 137 123 / 0.12);
+  padding-bottom: 8px;
+}
+
+.prep-panel:not([open]) {
+  gap: 0;
+}
+
+.prep-resume .prep-analysis {
+  margin: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.prep-resume .prep-analysis > .prep-analysis-header {
+  border-top: 1px solid rgb(0 137 123 / 0.12);
+  padding-top: 10px;
+}
+
+.prep-description-panel .review-description {
+  margin: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
 }
 
 .prep-analysis-header {
@@ -1484,6 +1560,27 @@ a:hover .role-link-icon {
   color: var(--muted);
   font-size: 0.74rem;
   font-weight: 850;
+}
+
+.prep-analysis-header .prep-accordion-icon {
+  color: var(--purple);
+  font-size: 0.82rem;
+  font-weight: 950;
+}
+
+.prep-summary-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.prep-summary-actions > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .prep-verdict {
@@ -1644,8 +1741,24 @@ a:hover .role-link-icon {
 .prep-cover-actions {
   display: flex;
   flex-wrap: wrap;
-  justify-content: end;
+  justify-content: start;
   gap: 8px;
+}
+
+.prep-cover-actions button {
+  min-height: 34px;
+  border: 1px solid rgb(45 224 111 / 0.32);
+  border-radius: var(--radius);
+  padding: 0 12px;
+  background: rgb(255 255 255 / 0.86);
+  color: var(--green);
+  font-size: 0.78rem;
+  font-weight: 950;
+}
+
+.prep-cover-actions button:hover {
+  border-color: rgb(45 224 111 / 0.55);
+  background: rgb(247 255 250 / 0.94);
 }
 
 .prep-cover-latex {
@@ -1702,6 +1815,12 @@ a:hover .role-link-icon {
   font-size: 0.78rem;
   font-weight: 950;
   text-decoration: none;
+}
+
+.prep-summary-action.prep-cover-pdf-link {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 0.72rem;
 }
 
 .prep-cover-pdf-link:hover {
@@ -2255,18 +2374,29 @@ a:hover .role-link-icon {
     border-top: 1px solid var(--line);
   }
 
+  .material-row:nth-child(n + 3) {
+    border-top: 1px solid var(--line);
+  }
+
   .examples-list {
     flex-wrap: wrap;
     overflow: visible;
   }
 
   .review-entry button,
-  .materials-panel .material-row button,
   .view-actions button {
     flex: 1 1 auto;
     border: 1px solid var(--line);
     border-radius: var(--radius);
     background: white;
+  }
+
+  .materials-panel .material-row button {
+    flex: 0 0 auto;
+    border: 1px solid transparent;
+    border-radius: var(--radius);
+    background: linear-gradient(135deg, var(--ink), var(--green) 46%, var(--purple));
+    color: #fff;
   }
 
   #review-discovered,
@@ -2390,6 +2520,10 @@ a:hover .role-link-icon {
   .prep-feedback-controls {
     grid-template-columns: 1fr;
     gap: 7px;
+  }
+
+  .prep-summary-actions > span {
+    display: none;
   }
 
   .setting-switch {

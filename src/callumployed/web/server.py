@@ -33,6 +33,7 @@ from callumployed.agents.resume_feedback import evaluate_resume_feedback
 from callumployed.data import db
 from callumployed.data.models import (
     CoverLetterExample,
+    ExperienceNote,
     MasterResume,
     Role,
     RoleListItem,
@@ -40,6 +41,7 @@ from callumployed.data.models import (
 )
 from callumployed.data.repositories import (
     add_cover_letter_example,
+    add_experience_note,
     clear_resume_feedback_history,
     count_resume_feedback_history,
     get_company,
@@ -51,6 +53,7 @@ from callumployed.data.repositories import (
     list_config_values,
     list_cover_letter_example_knowledge,
     list_cover_letter_examples,
+    list_experience_notes,
     list_resume_feedback_knowledge,
     list_role_items,
     list_scan_runs,
@@ -241,6 +244,9 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             if parsed_url.path == "/api/cover-letter-examples":
                 self._send_json(build_cover_letter_examples_payload())
                 return
+            if parsed_url.path == "/api/experience-notes":
+                self._send_json(build_experience_notes_payload())
+                return
             path_parts = [part for part in PurePosixPath(parsed_url.path).parts if part != "/"]
             if (
                 len(path_parts) == 4
@@ -249,6 +255,22 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 and path_parts[3] == "prep-analysis"
             ):
                 self._send_prep_analysis(path_parts[2])
+                return
+            if (
+                len(path_parts) == 4
+                and path_parts[0] == "api"
+                and path_parts[1] == "roles"
+                and path_parts[3] == "resume"
+            ):
+                self._send_resume(path_parts[2])
+                return
+            if (
+                len(path_parts) == 4
+                and path_parts[0] == "api"
+                and path_parts[1] == "roles"
+                and path_parts[3] == "resume.pdf"
+            ):
+                self._send_resume_pdf(path_parts[2])
                 return
             if (
                 len(path_parts) == 4
@@ -320,6 +342,15 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 len(path_parts) == 5
                 and path_parts[0] == "api"
                 and path_parts[1] == "roles"
+                and path_parts[3] == "resume"
+                and path_parts[4] == "save"
+            ):
+                self._save_resume(path_parts[2])
+                return
+            if (
+                len(path_parts) == 5
+                and path_parts[0] == "api"
+                and path_parts[1] == "roles"
                 and path_parts[3] == "cover-letter"
                 and path_parts[4] == "save"
             ):
@@ -346,6 +377,9 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
             if len(path_parts) == 2 and path_parts == ["api", "cover-letter-examples"]:
                 self._add_cover_letter_example()
+                return
+            if len(path_parts) == 2 and path_parts == ["api", "experience-notes"]:
+                self._add_experience_note()
                 return
             if len(path_parts) == 2 and path_parts == ["api", "resume-resources"]:
                 self._upload_resume_resource()
@@ -611,6 +645,90 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
             self._send_json({"pdf_path": str(pdf_path)})
 
+        def _send_resume(self, role_id_text: str) -> None:
+            try:
+                role_id = int(role_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
+                return
+            try:
+                with db.connect() as connection:
+                    role = get_role(connection, role_id)
+                    resume = get_master_resume(connection)
+            except LookupError:
+                self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
+                return
+            if resume is None:
+                self.send_error(HTTPStatus.BAD_REQUEST, "No master resume stored")
+                return
+            self._send_json(
+                {
+                    "resume": _saved_role_resume(
+                        role.model_dump(mode="json"),
+                        resume,
+                        ensure_copy=True,
+                    )
+                }
+            )
+
+        def _save_resume(self, role_id_text: str) -> None:
+            try:
+                role_id = int(role_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
+                return
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            try:
+                latex = _required_resume_latex(payload.get("latex"))
+            except ValueError as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            try:
+                with db.connect() as connection:
+                    role = get_role(connection, role_id)
+                    resume = get_master_resume(connection)
+            except LookupError:
+                self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
+                return
+            if resume is None:
+                self.send_error(HTTPStatus.BAD_REQUEST, "No master resume stored")
+                return
+            self._send_json(
+                {"resume": save_role_resume(role.model_dump(mode="json"), resume, latex)}
+            )
+
+        def _send_resume_pdf(self, role_id_text: str) -> None:
+            try:
+                role_id = int(role_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
+                return
+            try:
+                with db.connect() as connection:
+                    role = get_role(connection, role_id)
+                    resume = get_master_resume(connection)
+            except LookupError:
+                self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
+                return
+            if resume is None:
+                self.send_error(HTTPStatus.BAD_REQUEST, "No master resume stored")
+                return
+            resume_payload = _saved_role_resume(
+                role.model_dump(mode="json"),
+                resume,
+                ensure_copy=True,
+            )
+            pdf_path_text = resume_payload.get("pdf_path")
+            if not isinstance(pdf_path_text, str):
+                self.send_error(HTTPStatus.NOT_FOUND, "Resume PDF not found")
+                return
+            self._send_pdf_file(
+                Path(pdf_path_text),
+                filename=f"callumployed-role-{role_id}-resume.pdf",
+            )
+
         def _generate_cover_letter(self, role_id_text: str) -> None:
             try:
                 role_id = int(role_id_text)
@@ -841,6 +959,36 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                     "cover_letter_examples": [
                         _cover_letter_example_summary(item) for item in examples
                     ],
+                }
+            )
+
+        def _add_experience_note(self) -> None:
+            payload = self._read_json_body()
+            if payload is None:
+                return
+
+            filename = payload.get("filename")
+            content = payload.get("content")
+            if not isinstance(filename, str) or not isinstance(content, str):
+                self.send_error(HTTPStatus.BAD_REQUEST, "Expected filename and content")
+                return
+
+            try:
+                with db.connect() as connection:
+                    note = add_experience_note(
+                        connection,
+                        filename=filename,
+                        content=content,
+                    )
+                    notes = list_experience_notes(connection)
+            except ValueError as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+
+            self._send_json(
+                {
+                    "experience_note": _experience_note_summary(note),
+                    "experience_notes": [_experience_note_summary(item) for item in notes],
                 }
             )
 
@@ -1080,11 +1228,18 @@ def build_cover_letter_examples_payload() -> dict[str, Any]:
     }
 
 
+def build_experience_notes_payload() -> dict[str, Any]:
+    with db.connect() as connection:
+        notes = list_experience_notes(connection)
+    return {"experience_notes": [_experience_note_summary(note) for note in notes]}
+
+
 def build_application_materials_payload() -> dict[str, Any]:
     with db.connect() as connection:
         resume = get_master_resume(connection)
         examples = list_cover_letter_examples(connection)
-    return _application_materials_payload(resume, examples)
+        notes = list_experience_notes(connection)
+    return _application_materials_payload(resume, examples, notes)
 
 
 def build_prep_analysis(
@@ -1102,11 +1257,15 @@ def build_prep_analysis(
                     role=role,
                     resume_content=resume.content,
                 )
+                experience_notes = list_experience_notes(connection)
             response = asyncio.run(
                 evaluate_resume_feedback(
                     role=role,
                     resume_content=resume.content,
                     knowledge_base=knowledge_base,
+                    other_experience_context=[
+                        _experience_note_context(note) for note in experience_notes
+                    ],
                 )
             )
             payload = response.model_dump(mode="json")
@@ -1267,6 +1426,18 @@ def save_role_cover_letter(role: dict[str, Any], latex: str) -> dict[str, Any]:
         example_ids=[],
         tweaks=None,
     )
+
+
+def save_role_resume(role: dict[str, Any], resume: MasterResume, latex: str) -> dict[str, Any]:
+    role_id = role.get("id")
+    if not isinstance(role_id, int):
+        raise RuntimeError("Role did not include an ID")
+    resume_path = _ensure_role_resume_copy(role_id, resume)
+    resume_path.write_text(latex)
+    _sync_resume_resources_to_role(role_id)
+    with suppress(RuntimeError):
+        _generate_role_resume_pdf(role, resume, copy_to_downloads=False)
+    return _saved_role_resume(role, resume)
 
 
 def _write_role_cover_letter(
@@ -1546,6 +1717,65 @@ def _remove_latex_compile_artifacts(source_path: Path) -> None:
         source_path.with_suffix(suffix).unlink(missing_ok=True)
 
 
+def _saved_role_resume(
+    role: dict[str, Any],
+    resume: MasterResume,
+    *,
+    ensure_copy: bool = False,
+) -> dict[str, Any]:
+    role_id = role.get("id")
+    if not isinstance(role_id, int):
+        raise RuntimeError("Role did not include an ID")
+    resume_path = (
+        _ensure_role_resume_copy(role_id, resume)
+        if ensure_copy
+        else _role_resume_tex_path(role_id)
+    )
+    if not resume_path.exists():
+        return {
+            "role_id": role_id,
+            "source": "role_resume",
+            "summary": "No role resume saved yet.",
+            "latex": "",
+            "path": str(resume_path),
+            "pdf_path": None,
+            "pdf_base64": None,
+        }
+    _sync_resume_resources_to_role(role_id)
+    pdf_path = _current_role_resume_pdf_path(resume_path)
+    pdf_is_stale = bool(pdf_path and pdf_path.stat().st_mtime < resume_path.stat().st_mtime)
+    if pdf_path is None or pdf_is_stale:
+        with suppress(RuntimeError):
+            pdf_path = _generate_role_resume_pdf(role, resume, copy_to_downloads=False)
+    pdf_is_current = bool(
+        pdf_path and pdf_path.exists() and pdf_path.stat().st_mtime >= resume_path.stat().st_mtime
+    )
+    return {
+        "role_id": role_id,
+        "source": "role_resume",
+        "summary": "Saved resume for this role.",
+        "latex": resume_path.read_text(),
+        "path": str(resume_path),
+        "pdf_path": str(pdf_path) if pdf_is_current else None,
+        "pdf_base64": (
+            base64.b64encode(pdf_path.read_bytes()).decode()
+            if pdf_is_current and pdf_path
+            else None
+        ),
+    }
+
+
+def _current_role_resume_pdf_path(resume_path: Path) -> Path | None:
+    candidates = [
+        resume_path.with_suffix(".pdf"),
+        resume_path.with_name("resume-tectonic.pdf"),
+    ]
+    existing = [path for path in candidates if path.exists()]
+    if not existing:
+        return None
+    return max(existing, key=lambda path: path.stat().st_mtime)
+
+
 def _saved_role_cover_letter(role_id: int) -> dict[str, Any] | None:
     cover_letter_path = _role_cover_letter_tex_path(role_id)
     if not cover_letter_path.exists():
@@ -1679,6 +1909,12 @@ def _required_cover_letter_latex(value: object) -> str:
     if latex is None:
         raise ValueError("Expected cover letter LaTeX")
     return latex
+
+
+def _required_resume_latex(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("Expected resume LaTeX")
+    return value
 
 
 def _prepared_resumes_root() -> Path:
@@ -1853,7 +2089,12 @@ def _apply_feedback_to_role_resume(
     return resume_path
 
 
-def _generate_role_resume_pdf(role: dict[str, Any], resume: MasterResume) -> Path:
+def _generate_role_resume_pdf(
+    role: dict[str, Any],
+    resume: MasterResume,
+    *,
+    copy_to_downloads: bool = True,
+) -> Path:
     role_id = role.get("id")
     if not isinstance(role_id, int):
         raise RuntimeError("Role did not include an ID")
@@ -1869,6 +2110,7 @@ def _generate_role_resume_pdf(role: dict[str, Any], resume: MasterResume) -> Pat
             role_id=role_id,
             compiler=compiler,
             resume_path=persistent_resume_path,
+            copy_to_downloads=copy_to_downloads,
         )
 
     with tempfile.TemporaryDirectory(prefix=f"callumployed-role-{role_id}-") as temp_dir:
@@ -1881,6 +2123,7 @@ def _generate_role_resume_pdf(role: dict[str, Any], resume: MasterResume) -> Pat
             role_id=role_id,
             compiler=compiler,
             resume_path=resume_path,
+            copy_to_downloads=copy_to_downloads,
         )
 
 
@@ -1890,6 +2133,7 @@ def _compile_role_resume_pdf(
     role_id: int,
     compiler: str,
     resume_path: Path,
+    copy_to_downloads: bool = True,
 ) -> Path:
     resume_dir = resume_path.parent
     compiler_name = Path(compiler).name
@@ -1916,6 +2160,9 @@ def _compile_role_resume_pdf(
 
     if not generated_pdf.exists():
         raise RuntimeError(f"LaTeX did not produce {generated_pdf.name}.")
+
+    if not copy_to_downloads:
+        return generated_pdf
 
     downloads_dir = Path.home() / "Downloads"
     safe_title = _safe_filename(str(role.get("title") or f"role-{role_id}"))
@@ -1959,18 +2206,22 @@ def _safe_filename(value: str) -> str:
 def _application_materials_payload(
     resume: MasterResume | None,
     examples: list[CoverLetterExample],
+    notes: list[ExperienceNote],
 ) -> dict[str, Any]:
+    resume_resources = _list_resume_resources()
     return {
         "master_resume": _master_resume_summary(resume) if resume else None,
         "cover_letter_examples": [
             _cover_letter_example_summary(example) for example in examples
         ],
-        "resume_resources": _list_resume_resources(),
+        "experience_notes": [_experience_note_summary(note) for note in notes],
+        "resume_resources": resume_resources,
         "ui": {
             "default_collapsed": resume is not None and len(examples) >= 1,
             "has_master_resume": resume is not None,
             "cover_letter_example_count": len(examples),
-            "resume_resource_count": len(_list_resume_resources()),
+            "experience_note_count": len(notes),
+            "resume_resource_count": len(resume_resources),
         },
     }
 
@@ -1993,6 +2244,25 @@ def _cover_letter_example_summary(example: CoverLetterExample) -> dict[str, Any]
         "content_bytes": len(example.content.encode()),
         "created_at": example.created_at.isoformat() if example.created_at else None,
         "updated_at": example.updated_at.isoformat() if example.updated_at else None,
+    }
+
+
+def _experience_note_summary(note: ExperienceNote) -> dict[str, Any]:
+    return {
+        "id": note.id,
+        "filename": note.filename,
+        "content_sha256": note.content_sha256,
+        "content_bytes": len(note.content.encode()),
+        "created_at": note.created_at.isoformat() if note.created_at else None,
+        "updated_at": note.updated_at.isoformat() if note.updated_at else None,
+    }
+
+
+def _experience_note_context(note: ExperienceNote) -> dict[str, Any]:
+    return {
+        "filename": note.filename,
+        "content": note.content,
+        "updated_at": note.updated_at.isoformat() if note.updated_at else None,
     }
 
 
