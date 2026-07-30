@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>callumployed</title>
-    <link rel="stylesheet" href="/assets/app.css?v=20260729-12" />
+    <link rel="stylesheet" href="/assets/app.css?v=20260729-14" />
   </head>
   <body>
     <main class="shell">
@@ -29,7 +29,16 @@
       <section class="materials-panel" id="materials-panel" aria-label="application materials">
         <button class="materials-toggle" id="materials-toggle" type="button" aria-expanded="true">
           <span class="materials-chevron">v</span>
-          <span class="materials-title">application materials</span>
+          <span class="materials-title">
+            application materials
+            <span
+              class="materials-required-warning"
+              id="materials-required-warning"
+              aria-label="missing required application materials"
+              title="missing required application materials"
+              hidden
+            >!</span>
+          </span>
           <span class="materials-summary" id="materials-summary">resume + cover letters</span>
         </button>
         <div class="materials-body" id="materials-body">
@@ -203,6 +212,6 @@
       </div>
     </section>
 
-    <script src="/assets/app.js?v=20260729-12" type="module"></script>
+    <script src="/assets/app.js?v=20260729-14" type="module"></script>
   </body>
 </html>

@@ -622,9 +622,29 @@ h1 {
 }
 
 .materials-title {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
   min-width: 0;
   color: var(--ink);
   font-weight: 950;
+}
+
+.materials-required-warning {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: #dc2626;
+  color: white;
+  font-size: 0.72rem;
+  font-weight: 950;
+  line-height: 1;
+}
+
+.materials-required-warning[hidden] {
+  display: none;
 }
 
 .materials-summary {

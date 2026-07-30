@@ -30,6 +30,11 @@ letters as the primary writing-style reference. Match the user's voice from
 those examples: sentence length, directness, level of technical specificity,
 paragraph rhythm, and closing style. Do not copy company-specific claims that do
 not apply to the current job.
+When provided, use other_experience_context as projects / employment history
+notes that may or may not already be on the resume. Treat them as optional
+supporting experience for the current cover letter. You may draw from these
+notes when they are relevant to the posting and accurate, but do not imply an
+experience is on the resume unless resume_context also supports it.
 When regeneration tweaks are provided, treat them as direct user feedback and
 apply them while preserving the resume/job truthfulness constraints. When a
 previous_cover_letter_context block is provided, treat regeneration_tweaks as
@@ -41,6 +46,9 @@ Integrate the context deliberately:
 - use job_context for the company, role title, location, and strongest role
   requirements
 - use resume_context only for claims that are directly supported by the resume
+- use other_experience_context for additional truthful projects or employment
+  history that could strengthen the cover letter even if it is not already in
+  resume_context; explicitly prefer items that match job_context requirements
 - use cover_letter_example_tool_results for writing style, paragraph rhythm,
   specificity, and closing style, not for facts about the current role
 - use regeneration_tweaks as direct edit instructions when present
@@ -90,7 +98,7 @@ the retrieved examples:
 - ensure the generated PDF fits on one page at 11pt; keep the body to 3 short
   paragraphs plus the opening and closing, roughly 225-275 words total
 - keep it concise, specific, and honest
-- mention only experience supported by the resume
+- mention only experience supported by resume_context or other_experience_context
 - align wording with the posting's strongest requirements
 - never use em dashes. Do not emit Unicode em dashes, en dashes, horizontal
   bars, LaTeX --- sequences, LaTeX -- sequences, `\\textemdash`, or
@@ -152,15 +160,20 @@ class CoverLetterAgent:
         *,
         role: dict[str, Any],
         resume_content: str,
+        other_experience_context: list[dict[str, Any]] | None = None,
         tweaks: str | None = None,
         previous_cover_letter_latex: str | None = None,
     ) -> CoverLetterDraft:
+        other_experience_text = " ".join(
+            str(item.get("content") or "") for item in other_experience_context or []
+        )
         queries = [
             " ".join(
                 [
                     str(role.get("title") or ""),
                     str(role.get("description") or ""),
                     resume_content,
+                    other_experience_text,
                 ]
             ),
             " ".join(
@@ -187,6 +200,7 @@ class CoverLetterAgent:
             build_cover_letter_prompt(
                 role=role,
                 resume_content=resume_content,
+                other_experience_context=other_experience_context,
                 cover_letter_examples=list(examples_by_id.values()),
                 tweaks=tweaks,
                 previous_cover_letter_latex=previous_cover_letter_latex,
@@ -215,6 +229,7 @@ def build_cover_letter_prompt(
     *,
     role: dict[str, Any],
     resume_content: str,
+    other_experience_context: list[dict[str, Any]] | None = None,
     cover_letter_examples: list[dict[str, object]],
     tweaks: str | None = None,
     previous_cover_letter_latex: str | None = None,
@@ -233,6 +248,14 @@ def build_cover_letter_prompt(
             "format": "latex",
             "content": resume_content,
         },
+        "other_experience_context": [
+            {
+                "filename": item.get("filename"),
+                "content": item.get("content"),
+                "updated_at": item.get("updated_at"),
+            }
+            for item in other_experience_context or []
+        ],
         "cover_letter_example_tool_results": cover_letter_examples,
     }
     if tweaks:
@@ -250,6 +273,7 @@ async def generate_cover_letter(
     role: dict[str, Any],
     resume_content: str,
     search_tool: CoverLetterSearchTool,
+    other_experience_context: list[dict[str, Any]] | None = None,
     tweaks: str | None = None,
     previous_cover_letter_latex: str | None = None,
     settings: LlmSettings | None = None,
@@ -262,6 +286,7 @@ async def generate_cover_letter(
     ).generate(
         role=role,
         resume_content=resume_content,
+        other_experience_context=other_experience_context,
         tweaks=tweaks,
         previous_cover_letter_latex=previous_cover_letter_latex,
     )

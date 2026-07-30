@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -74,10 +75,25 @@ Prefer target_text + replacement_text when an exact resume phrase should be repl
 Use latex_addition only when a small standalone LaTeX line or bullet should be
 inserted. Do not invent experience.
 
+For move_emphasis items, first verify the current resume ordering from
+resume_context.content. Only suggest moving a role/project earlier when the exact
+target role/project currently appears after less-relevant experience. If the
+strongest matching role is already at the top of the relevant resume section,
+do not suggest moving it earlier; suggest a wording or bullet-content edit
+instead. Never use placeholders such as "[current ordering]" or replacement text
+that only says to move a role.
+
 Use other_experience_context as projects / employment history notes that may or
 may not already be on the resume. You may suggest adding supported experience
 from those notes, but mark it as optional and only if accurate. Do not assume
 those notes are already present in the resume.
+For every role, explicitly compare other_experience_context against the job
+description after checking the resume. If a note contains clearly relevant
+experience, project work, tools, domains, or measurable outcomes that are absent
+or under-emphasized in the resume, include a concrete optional add_skills or
+change_wording feedback item that names the source note and explains what could
+be added or swapped in. If none of the notes are relevant, say so briefly in the
+overview.
 
 Use the recommendation knowledge base as preference memory:
 - accepted feedback means a similar recommendation was useful before
@@ -176,12 +192,17 @@ class ResumeFeedbackAgent:
         response = ResumeFeedbackResponse.model_validate(result)
         if response.verdict == "ready_to_apply":
             return response.model_copy(update={"feedback_items": []})
-        if not response.feedback_items:
-            return response.model_copy(update={"verdict": "ready_to_apply"})
+        feedback_items = [
+            item
+            for item in response.feedback_items
+            if _is_actionable_feedback_item(item, resume_content)
+        ]
+        if not feedback_items:
+            return response.model_copy(update={"verdict": "ready_to_apply", "feedback_items": []})
         return response.model_copy(
             update={
                 "feedback_items": [
-                    _normalize_feedback_title(item) for item in response.feedback_items
+                    _normalize_feedback_title(item) for item in feedback_items
                 ]
             }
         )
@@ -217,3 +238,23 @@ def _normalize_feedback_title(item: ResumeFeedbackItem) -> ResumeFeedbackItem:
     if ":" in normalized_title:
         normalized_title = normalized_title.split(":", 1)[1].strip()
     return item.model_copy(update={"title": f"{prefix}: {normalized_title}"})
+
+
+def _is_actionable_feedback_item(item: ResumeFeedbackItem, resume_content: str) -> bool:
+    if item.label != "move_emphasis":
+        return True
+    target_text = (item.target_text or "").strip()
+    replacement_text = (item.replacement_text or "").strip()
+    if not target_text:
+        return False
+    if "[" in target_text or "]" in target_text:
+        return False
+    if re.search(r"\bmove\s+this\s+role\b|\bappear\s+before\b", replacement_text, re.I):
+        return False
+    return _contains_normalized_text(resume_content, target_text)
+
+
+def _contains_normalized_text(haystack: str, needle: str) -> bool:
+    normalized_haystack = " ".join(haystack.casefold().split())
+    normalized_needle = " ".join(needle.casefold().split())
+    return normalized_needle in normalized_haystack

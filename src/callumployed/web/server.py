@@ -1392,11 +1392,17 @@ def build_role_cover_letter(
             )
 
     try:
+        with db.connect() as connection:
+            db.run_migrations(connection)
+            experience_notes = list_experience_notes(connection)
         draft = asyncio.run(
             generate_cover_letter(
                 role=role,
                 resume_content=resume.content,
                 search_tool=search_cover_letters,
+                other_experience_context=[
+                    _experience_note_context(note) for note in experience_notes
+                ],
                 tweaks=tweaks,
                 previous_cover_letter_latex=previous_cover_letter_latex,
             )
@@ -2209,6 +2215,9 @@ def _application_materials_payload(
     notes: list[ExperienceNote],
 ) -> dict[str, Any]:
     resume_resources = _list_resume_resources()
+    has_missing_required_materials = (
+        resume is None or len(examples) == 0 or len(notes) == 0
+    )
     return {
         "master_resume": _master_resume_summary(resume) if resume else None,
         "cover_letter_examples": [
@@ -2217,7 +2226,8 @@ def _application_materials_payload(
         "experience_notes": [_experience_note_summary(note) for note in notes],
         "resume_resources": resume_resources,
         "ui": {
-            "default_collapsed": resume is not None and len(examples) >= 1,
+            "default_collapsed": not has_missing_required_materials,
+            "has_missing_required_materials": has_missing_required_materials,
             "has_master_resume": resume is not None,
             "cover_letter_example_count": len(examples),
             "experience_note_count": len(notes),

@@ -120,6 +120,9 @@ def test_resume_feedback_prompt_includes_other_experience_context() -> None:
     assert "projects / employment history notes" in prompt
     assert "may or" in prompt
     assert "may not already be on the resume" in prompt
+    assert "explicitly compare other_experience_context against the job" in prompt
+    assert "include a concrete optional add_skills or" in prompt
+    assert "names the source note" in prompt
     assert "Built an internal scheduler with Kubernetes and Redis." in prompt
 
 
@@ -134,6 +137,13 @@ def test_cover_letter_prompt_includes_resume_job_and_tool_results() -> None:
             "description": "Python distributed systems internship",
         },
         resume_content="Python systems resume",
+        other_experience_context=[
+            {
+                "filename": "projects.md",
+                "content": "Built a BLE sensor network for motion analysis.",
+                "updated_at": "2026-07-29T12:00:00Z",
+            }
+        ],
         tweaks="Make the tone warmer and emphasize ML infrastructure.",
         cover_letter_examples=[
             {
@@ -150,6 +160,10 @@ def test_cover_letter_prompt_includes_resume_job_and_tool_results() -> None:
 
     assert "resume_context" in prompt
     assert "job_context" in prompt
+    assert "other_experience_context" in prompt
+    assert "projects / employment history" in prompt
+    assert "may or may not already be on the resume" in prompt
+    assert "Built a BLE sensor network for motion analysis." in prompt
     assert "cover_letter_example_tool_results" in prompt
     assert "Python distributed systems internship" in prompt
     assert "Dear Stripe" in prompt
@@ -225,6 +239,13 @@ def test_cover_letter_agent_queries_example_tool_and_passes_documents() -> None:
                 "description": "Python distributed systems internship",
             },
             resume_content="Python backend resume",
+            other_experience_context=[
+                {
+                    "filename": "projects.md",
+                    "content": "Built Kubernetes-backed internal scheduling tools.",
+                    "updated_at": "2026-07-29T12:00:00Z",
+                }
+            ],
             tweaks="Cut one paragraph and make the intro more direct.",
             previous_cover_letter_latex=(
                 "\\documentclass{letter}\\begin{document}Previous draft body\\end{document}"
@@ -240,6 +261,8 @@ def test_cover_letter_agent_queries_example_tool_and_passes_documents() -> None:
     assert "\u2014" not in response.summary
     assert "Dear Backend Team" in prompts[0]
     assert "cover_letter_example_tool_results" in prompts[0]
+    assert "other_experience_context" in prompts[0]
+    assert "Built Kubernetes-backed internal scheduling tools." in prompts[0]
     assert "primary writing-style reference" in prompts[0]
     assert "never use em dashes" in prompts[0]
     assert "fits on one page" in prompts[0]
@@ -342,6 +365,49 @@ def test_resume_feedback_agent_normalizes_operation_titles() -> None:
     assert response.feedback_items[1].title == (
         "change wording to align with posting: distributed systems"
     )
+
+
+def test_resume_feedback_agent_drops_unanchored_move_emphasis_feedback() -> None:
+    class FakeResumeFeedbackModel:
+        async def ainvoke(self, _input: object) -> dict[str, object]:
+            return {
+                "verdict": "tweak",
+                "overview": "needs tailoring",
+                "feedback_items": [
+                    {
+                        "label": "move_emphasis",
+                        "title": "move ai platform development experience earlier",
+                        "detail": (
+                            "position the Amazon AI platform work at the top of the "
+                            "experience section."
+                        ),
+                        "target_text": (
+                            "software development engineer intern at amazon "
+                            "[current ordering]"
+                        ),
+                        "replacement_text": (
+                            "move this role to appear before general dynamics embedded "
+                            "software role"
+                        ),
+                    }
+                ],
+            }
+
+    response = asyncio.run(
+        ResumeFeedbackAgent(
+            chat_model_factory=lambda _settings: FakeResumeFeedbackModel()
+        ).evaluate(
+            role={"id": 1, "title": "Backend Intern"},
+            resume_content=(
+                "\\section{Experience}\n"
+                "\\textbf{Amazon} -- Software Development Engineer Intern\n"
+                "\\textbf{General Dynamics} -- Embedded Software Engineer Co-op\n"
+            ),
+        )
+    )
+
+    assert response.verdict == "ready_to_apply"
+    assert response.feedback_items == []
 
 
 def test_posting_link_classification_batch_payload_uses_database_context_without_timing() -> None:

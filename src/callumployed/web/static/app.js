@@ -10,6 +10,7 @@ const materialsPanel = document.querySelector("#materials-panel");
 const materialsToggle = document.querySelector("#materials-toggle");
 const materialsBody = document.querySelector("#materials-body");
 const materialsSummary = document.querySelector("#materials-summary");
+const materialsRequiredWarning = document.querySelector("#materials-required-warning");
 const resumeMeta = document.querySelector("#resume-meta");
 const resumeUpload = document.querySelector("#resume-upload");
 const resumeUploadButton = document.querySelector("#resume-upload-button");
@@ -309,14 +310,14 @@ function renderApplicationMaterials(payload, options = {}) {
   renderResumeResources(payload?.resume_resources ?? []);
   renderCoverLetterExamples(payload?.cover_letter_examples ?? []);
   renderExperienceNotes(payload?.experience_notes ?? []);
-  updateMaterialsSummary();
+  updateMaterialsSummary(payload?.ui);
   if (!materialsInitialized || options.applyDefaultCollapsed) {
     setMaterialsCollapsed(Boolean(payload?.ui?.default_collapsed));
     materialsInitialized = true;
   }
 }
 
-function updateMaterialsSummary() {
+function updateMaterialsSummary(ui = null) {
   const resumeText = masterResume ? "resume ready" : "no resume";
   const resourceText =
     resumeResources.length === 0
@@ -332,6 +333,11 @@ function updateMaterialsSummary() {
     noteCount === 0
       ? "no notes"
       : `${noteCount} experience ${noteCount === 1 ? "note" : "notes"}`;
+  const hasMissingRequiredMaterials =
+    typeof ui?.has_missing_required_materials === "boolean"
+      ? ui.has_missing_required_materials
+      : !masterResume || exampleCount === 0 || noteCount === 0;
+  materialsRequiredWarning.hidden = !hasMissingRequiredMaterials;
   materialsSummary.textContent = `${resumeText} | ${resourceText} | ${coverText} | ${noteText}`;
 }
 
@@ -853,6 +859,7 @@ async function uploadExperienceNotes(files) {
       });
       if (!response.ok) throw new Error("Experience note upload failed");
     }
+    prepAnalysisByRoleId.clear();
     await loadApplicationMaterials();
   } catch {
     renderExperienceNotes(experienceNotes, "could not save every note.");
@@ -1648,8 +1655,10 @@ function renderPrepProposedEdit(item) {
   `;
 }
 
-async function loadPrepAnalysis(roleId) {
-  if (prepAnalysisByRoleId.has(roleId)) return prepAnalysisByRoleId.get(roleId);
+async function loadPrepAnalysis(roleId, options = {}) {
+  if (!options.force && prepAnalysisByRoleId.has(roleId)) {
+    return prepAnalysisByRoleId.get(roleId);
+  }
   const response = await fetch(`/api/roles/${encodeURIComponent(roleId)}/prep-analysis`);
   if (!response.ok) throw new Error("Prep analysis request failed");
   const payload = await response.json();
@@ -1967,7 +1976,7 @@ prepView.addEventListener("click", async (event) => {
       htmlToElement(renderPrepAnalysis(prepQueue[0], { loading: true })),
     );
     try {
-      const analysis = await loadPrepAnalysis(roleId);
+      const analysis = await loadPrepAnalysis(roleId, { force: true });
       if (prepQueue[0]?.id !== roleId) return;
       prepCard.querySelector(".prep-analysis")?.replaceWith(
         htmlToElement(renderPrepAnalysis(prepQueue[0], { analysis })),

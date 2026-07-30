@@ -110,11 +110,13 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="experience-note-upload"' in markup
         assert 'id="experience-note-upload-button"' in markup
         assert "projects / employment history notes" in markup
+        assert 'id="materials-required-warning"' in markup
+        assert 'aria-label="missing required application materials"' in markup
         assert 'id="toolbar-summary"' in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=20260729-12" in markup
-        assert "/assets/app.js?v=20260729-12" in markup
+        assert "/assets/app.css?v=20260729-14" in markup
+        assert "/assets/app.js?v=20260729-14" in markup
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -387,6 +389,7 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
     async def fake_generate_cover_letter(**kwargs: object) -> object:
         captured["tweaks"] = kwargs.get("tweaks")
         captured["previous_cover_letter_latex"] = kwargs.get("previous_cover_letter_latex")
+        captured["other_experience_context"] = kwargs.get("other_experience_context")
 
         class Draft:
             latex = "\\documentclass{letter}\\begin{document}Dear Acme\\end{document}"
@@ -420,6 +423,11 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
             """
         )
         connection.commit()
+        add_experience_note(
+            connection,
+            filename="projects.md",
+            content="Built a BLE sensor network for motion analysis.",
+        )
     db.ensure_initialized()
 
     server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
@@ -463,6 +471,13 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         assert captured["previous_cover_letter_latex"] == (
             "\\documentclass{letter}\\begin{document}Previous Acme draft\\end{document}"
         )
+        assert captured["other_experience_context"] == [
+            {
+                "filename": "projects.md",
+                "content": "Built a BLE sensor network for motion analysis.",
+                "updated_at": captured["other_experience_context"][0]["updated_at"],
+            }
+        ]
         saved_latex = (resume_root / "role-1" / "cover-letter.tex").read_text()
         assert "Dear Acme" in saved_latex
         assert "\\setlength{\\parskip}{0.85em}" in saved_latex
@@ -1841,6 +1856,7 @@ def test_application_materials_endpoint_reports_default_collapsed_state(
         with urlopen(f"{base_url}/api/application-materials", timeout=5) as response:
             empty_payload = json.loads(response.read().decode())
         assert empty_payload["ui"]["default_collapsed"] is False
+        assert empty_payload["ui"]["has_missing_required_materials"] is True
         assert empty_payload["ui"]["has_master_resume"] is False
         assert empty_payload["ui"]["cover_letter_example_count"] == 0
         assert empty_payload["ui"]["experience_note_count"] == 0
@@ -1865,6 +1881,7 @@ def test_application_materials_endpoint_reports_default_collapsed_state(
         with urlopen(f"{base_url}/api/application-materials", timeout=5) as response:
             resume_only_payload = json.loads(response.read().decode())
         assert resume_only_payload["ui"]["default_collapsed"] is False
+        assert resume_only_payload["ui"]["has_missing_required_materials"] is True
         assert resume_only_payload["ui"]["has_master_resume"] is True
 
         cover_letter_request = Request(
@@ -1890,6 +1907,7 @@ def test_application_materials_endpoint_reports_default_collapsed_state(
         with urlopen(f"{base_url}/api/application-materials", timeout=5) as response:
             ready_payload = json.loads(response.read().decode())
         assert ready_payload["ui"]["default_collapsed"] is True
+        assert ready_payload["ui"]["has_missing_required_materials"] is False
         assert ready_payload["ui"]["cover_letter_example_count"] == 1
         assert ready_payload["ui"]["experience_note_count"] == 1
         assert ready_payload["ui"]["resume_resource_count"] == 0
