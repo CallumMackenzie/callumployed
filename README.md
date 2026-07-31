@@ -1,12 +1,21 @@
-# callumployed
+Callumployed is a local-first job-search tracker and automation tool for managing companies, roles, scans, and application materials. It ships as a Python CLI, local web app, and MCP server so both humans and agents can work against the same SQLite-backed job-search data.
 
-Local-first Python CLI, MCP server, and web tracker for job-search automation.
+Most impactful features:
 
-The app tracks target companies, scans career pages, manages roles and application
-lifecycles, stores reusable application materials, and gives agents structured access
-to the same local data.
+- Track companies, career pages, roles, statuses, notes, and application lifecycle counts from one local database.
+- Scan company career pages and individual role links with Playwright-backed extraction, job-posting assessment, and configurable filters.
+- Manage active/deactivated companies, company tiers, career links, and explicit role additions from the web UI.
+- Store a master resume, cover letter examples, render resources, and experience notes for role-specific prep.
+- Generate resume feedback, tailored resumes, cover letters, and PDFs from saved materials and job postings.
+- Expose the same data and workflows through a Typer CLI and FastMCP tools for agent access.
 
-## Stack
+Install: `curl -fsSL https://raw.githubusercontent.com/CallumMackenzie/callumployed/master/scripts/install.sh | bash`
+
+Start: `callumployed serve`
+
+## Details
+
+### Stack
 
 - Python 3.12+
 - SQLite/Turso-compatible local database
@@ -21,13 +30,7 @@ to the same local data.
 - pytest
 - LangChain provider adapters for optional LLM classification
 
-## Install dependencies
-
-For the easiest install, run the installer from the GitHub repo:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/CallumMackenzie/callumployed/master/scripts/install.sh | bash
-```
+### Install Dependencies
 
 The installer clones callumployed into `~/.local/share/callumployed/source`,
 creates a Python 3.12 environment with `uv`, installs the CLI, installs Playwright's
