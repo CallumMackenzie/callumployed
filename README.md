@@ -35,6 +35,9 @@ Start: `callumployed serve`
 The installer clones callumployed into `~/.local/share/callumployed/source`,
 creates a Python 3.12 environment with `uv`, installs the CLI, installs Playwright's
 Chromium browser, and creates a `~/.local/bin/callumployed` launcher.
+The installed client uses the deployed central company-ID store by default; add the
+central passkey later from web settings or with `callumployed central configure --prompt-passkey`
+to enable the private role feed.
 
 It prompts for:
 

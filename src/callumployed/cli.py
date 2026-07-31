@@ -1156,7 +1156,7 @@ def _central_client_from_config(
     if passkey is None and require_passkey:
         raise typer.BadParameter(
             "central passkey is not configured; run "
-            "`callumployed central configure --api-url ... --prompt-passkey`"
+            "`callumployed central configure --prompt-passkey`"
         )
     return CentralStoreClient(api_url=api_url, passkey=passkey)
 

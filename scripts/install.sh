@@ -176,6 +176,10 @@ print_next_steps() {
   printf 'Start the local web tracker with:\n'
   printf '  %s serve\n' "$SHIM_PATH"
   printf '\n'
+  printf 'Central company ID sync uses the deployed store by default.\n'
+  printf 'Add the private role-feed passkey from web settings or with:\n'
+  printf '  %s central configure --prompt-passkey\n' "$SHIM_PATH"
+  printf '\n'
 
   case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
