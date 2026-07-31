@@ -40,6 +40,41 @@ def _scan_payload(
     }
 
 
+def test_update_command_runs_remote_installer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "update.sqlite3"
+    calls: list[tuple[list[str], bool]] = []
+
+    def fake_run(args: list[str], *, check: bool) -> None:
+        calls.append((args, check))
+
+    monkeypatch.setattr(cli_module.subprocess, "run", fake_run)
+
+    result = runner.invoke(
+        app,
+        ["update"],
+        env={"CALLUMPLOYED_DATABASE_PATH": str(database)},
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        (
+            [
+                "bash",
+                "-c",
+                (
+                    "curl -fsSL "
+                    "https://raw.githubusercontent.com/CallumMackenzie/callumployed/"
+                    "master/scripts/install.sh | bash"
+                ),
+            ],
+            True,
+        )
+    ]
+
+
 class PassthroughProfileManager:
     async def render(
         self,

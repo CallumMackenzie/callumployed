@@ -1,4 +1,5 @@
 import asyncio
+import subprocess
 from pathlib import Path
 from typing import Annotated
 
@@ -81,6 +82,10 @@ browser_app = typer.Typer(help="Inspect managed browser profiles.")
 materials_app = typer.Typer(help="Manage resumes and cover letter examples.")
 central_app = typer.Typer(help="Sync with the central Callumployed role store.")
 
+INSTALLER_SCRIPT_URL = (
+    "https://raw.githubusercontent.com/CallumMackenzie/callumployed/master/scripts/install.sh"
+)
+
 app.add_typer(companies_app, name="companies")
 app.add_typer(roles_app, name="roles")
 app.add_typer(scan_app, name="scan")
@@ -114,6 +119,21 @@ def serve_command(
     """Serve the local web tracker."""
     typer.echo(f"Serving callumployed at http://{host}:{port}")
     run_server(host=host, port=port)
+
+
+@app.command("update")
+def update_command() -> None:
+    """Update Callumployed by running the remote installer."""
+    typer.echo("Updating callumployed with the remote installer...")
+    try:
+        subprocess.run(
+            ["bash", "-c", f"curl -fsSL {INSTALLER_SCRIPT_URL} | bash"],
+            check=True,
+        )
+    except FileNotFoundError as error:
+        raise typer.Exit(1) from error
+    except subprocess.CalledProcessError as error:
+        raise typer.Exit(error.returncode) from error
 
 
 @materials_app.command("set-master-resume")

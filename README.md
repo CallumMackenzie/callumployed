@@ -11,6 +11,12 @@ Most impactful features:
 
 Install: `curl -fsSL https://raw.githubusercontent.com/CallumMackenzie/callumployed/master/scripts/install.sh | bash`
 
+Update an installed client with:
+
+```bash
+callumployed update
+```
+
 Start: `callumployed serve`
 
 ## Details
