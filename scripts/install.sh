@@ -54,6 +54,101 @@ prompt_optional_secret() {
   printf '%s' "$value"
 }
 
+read_env_file_value() {
+  local key="$1"
+  local env_path="$SOURCE_DIR/.env"
+  local line=""
+
+  [ -f "$env_path" ] || return 1
+  line="$(grep -E "^${key}=" "$env_path" | tail -n 1 || true)"
+  [ -n "$line" ] || return 1
+
+  printf '%s' "${line#*=}"
+}
+
+resolve_required_secret() {
+  local key="$1"
+  local prompt="$2"
+  local value="${!key:-}"
+
+  if [ -n "$value" ]; then
+    info "Reusing $key from shell environment" >&2
+    printf '%s' "$value"
+    return
+  fi
+
+  if value="$(read_env_file_value "$key")" && [ -n "$value" ]; then
+    info "Reusing $key from existing .env" >&2
+    printf '%s' "$value"
+    return
+  fi
+
+  prompt_secret "$prompt"
+}
+
+resolve_optional_secret() {
+  local key="$1"
+  local prompt="$2"
+  local value="${!key:-}"
+
+  if [ -n "$value" ]; then
+    info "Reusing $key from shell environment" >&2
+    printf '%s' "$value"
+    return
+  fi
+
+  if value="$(read_env_file_value "$key")" && [ -n "$value" ]; then
+    info "Reusing $key from existing .env" >&2
+    printf '%s' "$value"
+    return
+  fi
+
+  prompt_optional_secret "$prompt"
+}
+
+upsert_env_value() {
+  local key="$1"
+  local value="$2"
+  local env_path="$SOURCE_DIR/.env"
+  local tmp_path=""
+
+  mkdir -p "$(dirname "$env_path")"
+  tmp_path="$(mktemp "${env_path}.tmp.XXXXXX")"
+
+  if [ -f "$env_path" ]; then
+    awk -v key="$key" -v value="$value" '
+      BEGIN { found = 0 }
+      index($0, key "=") == 1 {
+        print key "=" value
+        found = 1
+        next
+      }
+      { print }
+      END {
+        if (!found) {
+          print key "=" value
+        }
+      }
+    ' "$env_path" > "$tmp_path"
+  else
+    printf '%s=%s\n' "$key" "$value" > "$tmp_path"
+  fi
+
+  mv "$tmp_path" "$env_path"
+  chmod 600 "$env_path"
+}
+
+ensure_env_value() {
+  local key="$1"
+  local value="$2"
+
+  if read_env_file_value "$key" >/dev/null; then
+    return
+  fi
+
+  upsert_env_value "$key" "$value"
+}
+
 ensure_uv() {
   if have uv; then
     return
@@ -126,21 +221,18 @@ checkout_source() {
 write_env_file() {
   local openai_api_key="$1"
   local browserbase_api_key="$2"
-  local env_path="$SOURCE_DIR/.env"
 
-  info "Writing local environment config"
-  {
-    printf 'CALLUMPLOYED_LLM_PROVIDER=openai\n'
-    printf 'CALLUMPLOYED_LLM_MODEL=gpt-4.1-mini\n'
-    printf 'OPENAI_API_KEY=%s\n' "$openai_api_key"
-    if [ -n "$browserbase_api_key" ]; then
-      printf 'CALLUMPLOYED_BROWSER_BACKEND=browserbase\n'
-      printf 'BROWSERBASE_API_KEY=%s\n' "$browserbase_api_key"
-    else
-      printf 'CALLUMPLOYED_BROWSER_BACKEND=local\n'
-    fi
-  } > "$env_path"
-  chmod 600 "$env_path"
+  info "Updating local environment config"
+  ensure_env_value "CALLUMPLOYED_LLM_PROVIDER" "openai"
+  ensure_env_value "CALLUMPLOYED_LLM_MODEL" "gpt-4.1-mini"
+  upsert_env_value "OPENAI_API_KEY" "$openai_api_key"
+
+  if [ -n "$browserbase_api_key" ]; then
+    upsert_env_value "CALLUMPLOYED_BROWSER_BACKEND" "browserbase"
+    upsert_env_value "BROWSERBASE_API_KEY" "$browserbase_api_key"
+  else
+    ensure_env_value "CALLUMPLOYED_BROWSER_BACKEND" "local"
+  fi
 }
 
 install_dependencies() {
@@ -201,8 +293,8 @@ main() {
 
   local openai_api_key=""
   local browserbase_api_key=""
-  openai_api_key="$(prompt_secret "OpenAI API key")"
-  browserbase_api_key="$(prompt_optional_secret "Browserbase API key")"
+  openai_api_key="$(resolve_required_secret "OPENAI_API_KEY" "OpenAI API key")"
+  browserbase_api_key="$(resolve_optional_secret "BROWSERBASE_API_KEY" "Browserbase API key")"
 
   write_env_file "$openai_api_key" "$browserbase_api_key"
   install_dependencies
@@ -210,4 +302,6 @@ main() {
   print_next_steps
 }
 
-main "$@"
+if [ "${CALLUMPLOYED_INSTALLER_SKIP_MAIN:-}" != "1" ]; then
+  main "$@"
+fi

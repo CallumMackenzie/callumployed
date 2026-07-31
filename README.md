@@ -44,6 +44,11 @@ It prompts for:
 - `OPENAI_API_KEY` - required for agent-backed classification and resume feedback.
 - `BROWSERBASE_API_KEY` - optional. Leave blank to use local Playwright rendering.
 
+On updates, the installer reuses `OPENAI_API_KEY` and `BROWSERBASE_API_KEY` from
+the shell environment first, then from the existing `.env`, and only prompts for
+missing values. It merges known settings into `.env` without deleting unrelated
+local config.
+
 Resume PDF rendering requires an external LaTeX compiler. The installer checks for
 `tectonic`, `latexmk`, or `pdflatex`. On macOS with Homebrew, it can install the
 recommended `tectonic` compiler for you; otherwise install one of those compilers
