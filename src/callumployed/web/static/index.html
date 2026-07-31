@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>callumployed</title>
-    <link rel="stylesheet" href="/assets/app.css?v=20260731-7" />
+    <link rel="stylesheet" href="/assets/app.css?v=20260731-9" />
   </head>
   <body>
     <main class="shell">
@@ -124,6 +124,30 @@
       </section>
 
       <section class="status-list" id="status-list" aria-live="polite"></section>
+
+      <section class="manual-role-panel" aria-label="add role">
+        <h2>Add Explicit Role</h2>
+        <form class="manual-role-form" id="role-add-form">
+          <label>
+            <span>role link</span>
+            <input id="role-url-input" name="role_url" type="url" placeholder="https://..." required />
+          </label>
+          <label>
+            <span>company</span>
+            <input
+              id="role-company-input"
+              name="company"
+              type="text"
+              list="role-company-options"
+              autocomplete="off"
+              required
+            />
+            <datalist id="role-company-options"></datalist>
+          </label>
+          <button type="submit">add role</button>
+        </form>
+        <div class="manual-role-status" id="role-add-status" role="status" aria-live="polite"></div>
+      </section>
     </main>
 
     <section class="search-dialog" id="search-dialog" aria-labelledby="search-heading" hidden>
@@ -244,6 +268,6 @@
       </div>
     </section>
 
-    <script src="/assets/app.js?v=20260731-7" type="module"></script>
+    <script src="/assets/app.js?v=20260731-9" type="module"></script>
   </body>
 </html>

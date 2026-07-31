@@ -870,6 +870,72 @@ h1 {
   gap: 12px;
 }
 
+.manual-role-panel {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  border: 1px solid rgb(255 255 255 / 0.72);
+  border-radius: var(--radius);
+  padding: 12px;
+  background:
+    linear-gradient(135deg, rgb(255 255 255 / 0.94), rgb(226 255 240 / 0.58)),
+    var(--surface-solid);
+  box-shadow: var(--shadow-tight);
+}
+
+.manual-role-panel h2 {
+  margin: 0 0 2px;
+  color: var(--ink);
+  font-size: 1rem;
+  font-weight: 950;
+  line-height: 1.15;
+  letter-spacing: 0;
+}
+
+.manual-role-form {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(190px, 0.55fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.manual-role-form label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.manual-role-form span {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 900;
+}
+
+.manual-role-form input {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 11px;
+  background: var(--surface-solid);
+  color: var(--text);
+}
+
+.manual-role-form button {
+  min-height: 39px;
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--ink), var(--green) 46%, var(--purple));
+  color: #fff;
+  font-weight: 950;
+  white-space: nowrap;
+}
+
+.manual-role-status {
+  min-height: 18px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
 .status-pane {
   position: relative;
   border: 1px solid color-mix(in srgb, var(--bucket-line) 82%, white);
@@ -2919,6 +2985,10 @@ a:hover .role-link-icon {
     grid-template-columns: 1fr;
   }
 
+  .manual-role-form {
+    grid-template-columns: minmax(0, 1fr) minmax(160px, 0.55fr) auto;
+  }
+
 }
 
 @media (max-width: 520px) {
@@ -2978,8 +3048,13 @@ a:hover .role-link-icon {
   }
 
   .company-create-form,
-  .company-link-form {
+  .company-link-form,
+  .manual-role-form {
     grid-template-columns: 1fr;
+  }
+
+  .manual-role-form button {
+    width: 100%;
   }
 
   .company-link-add {

@@ -47,6 +47,7 @@ from callumployed.data.repositories import (
     add_company_career_page,
     add_cover_letter_example,
     add_experience_note,
+    add_role,
     clear_resume_feedback_history,
     count_resume_feedback_history,
     deactivate_company,
@@ -81,6 +82,7 @@ from callumployed.data.repositories import (
     update_company,
     upsert_master_resume,
 )
+from callumployed.services.scan_workflow import rescan_role as run_rescan_role
 from callumployed.services.scan_workflow import scan_company as run_scan_company
 from callumployed.webscraping.profile_manager import BrowserProfileManager
 
@@ -446,6 +448,9 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             if len(path_parts) == 2 and path_parts == ["api", "companies"]:
                 self._add_company()
                 return
+            if len(path_parts) == 2 and path_parts == ["api", "roles"]:
+                self._add_role()
+                return
             if (
                 len(path_parts) == 3
                 and path_parts[0] == "api"
@@ -593,6 +598,64 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
 
             self._send_json({"role": _role_payload(role)})
+
+        def _add_role(self) -> None:
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            try:
+                company_id = int(payload.get("company_id"))
+            except (TypeError, ValueError):
+                self.send_error(HTTPStatus.BAD_REQUEST, "Company is required")
+                return
+            role_url = _optional_text(payload.get("role_url"))
+            if role_url is None:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Role URL is required")
+                return
+            try:
+                with db.connect() as connection:
+                    company = get_company(connection, company_id)
+                    if not company.is_active:
+                        self.send_error(HTTPStatus.BAD_REQUEST, "Company is deactivated")
+                        return
+                    role = add_role(
+                        connection,
+                        Role(
+                            company_id=company_id,
+                            title=_role_title_from_url(role_url),
+                            role_url=role_url,
+                        ),
+                    )
+            except LookupError:
+                self.send_error(HTTPStatus.NOT_FOUND, "Company not found")
+                return
+            except RuntimeError as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+
+            scan_error = None
+            if role.id is not None:
+                try:
+                    scan = asyncio.run(
+                        run_rescan_role(
+                            role.id,
+                            browser_profile_manager=BrowserProfileManager(),
+                            update_status=True,
+                        )
+                    )
+                    scanned_role = scan.get("role")
+                    if isinstance(scanned_role, Role):
+                        role = scanned_role
+                except Exception as error:
+                    scan_error = str(error)
+
+            self._send_json(
+                {
+                    "role": _role_payload(role),
+                    "tracker": build_tracker_payload(),
+                    "scan_error": scan_error,
+                }
+            )
 
         def _add_company(self) -> None:
             payload = self._read_json_body()
@@ -2595,6 +2658,16 @@ def _role_payload(role: Role | RoleListItem) -> dict[str, Any]:
     for key in ("first_seen_at", "last_seen_at", "created_at", "updated_at"):
         payload[key] = _datetime_or_none(getattr(role, key))
     return payload
+
+
+def _role_title_from_url(role_url: str) -> str:
+    parsed = urlparse(role_url)
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if not path_parts:
+        return "Manually added role"
+    slug = re.sub(r"[-_]+", " ", path_parts[-1])
+    slug = re.sub(r"\s+", " ", slug).strip()
+    return slug or "Manually added role"
 
 
 def _latest_datetime(*values: datetime | None) -> datetime | None:

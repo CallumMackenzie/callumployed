@@ -98,6 +98,11 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="company-create-form"' in markup
         assert 'id="companies-list"' in markup
         assert 'id="prep-interested"' in markup
+        assert 'id="role-add-form"' in markup
+        assert "Add Explicit Role" in markup
+        assert 'id="role-url-input"' in markup
+        assert 'id="role-company-input"' in markup
+        assert 'id="role-company-options"' in markup
         assert 'id="prep-view"' in markup
         assert 'id="resume-resource-upload"' in markup
         assert 'id="resume-resource-upload-button"' in markup
@@ -108,6 +113,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert markup.index('id="scan-all-button"') < markup.index('id="manage-companies-button"')
         assert markup.index('id="manage-companies-button"') < markup.index('id="scan-summary"')
         assert markup.index('id="scan-all-button"') < markup.index('class="status-toolbar"')
+        assert markup.index('id="status-list"') < markup.index('id="role-add-form"')
         assert 'id="scan-status-bar"' in markup
         assert 'id="scan-status-text"' in markup
         assert markup.index('id="scan-summary"') < markup.index('id="scan-status-text"')
@@ -125,8 +131,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="toolbar-summary"' in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=20260731-7" in markup
-        assert "/assets/app.js?v=20260731-7" in markup
+        assert "/assets/app.css?v=20260731-9" in markup
+        assert "/assets/app.js?v=20260731-9" in markup
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -1765,6 +1771,73 @@ def test_tracker_status_endpoint_moves_role(
     discovered = next(status for status in payload["statuses"] if status["key"] == "discovered")
     assert interested["count"] == 1
     assert discovered["count"] == 0
+
+
+def test_roles_create_endpoint_adds_role_and_runs_rescan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-role-create.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+
+    async def fake_run_rescan_role(
+        role_id: int,
+        *,
+        browser_profile_manager: object,
+        update_status: bool,
+    ) -> dict[str, object]:
+        assert role_id == 1
+        assert browser_profile_manager is not None
+        assert update_status is True
+        return {
+            "role": Role(
+                id=1,
+                company_id=1,
+                title="Backend Platform Intern",
+                role_url="https://example.com/jobs/backend-platform-intern",
+                location="Vancouver",
+            )
+        }
+
+    monkeypatch.setattr(web_server, "run_rescan_role", fake_run_rescan_role)
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        request = Request(
+            f"http://127.0.0.1:{port}/api/roles",
+            data=json.dumps(
+                {
+                    "company_id": 1,
+                    "role_url": "https://example.com/jobs/backend-platform-intern",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode())
+
+        assert response.status == 200
+        assert payload["role"]["title"] == "Backend Platform Intern"
+        assert payload["scan_error"] is None
+        assert payload["tracker"]["stats"]["jobs_total"] == 1
+        discovered = next(
+            status for status in payload["tracker"]["statuses"] if status["key"] == "discovered"
+        )
+        [role] = discovered["jobs"]
+        assert role["company_name"] == "Acme"
+        assert role["role_url"] == "https://example.com/jobs/backend-platform-intern"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
 
 
 def test_tracker_review_later_endpoint_records_postponement(

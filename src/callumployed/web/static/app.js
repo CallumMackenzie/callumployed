@@ -59,6 +59,11 @@ const companiesCloseButton = document.querySelector("#companies-close");
 const companiesStatus = document.querySelector("#companies-status");
 const companyCreateForm = document.querySelector("#company-create-form");
 const companiesList = document.querySelector("#companies-list");
+const roleAddForm = document.querySelector("#role-add-form");
+const roleUrlInput = document.querySelector("#role-url-input");
+const roleCompanyInput = document.querySelector("#role-company-input");
+const roleCompanyOptions = document.querySelector("#role-company-options");
+const roleAddStatus = document.querySelector("#role-add-status");
 
 const REVIEW_LATER_RECOMMENDATION_THRESHOLD = 3;
 const COVER_LETTER_AUTOSAVE_DELAY_MS = 1200;
@@ -82,6 +87,7 @@ let scanStatusPoll = null;
 let wasScanning = false;
 let settingsData = null;
 let companiesData = null;
+let roleCompanyData = [];
 const companySaveTimers = new Map();
 
 function getActiveSearchQuery() {
@@ -693,6 +699,7 @@ async function clearRecommendationHistory() {
 function renderCompanies(payload, message = "") {
   companiesData = payload;
   const companies = Array.isArray(payload?.companies) ? payload.companies : [];
+  renderRoleCompanyOptions(companies);
   companiesStatus.textContent = message || `${companies.length} ${companies.length === 1 ? "company" : "companies"} stored`;
   companiesStatus.classList.toggle("is-empty", companies.length === 0 && !message);
   if (companies.length === 0) {
@@ -700,6 +707,13 @@ function renderCompanies(payload, message = "") {
     return;
   }
   companiesList.innerHTML = companies.map((company) => renderCompanyAccordion(company)).join("");
+}
+
+function renderRoleCompanyOptions(companies) {
+  roleCompanyData = Array.isArray(companies) ? companies : [];
+  roleCompanyOptions.innerHTML = roleCompanyData
+    .map((company) => `<option value="${escapeHtml(company.name)}"></option>`)
+    .join("");
 }
 
 function renderCompanyAccordion(company) {
@@ -819,6 +833,13 @@ async function loadCompanies(message = "") {
   renderCompanies(await response.json(), message);
 }
 
+async function loadRoleCompanyOptions() {
+  const response = await fetch("/api/companies");
+  if (!response.ok) throw new Error("Companies request failed");
+  const payload = await response.json();
+  renderRoleCompanyOptions(payload.companies);
+}
+
 async function createCompany(form) {
   const formData = new FormData(form);
   const payload = {
@@ -874,6 +895,42 @@ async function deactivateCompany(companyId) {
   if (!response.ok) throw new Error("Company deactivate failed");
   renderCompanies(await response.json(), "company deactivated.");
   loadTracker(getActiveSearchQuery()).catch(() => {});
+}
+
+function selectedRoleCompany() {
+  const selectedName = roleCompanyInput.value.trim().toLocaleLowerCase();
+  return roleCompanyData.find((company) => company.name.toLocaleLowerCase() === selectedName);
+}
+
+async function createRole(form) {
+  const company = selectedRoleCompany();
+  if (!company?.id) {
+    roleAddStatus.textContent = "pick a saved company.";
+    return;
+  }
+  const formData = new FormData(form);
+  const payload = {
+    company_id: company.id,
+    role_url: String(formData.get("role_url") ?? ""),
+  };
+  roleAddStatus.textContent = "adding role...";
+  const response = await fetch("/api/roles", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw new Error("Role create failed");
+  const result = await response.json();
+  if (result.tracker) {
+    render(result.tracker);
+  } else {
+    await loadTracker(getActiveSearchQuery());
+  }
+  roleUrlInput.value = "";
+  const roleTitle = result.role?.title ? formatUiText(result.role.title) : "role";
+  roleAddStatus.textContent = result.scan_error
+    ? `${roleTitle} added; scan could not finish.`
+    : `${roleTitle} added.`;
 }
 
 function companyById(companyId) {
@@ -2455,6 +2512,13 @@ companyCreateForm.addEventListener("submit", (event) => {
   });
 });
 
+roleAddForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  createRole(roleAddForm).catch(() => {
+    roleAddStatus.textContent = "could not add role.";
+  });
+});
+
 companiesList.addEventListener("submit", (event) => {
   const form = event.target.closest("[data-company-link-form]");
   if (!form) return;
@@ -2520,6 +2584,10 @@ clearRecommendationHistoryButton.addEventListener("click", clearRecommendationHi
 
 loadTracker().catch(() => {
   statusListEl.innerHTML = '<p class="empty-copy">could not load jobs.</p>';
+});
+
+loadRoleCompanyOptions().catch(() => {
+  roleAddStatus.textContent = "could not load companies.";
 });
 
 loadApplicationMaterials({ applyDefaultCollapsed: true }).catch(() => {
