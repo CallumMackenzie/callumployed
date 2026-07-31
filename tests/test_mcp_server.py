@@ -4,6 +4,17 @@ from pathlib import Path
 import pytest
 
 from callumployed import mcp_server
+from callumployed.central.config import DEFAULT_CENTRAL_API_URL
+from callumployed.central.models import ResolveCompanyResponse
+
+
+@pytest.fixture(autouse=True)
+def disable_mcp_remote_company_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        mcp_server,
+        "_try_resolve_company_with_central_store",
+        lambda *args, **kwargs: None,
+    )
 
 
 def test_mcp_company_and_role_tools_return_structured_data(
@@ -117,6 +128,7 @@ def test_mcp_config_tools_return_defaults_and_updates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(tmp_path / "config.sqlite3"))
+    monkeypatch.setattr(mcp_server, "get_central_passkey", lambda: None)
 
     defaults = mcp_server.show_config()
     assert defaults == {
@@ -126,6 +138,14 @@ def test_mcp_config_tools_return_defaults_and_updates(
         "require_software_keywords": True,
         "internship_mode": True,
         "location_filter": "all",
+        "central": {
+            "api_url": DEFAULT_CENTRAL_API_URL,
+            "passkey_configured": False,
+            "companies_linked": 0,
+            "companies_unlinked": 0,
+            "companies_needs_review": 0,
+            "companies_failed": 0,
+        },
     }
 
     updated = mcp_server.update_config(
@@ -145,6 +165,67 @@ def test_mcp_config_tools_return_defaults_and_updates(
         "internship_mode": "false",
         "location_filter": "canada",
         "require_software_keywords": "false",
+    }
+
+
+def test_mcp_central_tools_configure_resolve_and_pull(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(tmp_path / "central.sqlite3"))
+    saved_passkey: dict[str, str | None] = {"value": None}
+    monkeypatch.setattr(mcp_server, "get_central_passkey", lambda: saved_passkey["value"])
+    monkeypatch.setattr(
+        mcp_server,
+        "set_central_passkey",
+        lambda passkey: saved_passkey.update({"value": passkey}),
+    )
+
+    class FakeCentralClient:
+        def __init__(self, *, api_url: str, passkey: str | None = None) -> None:
+            self.api_url = api_url
+            self.passkey = passkey
+
+        def resolve_company(self, request: object) -> ResolveCompanyResponse:
+            return ResolveCompanyResponse(
+                action="matched",
+                global_company_id="co_acme",
+                confidence=100,
+                matched_on=["normalized_name"],
+                canonical_domain="example.com",
+                normalized_name="acme",
+            )
+
+        def list_roles(self) -> object:
+            return type("RolesResponse", (), {"roles": []})()
+
+    monkeypatch.setattr(mcp_server, "CentralStoreClient", FakeCentralClient)
+    mcp_server.add_company("Acme", "https://example.com/careers")
+
+    status = mcp_server.central_status()
+    assert status["api_url"] == DEFAULT_CENTRAL_API_URL
+    assert status["passkey_configured"] is False
+    assert status["companies_unlinked"] == 1
+
+    configured = mcp_server.central_configure(passkey="secret-passkey")
+    assert configured["passkey_configured"] is True
+    assert saved_passkey["value"] == "secret-passkey"
+
+    resolved = mcp_server.central_resolve_companies()
+    assert resolved["result"] == {
+        "linked": 1,
+        "created": 0,
+        "needs_review": 0,
+        "failed": 0,
+    }
+    assert resolved["central"]["companies_linked"] == 1
+
+    pulled = mcp_server.central_pull_roles()
+    assert pulled["pulled_roles"] == {
+        "companies_created": 0,
+        "roles_created": 0,
+        "roles_updated": 0,
+        "skipped_roles": 0,
     }
 
 

@@ -143,6 +143,7 @@ Available MCP tools cover:
 - roles: add, list, show, update, set status
 - materials: get/set the master resume, list/add cover letter examples
 - stats: application and job counts by lifecycle status
+- central: configure/status, resolve company IDs, pull roles, sync
 - config: show and update scan filters
 - scans: scan a URL, scan a company, list scan runs, show a scan run
 

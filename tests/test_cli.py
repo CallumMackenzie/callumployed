@@ -4,6 +4,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from callumployed import cli as cli_module
+from callumployed.central.config import DEFAULT_CENTRAL_API_URL
 from callumployed.cli import app
 from callumployed.data.models import (
     Company,
@@ -392,6 +394,36 @@ def test_config_show_prints_defaults(tmp_path: Path) -> None:
         "internship_mode: true (default)\n"
         "location_filter: all (default)\n"
     )
+
+
+def test_central_configure_can_save_passkey_without_api_url(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "central-configure.sqlite3"
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    saved_passkey: dict[str, str | None] = {"value": None}
+    monkeypatch.setattr(
+        cli_module,
+        "set_central_passkey",
+        lambda passkey: saved_passkey.update({"value": passkey}),
+    )
+    monkeypatch.setattr(cli_module, "get_central_passkey", lambda: saved_passkey["value"])
+
+    configure_result = runner.invoke(
+        app,
+        ["central", "configure", "--prompt-passkey"],
+        input="secret-passkey\n",
+        env=env,
+    )
+    status_result = runner.invoke(app, ["central", "status"], env=env)
+
+    assert configure_result.exit_code == 0
+    assert "Central store configured." in configure_result.output
+    assert saved_passkey["value"] == "secret-passkey"
+    assert status_result.exit_code == 0
+    assert f"api_url: {DEFAULT_CENTRAL_API_URL}" in status_result.output
+    assert "passkey: configured" in status_result.output
 
 
 def test_browser_profiles_command_lists_internal_profiles(

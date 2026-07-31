@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict, is_dataclass
 from enum import Enum
 from typing import Any, cast
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel
 
+from callumployed.central.client import CentralStoreClient, CentralStoreError
+from callumployed.central.config import (
+    get_central_api_url,
+    get_central_passkey,
+    set_central_api_url,
+    set_central_passkey,
+)
+from callumployed.central.models import ResolveCompanyRequest
+from callumployed.central.sync import pull_roles, resolve_unlinked_companies
 from callumployed.data import db
 from callumployed.data import repositories as repo
 from callumployed.data.models import Company, CompanyCareerPage, Role, RoleStatus
@@ -27,6 +37,8 @@ def _to_json(value: Any) -> Any:
         return value.model_dump(mode="json")
     if isinstance(value, Enum):
         return value.value
+    if is_dataclass(value) and not isinstance(value, type):
+        return _to_json(asdict(value))
     if isinstance(value, dict):
         return {str(key): _to_json(item) for key, item in value.items()}
     if isinstance(value, list | tuple | set):
@@ -62,6 +74,7 @@ def _config_payload() -> dict[str, Any]:
     _ensure_initialized()
     with db.connect() as connection:
         values = repo.list_config_values(connection)
+        central = _central_status_payload(connection)
         payload = {
             "values": values,
             "include_graduate_degree_roles": repo.should_include_graduate_degree_roles(
@@ -71,8 +84,23 @@ def _config_payload() -> dict[str, Any]:
             "require_software_keywords": repo.should_require_software_keywords(connection),
             "internship_mode": repo.should_use_internship_mode(connection),
             "location_filter": repo.get_location_filter(connection),
+            "central": central,
         }
     return payload
+
+
+def _central_status_payload(connection: Any) -> dict[str, Any]:
+    companies = repo.list_companies(connection, include_inactive=True)
+    return {
+        "api_url": get_central_api_url(connection),
+        "passkey_configured": get_central_passkey() is not None,
+        "companies_linked": sum(company.central_company_id is not None for company in companies),
+        "companies_unlinked": sum(company.central_company_id is None for company in companies),
+        "companies_needs_review": sum(
+            company.central_sync_status == "needs_review" for company in companies
+        ),
+        "companies_failed": sum(company.central_sync_status == "failed" for company in companies),
+    }
 
 
 @mcp.tool()
@@ -95,6 +123,12 @@ def add_company(
             connection,
             CompanyCareerPage(company_id=company.id, url=career_page_url, label="Main"),
         )
+        _try_resolve_company_with_central_store(
+            connection,
+            company,
+            career_page_urls=[career_page_url],
+        )
+        company = repo.get_company(connection, company.id)
     return {"company": _to_json(company), "career_page": _to_json(career_page)}
 
 
@@ -179,6 +213,18 @@ def update_company_career_pages(
                     label=add_career_page_label,
                 ),
             )
+        sync_urls = [
+            url
+            for url in (primary_career_page_url, add_career_page_url)
+            if url is not None
+        ]
+        if sync_urls:
+            _try_resolve_company_with_central_store(
+                connection,
+                company,
+                career_page_urls=sync_urls,
+            )
+            company = repo.get_company(connection, company_id)
         career_pages = repo.list_company_career_pages(connection, company_id)
 
     return {
@@ -382,6 +428,71 @@ def update_config(
 
 
 @mcp.tool()
+def central_configure(
+    api_url: str | None = None,
+    passkey: str | None = None,
+) -> dict[str, Any]:
+    """Configure the central role store URL override and/or private-feed passkey."""
+    _ensure_initialized()
+    with db.connect() as connection:
+        if api_url is not None:
+            set_central_api_url(connection, api_url)
+        if passkey is not None:
+            set_central_passkey(passkey)
+        status = _central_status_payload(connection)
+    return status
+
+
+@mcp.tool()
+def central_status() -> dict[str, Any]:
+    """Show central role store configuration and local company link status."""
+    _ensure_initialized()
+    with db.connect() as connection:
+        status = _central_status_payload(connection)
+    return status
+
+
+@mcp.tool()
+def central_resolve_companies() -> dict[str, Any]:
+    """Resolve local companies without central IDs. Does not require a passkey."""
+    _ensure_initialized()
+    with db.connect() as connection:
+        client = _central_client_from_config(connection, require_passkey=False)
+        result = resolve_unlinked_companies(connection, client)
+        payload = {
+            "result": _to_json(result),
+            "central": _central_status_payload(connection),
+        }
+    return payload
+
+
+@mcp.tool()
+def central_pull_roles() -> dict[str, Any]:
+    """Pull private central roles into the local database. Requires the passkey."""
+    return _central_pull_roles_payload()
+
+
+def _central_pull_roles_payload() -> dict[str, Any]:
+    _ensure_initialized()
+    with db.connect() as connection:
+        client = _central_client_from_config(connection, require_passkey=True)
+        resolve_result = resolve_unlinked_companies(connection, client)
+        pull_result = pull_roles(connection, client)
+        payload = {
+            "resolved_companies": _to_json(resolve_result),
+            "pulled_roles": _to_json(pull_result),
+            "central": _central_status_payload(connection),
+        }
+    return payload
+
+
+@mcp.tool()
+def central_sync() -> dict[str, Any]:
+    """Resolve local companies and pull private central roles. Requires the passkey."""
+    return _central_pull_roles_payload()
+
+
+@mcp.tool()
 async def scan_url(url: str) -> dict[str, Any]:
     """Scan a careers page URL and return discovered job links."""
     _ensure_initialized()
@@ -468,6 +579,65 @@ def show_scan_run(scan_run_id: int, candidate_limit: int = 0) -> dict[str, Any]:
         "pages": page_payloads,
         "role_discovery_attempts": _to_json(attempts),
     }
+
+
+def _central_client_from_config(
+    connection: Any,
+    *,
+    require_passkey: bool,
+) -> CentralStoreClient:
+    api_url = get_central_api_url(connection)
+    passkey = get_central_passkey()
+    if api_url is None:
+        raise ValueError("central API URL is not configured")
+    if passkey is None and require_passkey:
+        raise ValueError(
+            "central passkey is not configured; run "
+            "`callumployed central configure --prompt-passkey`"
+        )
+    return CentralStoreClient(api_url=api_url, passkey=passkey)
+
+
+def _try_resolve_company_with_central_store(
+    connection: Any,
+    company: Company,
+    *,
+    career_page_urls: list[str],
+) -> None:
+    if company.id is None:
+        return
+    api_url = get_central_api_url(connection)
+    if api_url is None:
+        return
+
+    client = CentralStoreClient(api_url=api_url, passkey=get_central_passkey())
+    try:
+        response = client.resolve_company(
+            ResolveCompanyRequest(
+                name=company.name,
+                career_page_urls=career_page_urls,
+            )
+        )
+    except CentralStoreError as error:
+        repo.set_company_central_sync_status(
+            connection,
+            company.id,
+            status="failed",
+            error=str(error),
+        )
+        return
+
+    if response.action == "needs_review" or response.global_company_id is None:
+        repo.set_company_central_sync_status(connection, company.id, status="needs_review")
+        return
+
+    repo.set_company_central_link(
+        connection,
+        company.id,
+        central_company_id=response.global_company_id,
+        canonical_domain=response.canonical_domain,
+        normalized_name=response.normalized_name,
+    )
 
 
 def main() -> None:

@@ -313,7 +313,10 @@ def show_company_command(
 
 @central_app.command("configure")
 def central_configure_command(
-    api_url: Annotated[str, typer.Option("--api-url", help="Central API base URL.")],
+    api_url: Annotated[
+        str | None,
+        typer.Option("--api-url", help="Optional central API base URL override."),
+    ] = None,
     passkey: Annotated[
         str | None,
         typer.Option("--passkey", help="Optional central API passkey for role-feed access."),
@@ -327,8 +330,9 @@ def central_configure_command(
     if passkey is None and prompt_passkey:
         passkey = typer.prompt("Central passkey", hide_input=True)
     try:
-        with db.connect() as connection:
-            set_central_api_url(connection, api_url)
+        if api_url is not None:
+            with db.connect() as connection:
+                set_central_api_url(connection, api_url)
         if passkey is not None:
             set_central_passkey(passkey)
     except ValueError as error:
