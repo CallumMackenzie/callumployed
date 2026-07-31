@@ -42,15 +42,36 @@ html {
 }
 
 body {
-  min-height: 100%;
+  position: relative;
+  min-height: 100vh;
   margin: 0;
   padding-bottom: 24px;
+  background: transparent;
+  color: var(--text);
+  text-transform: lowercase;
+}
+
+.page-background {
+  position: fixed;
+  inset: 0;
+  z-index: -3;
+  min-height: 100vh;
+  overflow: hidden;
   background:
     linear-gradient(115deg, rgb(45 224 111 / 0.18), transparent 26%),
     linear-gradient(245deg, rgb(95 43 216 / 0.18), transparent 30%),
     linear-gradient(180deg, #ffffff 0%, #f4faf6 44%, #ffffff 100%);
-  color: var(--text);
-  text-transform: lowercase;
+  pointer-events: none;
+}
+
+.landscape-background {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.82;
 }
 
 body::before {
@@ -84,7 +105,16 @@ body::after {
   pointer-events: none;
 }
 
+.shell {
+  position: relative;
+  z-index: 1;
+}
+
 body.review-open {
+  overflow: hidden;
+}
+
+body.prep-open {
   overflow: hidden;
 }
 
@@ -94,6 +124,14 @@ body.settings-open {
 
 body.companies-open {
   overflow: hidden;
+}
+
+body.review-open .shell,
+body.prep-open .shell,
+body.settings-open .shell,
+body.companies-open .shell {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 a {
@@ -1280,7 +1318,8 @@ a:hover .role-link-icon {
   background:
     linear-gradient(115deg, rgb(45 224 111 / 0.18), transparent 28%),
     linear-gradient(245deg, rgb(95 43 216 / 0.18), transparent 30%),
-    var(--paper);
+    rgb(255 254 253 / 0.72);
+  backdrop-filter: blur(2px);
 }
 
 .review-view[hidden] {
@@ -1882,6 +1921,76 @@ a:hover .role-link-icon {
   text-transform: none;
 }
 
+.latex-editor {
+  position: relative;
+  min-height: 260px;
+}
+
+.latex-editor-highlight,
+.latex-editor textarea {
+  width: 100%;
+  min-height: 260px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px;
+  font: 0.74rem/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: 0;
+  tab-size: 2;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.latex-editor-highlight {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  margin: 0;
+  background: rgb(255 255 255 / 0.86);
+  color: var(--text);
+  pointer-events: none;
+}
+
+.latex-editor-highlight code {
+  font: inherit;
+}
+
+.latex-editor textarea {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--text);
+  -webkit-text-fill-color: transparent;
+}
+
+.latex-editor textarea::selection {
+  background: rgb(45 224 111 / 0.22);
+}
+
+.latex-token-command {
+  color: #2463eb;
+  font-weight: 850;
+}
+
+.latex-token-environment {
+  color: #7c3aed;
+  font-weight: 850;
+}
+
+.latex-token-comment {
+  color: #64748b;
+  font-style: italic;
+}
+
+.latex-token-math {
+  color: #b45309;
+}
+
+.latex-token-punctuation {
+  color: #0f766e;
+  font-weight: 800;
+}
+
 .prep-cover-latex textarea:focus {
   outline: 2px solid rgb(45 224 111 / 0.28);
   outline-offset: 1px;
@@ -2037,7 +2146,8 @@ a:hover .role-link-icon {
   background:
     linear-gradient(115deg, rgb(45 224 111 / 0.18), transparent 28%),
     linear-gradient(245deg, rgb(95 43 216 / 0.18), transparent 30%),
-    var(--paper);
+    rgb(255 254 253 / 0.72);
+  backdrop-filter: blur(2px);
 }
 
 .settings-view[hidden] {
@@ -2324,7 +2434,8 @@ a:hover .role-link-icon {
   background:
     linear-gradient(115deg, rgb(45 224 111 / 0.18), transparent 28%),
     linear-gradient(245deg, rgb(95 43 216 / 0.18), transparent 30%),
-    var(--paper);
+    rgb(255 254 253 / 0.72);
+  backdrop-filter: blur(2px);
 }
 
 .companies-view[hidden] {

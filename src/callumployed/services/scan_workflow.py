@@ -59,7 +59,7 @@ from callumployed.webscraping.classifier import (
     select_heuristic_links,
 )
 from callumployed.webscraping.description_parser import clean_job_description
-from callumployed.webscraping.errors import NavigationError
+from callumployed.webscraping.errors import ClassificationError, NavigationError
 from callumployed.webscraping.extraction import extract_link_candidates
 from callumployed.webscraping.location_parser import parse_job_location
 from callumployed.webscraping.models import (
@@ -242,12 +242,25 @@ async def classify_ambiguous_node(
         settings=state.get("llm_settings"),
         chat_model_factory=state.get("chat_model_factory"),
     )
-    return {
-        "agent_links": await classifier(
+    try:
+        agent_links = await classifier(
             state.get("ambiguous_candidates", []),
             state["page"],
         )
+    except ClassificationError:
+        raise
+    except Exception as error:
+        raise ClassificationError(_ai_classification_error_message(error)) from error
+    return {
+        "agent_links": agent_links
     }
+
+
+def _ai_classification_error_message(error: Exception) -> str:
+    message = str(error).strip()
+    if not message:
+        message = error.__class__.__name__
+    return f"AI classification failed: {message}"
 
 
 def build_result_node(state: ScanWorkflowState) -> dict[str, object]:
@@ -867,24 +880,54 @@ async def _render_with_browser_profile_manager(
         except NavigationError:
             if profile_manager is None:
                 raise
-            return await profile_manager.render(
-                render_careers_page,
+            profile_page = await _try_render_with_browser_profile_manager(
+                profile_manager,
                 url,
                 render_options=render_options,
             )
-    if profile_manager is not None:
-        try:
-            return await profile_manager.render(
-                render_careers_page,
-                url,
-                render_options=render_options,
-            )
-        except RuntimeError as error:
-            if "no available managed browser profiles" not in str(error):
+            if profile_page is None:
                 raise
+            return profile_page
+    if profile_manager is not None:
+        profile_page = await _try_render_with_browser_profile_manager(
+            profile_manager,
+            url,
+            render_options=render_options,
+        )
+        if profile_page is not None:
+            return profile_page
     return await render_careers_page(
         url,
         **render_options,
+    )
+
+
+async def _try_render_with_browser_profile_manager(
+    profile_manager: BrowserProfileManager,
+    url: str,
+    *,
+    render_options: dict[str, Any],
+) -> RenderedPageState | None:
+    try:
+        return await profile_manager.render(
+            render_careers_page,
+            url,
+            render_options=render_options,
+        )
+    except (FileNotFoundError, ValueError):
+        return None
+    except RuntimeError as error:
+        if _is_managed_browser_unavailable_error(error):
+            return None
+        raise
+
+
+def _is_managed_browser_unavailable_error(error: RuntimeError) -> bool:
+    message = str(error)
+    return (
+        "no available managed browser profiles" in message
+        or "browser process exited before CDP was ready" in message
+        or "timed out waiting for browser CDP" in message
     )
 
 

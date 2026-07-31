@@ -13,6 +13,7 @@ from callumployed.data.models import (
     RoleDiscoveryStatus,
     RoleStatus,
     ScanCandidate,
+    ScanStatus,
 )
 from callumployed.data.repositories import (
     add_company,
@@ -28,6 +29,7 @@ from callumployed.data.repositories import (
     list_roles,
     list_scan_candidates,
     list_scan_pages,
+    list_scan_runs,
     set_include_graduate_degree_roles,
     set_include_hardware_roles,
     set_internship_mode,
@@ -35,7 +37,7 @@ from callumployed.data.repositories import (
     set_require_software_keywords,
 )
 from callumployed.services import scan_workflow
-from callumployed.webscraping.errors import NavigationError
+from callumployed.webscraping.errors import ClassificationError, NavigationError
 from callumployed.webscraping.models import (
     CareersPageScanResult,
     DiscoveredJobLink,
@@ -119,6 +121,87 @@ def test_render_page_node_uses_browser_profile_manager(monkeypatch: pytest.Monke
     assert state["page"].final_url == "https://example.com/careers"
 
 
+def test_render_page_node_falls_back_when_profile_manager_is_unconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager_calls: list[str] = []
+    direct_render_calls: list[str] = []
+    monkeypatch.setenv("CALLUMPLOYED_BROWSER_BACKEND", "local")
+
+    async def fake_render_careers_page(
+        url: str,
+        **_render_options: object,
+    ) -> RenderedPageState:
+        direct_render_calls.append(url)
+        return _page(url)
+
+    class FakeProfileManager:
+        async def render(
+            self,
+            render: object,
+            url: str,
+            *,
+            render_options: object | None = None,
+        ) -> RenderedPageState:
+            _ = render, render_options
+            manager_calls.append(url)
+            raise ValueError("could not find Brave browser executable")
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    state = asyncio.run(
+        scan_workflow.render_page_node(
+            {
+                "url": "https://example.com/careers",
+                "browser_profile_manager": cast(BrowserProfileManager, FakeProfileManager()),
+            }
+        )
+    )
+
+    assert manager_calls == ["https://example.com/careers"]
+    assert direct_render_calls == ["https://example.com/careers"]
+    assert state["page"].final_url == "https://example.com/careers"
+
+
+def test_render_page_node_falls_back_when_profile_browser_executable_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    direct_render_calls: list[str] = []
+    monkeypatch.setenv("CALLUMPLOYED_BROWSER_BACKEND", "local")
+
+    async def fake_render_careers_page(
+        url: str,
+        **_render_options: object,
+    ) -> RenderedPageState:
+        direct_render_calls.append(url)
+        return _page(url)
+
+    class FakeProfileManager:
+        async def render(
+            self,
+            render: object,
+            url: str,
+            *,
+            render_options: object | None = None,
+        ) -> RenderedPageState:
+            _ = render, url, render_options
+            raise FileNotFoundError("Brave Browser")
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    state = asyncio.run(
+        scan_workflow.render_page_node(
+            {
+                "url": "https://example.com/careers",
+                "browser_profile_manager": cast(BrowserProfileManager, FakeProfileManager()),
+            }
+        )
+    )
+
+    assert direct_render_calls == ["https://example.com/careers"]
+    assert state["page"].final_url == "https://example.com/careers"
+
+
 def test_browserbase_render_failure_falls_back_to_profile_manager(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -190,6 +273,81 @@ def test_graph_calls_llm_for_ambiguous_candidates_by_default(
         link.url for link in result.links
     }
     assert "https://example.com/roles/swe" not in {link.url for link in result.links}
+
+
+def test_scan_url_surfaces_ai_classification_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+        **_render_options: object,
+    ) -> RenderedPageState:
+        return _page(url)
+
+    class FailingStructuredModel:
+        async def ainvoke(self, prompt: object) -> object:
+            _ = prompt
+            raise RuntimeError("OpenAI quota exceeded")
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    with pytest.raises(
+        ClassificationError,
+        match="AI classification failed: OpenAI quota exceeded",
+    ):
+        asyncio.run(
+            scan_workflow.scan_url(
+                "https://example.com/careers",
+                chat_model_factory=lambda _settings: FailingStructuredModel(),
+            )
+        )
+
+
+def test_scan_company_records_ai_classification_errors_on_scan_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Acme"))
+        assert company.id is not None
+        add_company_career_page(
+            connection,
+            CompanyCareerPage(company_id=company.id, url="https://example.com/careers"),
+        )
+
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+        **_render_options: object,
+    ) -> RenderedPageState:
+        return _page(url)
+
+    class FailingStructuredModel:
+        async def ainvoke(self, prompt: object) -> object:
+            _ = prompt
+            raise RuntimeError("OpenAI API key is invalid")
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    with pytest.raises(ClassificationError, match="AI classification failed: OpenAI API key"):
+        asyncio.run(
+            scan_workflow.scan_company(
+                company,
+                chat_model_factory=lambda _settings: FailingStructuredModel(),
+            )
+        )
+
+    with db.connect() as connection:
+        scan_runs = list_scan_runs(connection, company_id=company.id, limit=1)
+
+    assert len(scan_runs) == 1
+    assert scan_runs[0].scan_status is ScanStatus.FAILED
+    assert scan_runs[0].error == "AI classification failed: OpenAI API key is invalid"
 
 
 def test_graph_calls_llm_only_with_ambiguous_candidates(

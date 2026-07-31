@@ -162,6 +162,139 @@ function escapeUiText(value) {
   return escapeHtml(formatUiText(value));
 }
 
+function findLatexCommandEnd(value, start) {
+  let index = start;
+  while (index < value.length && /[A-Za-z@]/.test(value[index])) {
+    index += 1;
+  }
+  return index > start ? index : Math.min(start + 1, value.length);
+}
+
+function findLatexBraceEnd(value, start) {
+  if (value[start] !== "{") return start;
+  let index = start + 1;
+  while (index < value.length && value[index] !== "}") {
+    index += 1;
+  }
+  return index < value.length ? index + 1 : index;
+}
+
+function renderLatexEnvironmentToken(command, value, start) {
+  const braceEnd = findLatexBraceEnd(value, start);
+  if (braceEnd === start) {
+    return {
+      html: `<span class="latex-token-command">${escapeHtml(command)}</span>`,
+      end: start,
+    };
+  }
+  const environment = value.slice(start + 1, Math.max(start + 1, braceEnd - 1));
+  return {
+    html: [
+      `<span class="latex-token-command">${escapeHtml(command)}</span>`,
+      '<span class="latex-token-punctuation">{</span>',
+      `<span class="latex-token-environment">${escapeHtml(environment)}</span>`,
+      braceEnd > start + 1 ? '<span class="latex-token-punctuation">}</span>' : "",
+    ].join(""),
+    end: braceEnd,
+  };
+}
+
+function renderLatexHighlight(value) {
+  const source = String(value ?? "");
+  const parts = [];
+  let index = 0;
+
+  while (index < source.length) {
+    const char = source[index];
+    const previous = index > 0 ? source[index - 1] : "";
+
+    if (char === "%" && previous !== "\\") {
+      const nextLine = source.indexOf("\n", index);
+      const end = nextLine === -1 ? source.length : nextLine;
+      parts.push(`<span class="latex-token-comment">${escapeHtml(source.slice(index, end))}</span>`);
+      index = end;
+      continue;
+    }
+
+    if (char === "\\") {
+      const commandEnd = findLatexCommandEnd(source, index + 1);
+      const command = source.slice(index, commandEnd);
+      if ((command === "\\begin" || command === "\\end") && source[commandEnd] === "{") {
+        const token = renderLatexEnvironmentToken(command, source, commandEnd);
+        parts.push(token.html);
+        index = token.end;
+        continue;
+      }
+      parts.push(`<span class="latex-token-command">${escapeHtml(command)}</span>`);
+      index = commandEnd;
+      continue;
+    }
+
+    if (char === "$") {
+      const delimiter = source[index + 1] === "$" ? "$$" : "$";
+      const end = source.indexOf(delimiter, index + delimiter.length);
+      const tokenEnd = end === -1 ? source.length : end + delimiter.length;
+      parts.push(`<span class="latex-token-math">${escapeHtml(source.slice(index, tokenEnd))}</span>`);
+      index = tokenEnd;
+      continue;
+    }
+
+    if ("{}[]".includes(char)) {
+      parts.push(`<span class="latex-token-punctuation">${escapeHtml(char)}</span>`);
+      index += 1;
+      continue;
+    }
+
+    let next = index + 1;
+    while (next < source.length && !"%\\${}[]".includes(source[next])) {
+      next += 1;
+    }
+    parts.push(escapeHtml(source.slice(index, next)));
+    index = next;
+  }
+
+  return parts.join("") || " ";
+}
+
+function syncLatexEditorHighlight(textarea) {
+  const highlight = textarea
+    ?.closest(".latex-editor")
+    ?.querySelector(".latex-editor-highlight code");
+  if (!highlight) return;
+  highlight.innerHTML = renderLatexHighlight(textarea.value);
+  const mirror = highlight.parentElement;
+  mirror.scrollTop = textarea.scrollTop;
+  mirror.scrollLeft = textarea.scrollLeft;
+  mirror.style.height = `${textarea.clientHeight}px`;
+}
+
+function enhanceLatexEditor(textarea) {
+  if (!textarea || textarea.closest(".latex-editor")) {
+    syncLatexEditorHighlight(textarea);
+    return;
+  }
+  const wrapper = document.createElement("div");
+  wrapper.className = "latex-editor";
+  const mirror = document.createElement("pre");
+  mirror.className = "latex-editor-highlight";
+  mirror.setAttribute("aria-hidden", "true");
+  mirror.append(document.createElement("code"));
+
+  textarea.before(wrapper);
+  wrapper.append(mirror, textarea);
+  if (window.ResizeObserver) {
+    const observer = new ResizeObserver(() => syncLatexEditorHighlight(textarea));
+    observer.observe(textarea);
+  }
+  syncLatexEditorHighlight(textarea);
+}
+
+function enhancePrepLatexEditors(root = prepCard) {
+  root
+    .querySelectorAll("[data-prep-resume-latex], [data-prep-cover-letter-latex]")
+    .forEach(enhanceLatexEditor);
+}
+
 function renderLinkIcon() {
   return `
     <svg class="role-link-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -518,19 +651,20 @@ function renderScanStatus(payload) {
   const completed = Number(payload?.completed_companies ?? 0);
   const total = Number(payload?.total_companies ?? 0);
   const failed = Number(payload?.failed_companies ?? 0);
+  const errorText = typeof payload?.error === "string" ? payload.error.trim() : "";
 
   scanAllButton.disabled = scanning;
   scanAllButton.textContent = scanning ? "scanning..." : "scan roles";
-  scanStatusBar.hidden = !scanning;
+  scanStatusBar.hidden = !scanning && !errorText;
   scanStatusBar.classList.toggle("scanning", scanning);
-  scanStatusBar.classList.toggle("scan-error", !scanning && Boolean(payload?.error));
+  scanStatusBar.classList.toggle("scan-error", !scanning && Boolean(errorText));
 
   if (scanning) {
     const progressText = total > 0 ? ` ${completed}/${total}` : "";
     const failureText = failed > 0 ? `, ${failed} failed` : "";
     scanStatusText.textContent = `scanning roles${progressText}${failureText}`;
-  } else if (payload?.error) {
-    scanStatusText.textContent = "last scan had errors";
+  } else if (errorText) {
+    scanStatusText.textContent = `last scan error: ${errorText}`;
   } else {
     scanStatusText.textContent = "scan idle";
   }
@@ -1786,6 +1920,7 @@ async function renderPrepRole(message = "") {
     ${renderPrepCoverLetter(current)}
     ${renderPrepDescription(current.description)}
   `;
+  enhancePrepLatexEditors();
 
   loadPrepResume(current.id)
     .then((resume) => {
@@ -1794,6 +1929,7 @@ async function renderPrepRole(message = "") {
       prepCard.querySelector(".prep-resume")?.replaceWith(
         htmlToElement(renderPrepResume(current, { resume })),
       );
+      enhancePrepLatexEditors();
     })
     .catch(() => {});
 
@@ -1804,6 +1940,7 @@ async function renderPrepRole(message = "") {
       prepCard.querySelector(".prep-cover-letter")?.replaceWith(
         htmlToElement(renderPrepCoverLetter(current, { coverLetter })),
       );
+      enhancePrepLatexEditors();
     })
     .catch(() => {});
 }
@@ -2360,6 +2497,7 @@ prepView.addEventListener("click", (event) => {
 prepView.addEventListener("input", (event) => {
   const resumeEditor = event.target.closest("[data-prep-resume-latex]");
   if (resumeEditor) {
+    syncLatexEditorHighlight(resumeEditor);
     const roleId = Number(resumeEditor.dataset.prepResumeLatex);
     if (!Number.isFinite(roleId)) return;
     queuePrepResumeAutosave(roleId, resumeEditor.value);
@@ -2368,6 +2506,7 @@ prepView.addEventListener("input", (event) => {
 
   const latexEditor = event.target.closest("[data-prep-cover-letter-latex]");
   if (!latexEditor) return;
+  syncLatexEditorHighlight(latexEditor);
   const roleId = Number(latexEditor.dataset.prepCoverLetterLatex);
   if (!Number.isFinite(roleId)) return;
   const coverSection = latexEditor.closest(".prep-cover-letter");
@@ -2375,6 +2514,17 @@ prepView.addEventListener("input", (event) => {
     coverSection?.querySelector(`[data-prep-cover-letter-tweaks="${roleId}"]`)?.value ?? "";
   queuePrepCoverLetterAutosave(roleId, latexEditor.value, tweaks);
 });
+
+prepView.addEventListener(
+  "scroll",
+  (event) => {
+    const latexEditor = event.target.closest(
+      "[data-prep-resume-latex], [data-prep-cover-letter-latex]",
+    );
+    if (latexEditor) syncLatexEditorHighlight(latexEditor);
+  },
+  true,
+);
 
 prepView.addEventListener("focusout", (event) => {
   const resumeEditor = event.target.closest("[data-prep-resume-latex]");
@@ -2433,6 +2583,7 @@ prepView.addEventListener("click", async (event) => {
       prepCard.querySelector(".prep-cover-letter")?.replaceWith(
         htmlToElement(renderPrepCoverLetter(prepQueue[0], { coverLetter: payload.cover_letter })),
       );
+      enhancePrepLatexEditors();
     } catch {
       prepCard.querySelector(".prep-cover-letter")?.replaceWith(
         htmlToElement(
@@ -2442,6 +2593,7 @@ prepView.addEventListener("click", async (event) => {
           }),
         ),
       );
+      enhancePrepLatexEditors();
     }
     return;
   }
@@ -2484,6 +2636,7 @@ prepView.addEventListener("click", async (event) => {
             prepCard.querySelector(".prep-resume")?.replaceWith(
               htmlToElement(renderPrepResume(prepQueue[0], { resume })),
             );
+            enhancePrepLatexEditors();
           })
           .catch(() => {});
         removePrepFeedbackItem(roleId, currentIndex, analysis);
