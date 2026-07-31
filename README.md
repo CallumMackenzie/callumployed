@@ -143,6 +143,43 @@ Available MCP tools cover:
 - config: show and update scan filters
 - scans: scan a URL, scan a company, list scan runs, show a scan run
 
+## Central Role Store
+
+Callumployed can optionally sync with a central Firebase-backed role store. Local
+company and role IDs remain authoritative for each instance; central IDs are stored as
+linking metadata so imported roles do not overwrite local status, notes, or application
+history.
+
+Configure a deployed central API:
+
+```bash
+callumployed central configure \
+  --api-url https://us-central1-<project-id>.cloudfunctions.net/centralApi
+```
+
+Without a passkey, company resolution still works and stores only the returned central
+company ID:
+
+```bash
+callumployed central resolve-companies
+```
+
+Configure a passkey when you want to pull the private central role feed:
+
+```bash
+callumployed central configure \
+  --api-url https://us-central1-<project-id>.cloudfunctions.net/centralApi \
+  --prompt-passkey
+```
+
+```bash
+callumployed central sync
+```
+
+The TypeScript Firebase Functions app lives in `firebase/`. It owns Firestore access,
+passkey auth, company matching, and the shared role feed. Python talks to it only over
+the HTTP API.
+
 ### Optional LLM classifier
 
 The scan flow uses LangGraph behind the CLI. Deterministic scoring handles obvious links;

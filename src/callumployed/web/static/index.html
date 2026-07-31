@@ -4,7 +4,9 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>callumployed</title>
-    <link rel="stylesheet" href="/assets/app.css?v=20260731-9" />
+    <link rel="icon" href="/assets/camackenzie-logo.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/assets/camackenzie-logo.svg" />
+    <link rel="stylesheet" href="/assets/app.css?v=20260731-10" />
   </head>
   <body>
     <main class="shell">
@@ -221,6 +223,31 @@
         <div class="settings-status" id="settings-status" role="status" aria-live="polite"></div>
         <form class="settings-form" id="settings-form">
           <div class="settings-options" id="settings-options"></div>
+          <section class="settings-maintenance central-settings" aria-label="central role store">
+            <div class="setting-copy">
+              <span class="setting-label">central role store</span>
+              <span class="setting-description" id="central-store-summary">
+                central store not configured
+              </span>
+              <span class="setting-default" id="central-store-sync-summary">
+                remote company sync available after api url is saved
+              </span>
+            </div>
+            <div class="central-settings-controls">
+              <label>
+                <span>api url</span>
+                <input id="central-api-url-input" name="central_api_url" type="url" placeholder="https://..." />
+              </label>
+              <label>
+                <span>passkey</span>
+                <input id="central-passkey-input" name="central_passkey" type="password" autocomplete="new-password" placeholder="leave blank to keep current" />
+              </label>
+              <div class="central-settings-actions">
+                <button type="submit" id="central-save-button">save central</button>
+                <button type="button" id="central-sync-button">sync companies</button>
+              </div>
+            </div>
+          </section>
           <section class="settings-maintenance" aria-label="recommendation history">
             <div class="setting-copy">
               <span class="setting-label">recommendation history</span>
@@ -268,6 +295,6 @@
       </div>
     </section>
 
-    <script src="/assets/app.js?v=20260731-9" type="module"></script>
+    <script src="/assets/app.js?v=20260731-10" type="module"></script>
   </body>
 </html>

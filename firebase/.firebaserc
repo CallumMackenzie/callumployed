@@ -1,0 +1,12 @@
+{
+  "projects": {
+    "default": "callumployed-central"
+  },
+  "targets": {},
+  "etags": {
+    "callumployed-central": {
+      "extensionInstances": {}
+    }
+  },
+  "dataconnectEmulatorConfig": {}
+}

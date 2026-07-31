@@ -52,12 +52,27 @@ def test_initial_schema_creates_minimal_tracking_tables() -> None:
     }.issubset(role_discovery_columns)
 
     role_columns = {row[1] for row in connection.execute("PRAGMA table_info(roles)").fetchall()}
-    assert {"description", "posting_id"}.issubset(role_columns)
+    assert {
+        "description",
+        "posting_id",
+        "central_role_id",
+        "central_source",
+        "central_synced_at",
+    }.issubset(role_columns)
 
     company_columns = {
         row[1] for row in connection.execute("PRAGMA table_info(companies)").fetchall()
     }
-    assert {"browser_extra_wait_ms", "is_active"}.issubset(company_columns)
+    assert {
+        "browser_extra_wait_ms",
+        "is_active",
+        "central_company_id",
+        "canonical_domain",
+        "normalized_name",
+        "central_sync_status",
+        "central_sync_error",
+        "central_matched_at",
+    }.issubset(company_columns)
 
 
 def test_initial_schema_rejects_invalid_role_status() -> None:

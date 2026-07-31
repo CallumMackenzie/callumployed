@@ -52,6 +52,12 @@ const settingsCloseButton = document.querySelector("#settings-close");
 const settingsStatus = document.querySelector("#settings-status");
 const settingsForm = document.querySelector("#settings-form");
 const settingsOptions = document.querySelector("#settings-options");
+const centralStoreSummary = document.querySelector("#central-store-summary");
+const centralStoreSyncSummary = document.querySelector("#central-store-sync-summary");
+const centralApiUrlInput = document.querySelector("#central-api-url-input");
+const centralPasskeyInput = document.querySelector("#central-passkey-input");
+const centralSaveButton = document.querySelector("#central-save-button");
+const centralSyncButton = document.querySelector("#central-sync-button");
 const recommendationHistorySummary = document.querySelector("#recommendation-history-summary");
 const clearRecommendationHistoryButton = document.querySelector("#clear-recommendation-history");
 const companiesView = document.querySelector("#companies-view");
@@ -541,6 +547,7 @@ function renderScanStatus(payload) {
 function renderSettings(payload, message = "") {
   settingsData = payload;
   const settings = Array.isArray(payload?.settings) ? payload.settings : [];
+  const central = payload?.central ?? {};
   settingsStatus.textContent = message;
   settingsStatus.classList.toggle("is-empty", !message);
   const historyCount = Number(payload?.recommendation_history_count ?? 0);
@@ -549,9 +556,28 @@ function renderSettings(payload, message = "") {
       ? `${historyCount} saved ${historyCount === 1 ? "feedback decision" : "feedback decisions"}`
       : "no saved resume feedback decisions";
   clearRecommendationHistoryButton.disabled = historyCount === 0;
+  renderCentralSettings(central);
   settingsOptions.innerHTML = settings
     .map((setting) => renderSettingOption(setting))
     .join("");
+  setSettingsDisabled(false);
+}
+
+function renderCentralSettings(central) {
+  const apiUrl = central?.api_url ?? "";
+  centralApiUrlInput.value = apiUrl;
+  centralPasskeyInput.value = "";
+  const passkeyText = central?.passkey_configured ? "passkey saved" : "no passkey saved";
+  centralStoreSummary.textContent = apiUrl
+    ? `${formatUiText(apiUrl)} | ${passkeyText}`
+    : `no api url | ${passkeyText}`;
+  const linked = Number(central?.companies_linked ?? 0);
+  const unlinked = Number(central?.companies_unlinked ?? 0);
+  const needsReview = Number(central?.companies_needs_review ?? 0);
+  const failed = Number(central?.companies_failed ?? 0);
+  centralStoreSyncSummary.textContent =
+    `${linked} linked | ${unlinked} unlinked | ${needsReview} review | ${failed} failed`;
+  centralSyncButton.disabled = !apiUrl;
 }
 
 function renderSettingOption(setting) {
@@ -619,6 +645,8 @@ function setSettingsDisabled(disabled) {
   settingsForm.querySelectorAll("input, select").forEach((input) => {
     input.disabled = disabled;
   });
+  centralSaveButton.disabled = disabled;
+  centralSyncButton.disabled = disabled || !centralApiUrlInput.value.trim();
 }
 
 async function openSettingsView() {
@@ -693,6 +721,56 @@ async function clearRecommendationHistory() {
   } catch {
     settingsStatus.textContent = "could not clear recommendation history.";
     clearRecommendationHistoryButton.disabled = false;
+  }
+}
+
+async function saveCentralSettings() {
+  const apiUrl = centralApiUrlInput.value.trim();
+  if (!apiUrl) {
+    settingsStatus.textContent = "central api url is required.";
+    settingsStatus.classList.remove("is-empty");
+    return;
+  }
+  const payload = { central_api_url: apiUrl };
+  const passkey = centralPasskeyInput.value.trim();
+  if (passkey) payload.central_passkey = passkey;
+  setSettingsDisabled(true);
+  settingsStatus.textContent = "saving central settings...";
+  settingsStatus.classList.remove("is-empty");
+  try {
+    const response = await fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) throw new Error("Central settings update failed");
+    renderSettings(await response.json(), "central settings saved.");
+  } catch {
+    settingsStatus.textContent = "could not save central settings.";
+    setSettingsDisabled(false);
+  }
+}
+
+async function syncCentralCompanies() {
+  centralSyncButton.disabled = true;
+  settingsStatus.textContent = "syncing remote company ids...";
+  settingsStatus.classList.remove("is-empty");
+  try {
+    const response = await fetch("/api/central/resolve-companies", { method: "POST" });
+    if (!response.ok) throw new Error("Central company sync failed");
+    const payload = await response.json();
+    const result = payload.result ?? {};
+    renderSettings(
+      payload.config,
+      `company sync: ${Number(result.linked ?? 0)} matched, ${Number(result.created ?? 0)} created, ${Number(result.needs_review ?? 0)} review, ${Number(result.failed ?? 0)} failed.`,
+    );
+    if (payload.companies) {
+      companiesData = payload.companies;
+      renderRoleCompanyOptions(payload.companies.companies);
+    }
+  } catch {
+    settingsStatus.textContent = "could not sync companies.";
+    centralSyncButton.disabled = !centralApiUrlInput.value.trim();
   }
 }
 
@@ -2579,6 +2657,17 @@ settingsForm.addEventListener("change", (event) => {
   if (!control) return;
   saveSetting(control);
 });
+
+settingsForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  saveCentralSettings();
+});
+
+centralApiUrlInput.addEventListener("input", () => {
+  centralSyncButton.disabled = !centralApiUrlInput.value.trim();
+});
+
+centralSyncButton.addEventListener("click", syncCentralCompanies);
 
 clearRecommendationHistoryButton.addEventListener("click", clearRecommendationHistory);
 

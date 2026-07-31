@@ -30,6 +30,15 @@ from callumployed.agents.cover_letter import (
     strip_cover_letter_dash_punctuation,
 )
 from callumployed.agents.resume_feedback import evaluate_resume_feedback
+from callumployed.central.client import CentralStoreClient, CentralStoreError
+from callumployed.central.config import (
+    get_central_api_url,
+    get_central_passkey,
+    set_central_api_url,
+    set_central_passkey,
+)
+from callumployed.central.models import ResolveCompanyRequest
+from callumployed.central.sync import resolve_unlinked_companies
 from callumployed.data import db
 from callumployed.data.models import (
     Company,
@@ -69,6 +78,8 @@ from callumployed.data.repositories import (
     list_scan_runs,
     record_resume_feedback_history,
     record_role_review_later,
+    set_company_central_link,
+    set_company_central_sync_status,
     set_include_graduate_degree_roles,
     set_include_hardware_roles,
     set_internship_mode,
@@ -472,6 +483,9 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             if len(path_parts) == 3 and path_parts == ["api", "scan", "all"]:
                 self._start_scan_all()
                 return
+            if len(path_parts) == 3 and path_parts == ["api", "central", "resolve-companies"]:
+                self._resolve_central_companies()
+                return
             if len(path_parts) == 2 and path_parts == ["api", "config"]:
                 self._update_config()
                 return
@@ -688,6 +702,11 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                             label=career_label,
                         ),
                     )
+                _try_resolve_company_with_central_store(
+                    connection,
+                    company,
+                    career_page_urls=[career_url] if career_url is not None else [],
+                )
             self._send_json(build_companies_payload())
 
         def _update_company(self, company_id_text: str) -> None:
@@ -737,6 +756,14 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                     add_company_career_page(
                         connection,
                         CompanyCareerPage(company_id=company_id, url=url, label=label),
+                    )
+                    company = get_company(connection, company_id)
+                    _try_resolve_company_with_central_store(
+                        connection,
+                        company,
+                        career_page_urls=[
+                            page.url for page in list_company_career_pages(connection, company_id)
+                        ],
                     )
             except LookupError:
                 self.send_error(HTTPStatus.NOT_FOUND, "Company not found")
@@ -1279,6 +1306,8 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
 
             allowed_keys = {
+                "central_api_url",
+                "central_passkey",
                 "include_graduate_degree_roles",
                 "include_hardware_roles",
                 "internship_mode",
@@ -1310,6 +1339,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
 
             try:
                 with db.connect() as connection:
+                    db.run_migrations(connection)
                     if "include_graduate_degree_roles" in payload:
                         set_include_graduate_degree_roles(
                             connection,
@@ -1335,11 +1365,43 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                             connection,
                             payload["location_filter"],
                         )
+                    if "central_api_url" in payload:
+                        set_central_api_url(connection, payload["central_api_url"])
+                    central_passkey = _optional_text(payload.get("central_passkey"))
+                    if central_passkey is not None:
+                        set_central_passkey(central_passkey)
             except ValueError as error:
                 self.send_error(HTTPStatus.BAD_REQUEST, str(error))
                 return
+            except Exception as error:
+                self.send_error(HTTPStatus.SERVICE_UNAVAILABLE, str(error))
+                return
 
             self._send_json(build_config_payload())
+
+        def _resolve_central_companies(self) -> None:
+            try:
+                with db.connect() as connection:
+                    client = _central_client_from_web_config(connection)
+                    result = resolve_unlinked_companies(connection, client)
+            except ValueError as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except CentralStoreError as error:
+                self.send_error(HTTPStatus.SERVICE_UNAVAILABLE, str(error))
+                return
+            self._send_json(
+                {
+                    "result": {
+                        "linked": result.linked,
+                        "created": result.created,
+                        "needs_review": result.needs_review,
+                        "failed": result.failed,
+                    },
+                    "config": build_config_payload(),
+                    "companies": build_companies_payload(),
+                }
+            )
 
         def _clear_recommendation_history(self) -> None:
             with db.connect() as connection:
@@ -1425,9 +1487,26 @@ def build_config_payload() -> dict[str, Any]:
         internship_mode = should_use_internship_mode(connection)
         location_filter = get_location_filter(connection)
         recommendation_history_count = count_resume_feedback_history(connection)
+        central_api_url = get_central_api_url(connection)
+        companies = list_companies(connection, include_inactive=True)
+    passkey_configured = get_central_passkey() is not None
+    central_linked_count = sum(company.central_company_id is not None for company in companies)
+    central_unlinked_count = sum(company.central_company_id is None for company in companies)
+    central_needs_review_count = sum(
+        company.central_sync_status == "needs_review" for company in companies
+    )
+    central_failed_count = sum(company.central_sync_status == "failed" for company in companies)
     return {
         "values": values,
         "recommendation_history_count": recommendation_history_count,
+        "central": {
+            "api_url": central_api_url,
+            "passkey_configured": passkey_configured,
+            "companies_linked": central_linked_count,
+            "companies_unlinked": central_unlinked_count,
+            "companies_needs_review": central_needs_review_count,
+            "companies_failed": central_failed_count,
+        },
         "settings": [
             {
                 "key": "include_graduate_degree_roles",
@@ -2574,6 +2653,12 @@ def _company_payload(
         "prestige_tier": company.prestige_tier,
         "is_active": company.is_active,
         "browser_extra_wait_ms": company.browser_extra_wait_ms,
+        "central_company_id": company.central_company_id,
+        "central_sync_status": company.central_sync_status,
+        "central_sync_error": company.central_sync_error,
+        "central_matched_at": company.central_matched_at.isoformat()
+        if company.central_matched_at
+        else None,
         "created_at": company.created_at.isoformat() if company.created_at else None,
         "updated_at": company.updated_at.isoformat() if company.updated_at else None,
         "career_pages": [_company_career_page_payload(page) for page in career_pages],
@@ -2589,6 +2674,55 @@ def _company_career_page_payload(career_page: CompanyCareerPage) -> dict[str, An
         "created_at": career_page.created_at.isoformat() if career_page.created_at else None,
         "updated_at": career_page.updated_at.isoformat() if career_page.updated_at else None,
     }
+
+
+def _central_client_from_web_config(connection: Any) -> CentralStoreClient:
+    api_url = get_central_api_url(connection)
+    if api_url is None:
+        raise ValueError("Central API URL is not configured")
+    return CentralStoreClient(api_url=api_url, passkey=get_central_passkey())
+
+
+def _try_resolve_company_with_central_store(
+    connection: Any,
+    company: Company,
+    *,
+    career_page_urls: list[str],
+) -> None:
+    if company.id is None:
+        return
+    api_url = get_central_api_url(connection)
+    if api_url is None:
+        return
+
+    client = CentralStoreClient(api_url=api_url, passkey=get_central_passkey())
+    try:
+        response = client.resolve_company(
+            ResolveCompanyRequest(
+                name=company.name,
+                career_page_urls=career_page_urls,
+            )
+        )
+    except CentralStoreError as error:
+        set_company_central_sync_status(
+            connection,
+            company.id,
+            status="failed",
+            error=str(error),
+        )
+        return
+
+    if response.action == "needs_review" or response.global_company_id is None:
+        set_company_central_sync_status(connection, company.id, status="needs_review")
+        return
+
+    set_company_central_link(
+        connection,
+        company.id,
+        central_company_id=response.global_company_id,
+        canonical_domain=response.canonical_domain,
+        normalized_name=response.normalized_name,
+    )
 
 
 def _cover_letter_content_from_payload(

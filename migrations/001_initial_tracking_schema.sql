@@ -8,7 +8,15 @@ CREATE TABLE IF NOT EXISTS companies (
     notes TEXT,
     prestige_tier TEXT,
     is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
-    browser_extra_wait_ms INTEGER NOT NULL DEFAULT 0
+    browser_extra_wait_ms INTEGER NOT NULL DEFAULT 0,
+    central_company_id TEXT,
+    canonical_domain TEXT,
+    normalized_name TEXT,
+    central_sync_status TEXT NOT NULL DEFAULT 'pending' CHECK (
+        central_sync_status IN ('pending', 'linked', 'needs_review', 'failed')
+    ),
+    central_sync_error TEXT,
+    central_matched_at TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_name ON companies (name);
@@ -90,6 +98,11 @@ CREATE TABLE IF NOT EXISTS roles (
     notes TEXT,
     description TEXT,
     posting_id TEXT,
+    central_role_id TEXT,
+    central_source TEXT NOT NULL DEFAULT 'local' CHECK (
+        central_source IN ('local', 'central', 'scan')
+    ),
+    central_synced_at TEXT,
     FOREIGN KEY (company_id) REFERENCES companies (id) ON DELETE CASCADE
 );
 

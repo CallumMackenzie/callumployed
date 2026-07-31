@@ -2114,6 +2114,47 @@ a:hover .role-link-icon {
   opacity: 0.55;
 }
 
+.central-settings {
+  align-items: start;
+  margin-top: 16px;
+  background:
+    linear-gradient(135deg, rgb(255 255 255 / 0.96), rgb(226 255 240 / 0.58)),
+    var(--surface-solid);
+}
+
+.central-settings-controls {
+  display: grid;
+  gap: 10px;
+  width: min(360px, 100%);
+}
+
+.central-settings-controls label {
+  display: grid;
+  gap: 5px;
+}
+
+.central-settings-controls label span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+}
+
+.central-settings-controls input {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 9px 10px;
+  background: rgb(255 255 255 / 0.92);
+  color: var(--text);
+}
+
+.central-settings-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
 .setting-option {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -2929,6 +2970,14 @@ a:hover .role-link-icon {
 
   .settings-header {
     align-items: start;
+  }
+
+  .central-settings {
+    grid-template-columns: 1fr;
+  }
+
+  .central-settings-controls {
+    width: 100%;
   }
 
   .companies-header {

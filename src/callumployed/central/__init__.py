@@ -1,0 +1,2 @@
+"""Central role-store integration."""
+

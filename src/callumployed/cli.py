@@ -2,8 +2,18 @@ import asyncio
 from pathlib import Path
 from typing import Annotated
 
+import turso
 import typer
 
+from callumployed.central.client import CentralStoreClient, CentralStoreError
+from callumployed.central.config import (
+    get_central_api_url,
+    get_central_passkey,
+    set_central_api_url,
+    set_central_passkey,
+)
+from callumployed.central.models import ResolveCompanyRequest
+from callumployed.central.sync import pull_roles, resolve_unlinked_companies
 from callumployed.config import BrowserSettings
 from callumployed.data import db
 from callumployed.data.models import (
@@ -36,6 +46,8 @@ from callumployed.data.repositories import (
     list_scan_candidates,
     list_scan_pages,
     list_scan_runs,
+    set_company_central_link,
+    set_company_central_sync_status,
     set_include_graduate_degree_roles,
     set_include_hardware_roles,
     set_internship_mode,
@@ -67,6 +79,7 @@ scan_app = typer.Typer(help="Scan careers pages.")
 config_app = typer.Typer(help="Manage app-wide configuration.")
 browser_app = typer.Typer(help="Inspect managed browser profiles.")
 materials_app = typer.Typer(help="Manage resumes and cover letter examples.")
+central_app = typer.Typer(help="Sync with the central Callumployed role store.")
 
 app.add_typer(companies_app, name="companies")
 app.add_typer(roles_app, name="roles")
@@ -74,6 +87,7 @@ app.add_typer(scan_app, name="scan")
 app.add_typer(config_app, name="config")
 app.add_typer(browser_app, name="browser")
 app.add_typer(materials_app, name="materials")
+app.add_typer(central_app, name="central")
 
 
 @app.callback()
@@ -199,6 +213,11 @@ def add_company_command(
             connection,
             CompanyCareerPage(company_id=company.id, url=career_page_url, label="Main"),
         )
+        _try_resolve_company_with_central_store(
+            connection,
+            company,
+            career_page_urls=[career_page_url],
+        )
     typer.echo(f"Added company #{company.id}: {company.name}")
 
 
@@ -290,6 +309,89 @@ def show_company_command(
     for career_page in career_pages:
         label = f" ({career_page.label})" if career_page.label else ""
         typer.echo(f"- {career_page.id}: {career_page.url}{label}")
+
+
+@central_app.command("configure")
+def central_configure_command(
+    api_url: Annotated[str, typer.Option("--api-url", help="Central API base URL.")],
+    passkey: Annotated[
+        str | None,
+        typer.Option("--passkey", help="Optional central API passkey for role-feed access."),
+    ] = None,
+    prompt_passkey: Annotated[
+        bool,
+        typer.Option("--prompt-passkey", help="Prompt securely for the central API passkey."),
+    ] = False,
+) -> None:
+    """Save central store API configuration."""
+    if passkey is None and prompt_passkey:
+        passkey = typer.prompt("Central passkey", hide_input=True)
+    try:
+        with db.connect() as connection:
+            set_central_api_url(connection, api_url)
+        if passkey is not None:
+            set_central_passkey(passkey)
+    except ValueError as error:
+        raise typer.BadParameter(str(error)) from error
+
+    typer.echo("Central store configured.")
+
+
+@central_app.command("status")
+def central_status_command() -> None:
+    """Show central store configuration and local link status."""
+    with db.connect() as connection:
+        api_url = get_central_api_url(connection)
+        companies = list_companies(connection, include_inactive=True)
+    passkey = get_central_passkey()
+    linked_count = sum(company.central_company_id is not None for company in companies)
+    pending_count = sum(company.central_company_id is None for company in companies)
+
+    typer.echo(f"api_url: {api_url or 'missing'}")
+    typer.echo(f"passkey: {'configured' if passkey is not None else 'missing'}")
+    typer.echo(f"companies_linked: {linked_count}")
+    typer.echo(f"companies_unlinked: {pending_count}")
+
+
+@central_app.command("resolve-companies")
+def central_resolve_companies_command() -> None:
+    """Resolve local companies without central IDs."""
+    with db.connect() as connection:
+        client = _central_client_from_config(connection, require_passkey=False)
+        result = resolve_unlinked_companies(connection, client)
+
+    typer.echo(
+        "Resolved companies: "
+        f"{result.linked} matched, {result.created} created, "
+        f"{result.needs_review} need review, {result.failed} failed"
+    )
+
+
+@central_app.command("pull-roles")
+def central_pull_roles_command() -> None:
+    """Pull all central roles into the local database."""
+    with db.connect() as connection:
+        client = _central_client_from_config(connection, require_passkey=True)
+        resolve_result = resolve_unlinked_companies(connection, client)
+        pull_result = pull_roles(connection, client)
+
+    typer.echo(
+        "Resolved companies before pull: "
+        f"{resolve_result.linked} matched, {resolve_result.created} created, "
+        f"{resolve_result.needs_review} need review, {resolve_result.failed} failed"
+    )
+    typer.echo(
+        "Pulled roles: "
+        f"{pull_result.roles_created} created, {pull_result.roles_updated} updated, "
+        f"{pull_result.companies_created} companies created, "
+        f"{pull_result.skipped_roles} skipped"
+    )
+
+
+@central_app.command("sync")
+def central_sync_command() -> None:
+    """Resolve companies and pull central roles."""
+    central_pull_roles_command()
 
 
 @config_app.command("include-graduate-degree-roles")
@@ -1038,6 +1140,72 @@ def _set_role_state(role_id: int, state: RoleStatus, *, summary: str) -> None:
         except LookupError as error:
             raise typer.BadParameter(str(error)) from error
     typer.echo(f"Updated role #{role.id}: {role.role_status.value}")
+
+
+def _central_client_from_config(
+    connection: turso.Connection,
+    *,
+    require_passkey: bool,
+) -> CentralStoreClient:
+    api_url = get_central_api_url(connection)
+    passkey = get_central_passkey()
+    if api_url is None:
+        raise typer.BadParameter(
+            "central API URL is not configured; run `callumployed central configure`"
+        )
+    if passkey is None and require_passkey:
+        raise typer.BadParameter(
+            "central passkey is not configured; run "
+            "`callumployed central configure --api-url ... --prompt-passkey`"
+        )
+    return CentralStoreClient(api_url=api_url, passkey=passkey)
+
+
+def _try_resolve_company_with_central_store(
+    connection: turso.Connection,
+    company: Company,
+    *,
+    career_page_urls: list[str],
+) -> None:
+    if company.id is None:
+        return
+    api_url = get_central_api_url(connection)
+    passkey = get_central_passkey()
+    if api_url is None:
+        return
+
+    client = CentralStoreClient(api_url=api_url, passkey=passkey)
+    try:
+        response = client.resolve_company(
+            ResolveCompanyRequest(
+                name=company.name,
+                career_page_urls=career_page_urls,
+            )
+        )
+    except CentralStoreError as error:
+        set_company_central_sync_status(
+            connection,
+            company.id,
+            status="failed",
+            error=str(error),
+        )
+        return
+
+    if response.action == "needs_review" or response.global_company_id is None:
+        set_company_central_sync_status(
+            connection,
+            company.id,
+            status="needs_review",
+        )
+        return
+
+    set_company_central_link(
+        connection,
+        company.id,
+        central_company_id=response.global_company_id,
+        canonical_domain=response.canonical_domain,
+        normalized_name=response.normalized_name,
+    )
 
 
 def _print_stats(stats: dict[str, object]) -> None:

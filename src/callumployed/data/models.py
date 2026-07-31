@@ -47,6 +47,12 @@ class Company(AppModel):
     prestige_tier: str | None = None
     is_active: bool = True
     browser_extra_wait_ms: int = 0
+    central_company_id: str | None = None
+    canonical_domain: str | None = None
+    normalized_name: str | None = None
+    central_sync_status: str = "pending"
+    central_sync_error: str | None = None
+    central_matched_at: datetime | None = None
 
 
 class CompanyCareerPage(AppModel):
@@ -99,6 +105,9 @@ class Role(AppModel):
     notes: str | None = None
     description: str | None = None
     posting_id: str | None = None
+    central_role_id: str | None = None
+    central_source: str = "local"
+    central_synced_at: datetime | None = None
 
 
 class RoleListItem(AppModel):
@@ -116,6 +125,9 @@ class RoleListItem(AppModel):
     notes: str | None = None
     description: str | None = None
     posting_id: str | None = None
+    central_role_id: str | None = None
+    central_source: str = "local"
+    central_synced_at: datetime | None = None
     review_later_count: int = 0
 
 

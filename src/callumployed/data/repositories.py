@@ -77,9 +77,15 @@ def add_company(connection: turso.Connection, company: Company) -> Company:
                 notes,
                 prestige_tier,
                 is_active,
-                browser_extra_wait_ms
+                browser_extra_wait_ms,
+                central_company_id,
+                canonical_domain,
+                normalized_name,
+                central_sync_status,
+                central_sync_error,
+                central_matched_at
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 company.name,
@@ -88,6 +94,14 @@ def add_company(connection: turso.Connection, company: Company) -> Company:
                 company.prestige_tier,
                 int(company.is_active),
                 company.browser_extra_wait_ms,
+                company.central_company_id,
+                company.canonical_domain,
+                company.normalized_name,
+                company.central_sync_status,
+                company.central_sync_error,
+                company.central_matched_at.isoformat()
+                if company.central_matched_at is not None
+                else None,
             ),
         )
         connection.commit()
@@ -95,8 +109,20 @@ def add_company(connection: turso.Connection, company: Company) -> Company:
 
     cursor = connection.execute(
         """
-        INSERT INTO companies (name, notes, prestige_tier, is_active, browser_extra_wait_ms)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO companies (
+            name,
+            notes,
+            prestige_tier,
+            is_active,
+            browser_extra_wait_ms,
+            central_company_id,
+            canonical_domain,
+            normalized_name,
+            central_sync_status,
+            central_sync_error,
+            central_matched_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             company.name,
@@ -104,6 +130,14 @@ def add_company(connection: turso.Connection, company: Company) -> Company:
             company.prestige_tier,
             int(company.is_active),
             company.browser_extra_wait_ms,
+            company.central_company_id,
+            company.canonical_domain,
+            company.normalized_name,
+            company.central_sync_status,
+            company.central_sync_error,
+            company.central_matched_at.isoformat()
+            if company.central_matched_at is not None
+            else None,
         ),
     )
     connection.commit()
@@ -739,7 +773,13 @@ def get_company(connection: turso.Connection, company_id: int) -> Company:
             notes,
             prestige_tier,
             is_active,
-            browser_extra_wait_ms
+            browser_extra_wait_ms,
+            central_company_id,
+            canonical_domain,
+            normalized_name,
+            central_sync_status,
+            central_sync_error,
+            central_matched_at
         FROM companies
         WHERE id = ?
         """,
@@ -766,13 +806,96 @@ def list_companies(
             notes,
             prestige_tier,
             is_active,
-            browser_extra_wait_ms
+            browser_extra_wait_ms,
+            central_company_id,
+            canonical_domain,
+            normalized_name,
+            central_sync_status,
+            central_sync_error,
+            central_matched_at
         FROM companies
         {where}
         ORDER BY name
         """
     ).fetchall()
     return [Company.model_validate(dict(row)) for row in rows]
+
+
+def list_companies_without_central_id(connection: turso.Connection) -> list[Company]:
+    rows = connection.execute(
+        """
+        SELECT
+            id,
+            name,
+            created_at,
+            updated_at,
+            notes,
+            prestige_tier,
+            is_active,
+            browser_extra_wait_ms,
+            central_company_id,
+            canonical_domain,
+            normalized_name,
+            central_sync_status,
+            central_sync_error,
+            central_matched_at
+        FROM companies
+        WHERE central_company_id IS NULL
+        ORDER BY name
+        """
+    ).fetchall()
+    return [Company.model_validate(dict(row)) for row in rows]
+
+
+def set_company_central_link(
+    connection: turso.Connection,
+    company_id: int,
+    *,
+    central_company_id: str,
+    canonical_domain: str | None = None,
+    normalized_name: str | None = None,
+) -> Company:
+    connection.execute(
+        """
+        UPDATE companies
+        SET
+            central_company_id = ?,
+            canonical_domain = ?,
+            normalized_name = ?,
+            central_sync_status = 'linked',
+            central_sync_error = NULL,
+            central_matched_at = datetime('now'),
+            updated_at = datetime('now')
+        WHERE id = ?
+        """,
+        (central_company_id, canonical_domain, normalized_name, company_id),
+    )
+    connection.commit()
+    return get_company(connection, company_id)
+
+
+def set_company_central_sync_status(
+    connection: turso.Connection,
+    company_id: int,
+    *,
+    status: str,
+    error: str | None = None,
+) -> Company:
+    if status not in {"pending", "linked", "needs_review", "failed"}:
+        raise ValueError("central sync status must be pending, linked, needs_review, or failed")
+    connection.execute(
+        """
+        UPDATE companies
+        SET
+            central_sync_status = ?,
+            central_sync_error = ?,
+            updated_at = datetime('now')
+        WHERE id = ?
+        """,
+        (status, error, company_id),
+    )
+    connection.commit()
+    return get_company(connection, company_id)
 
 
 def update_company(
@@ -946,9 +1069,12 @@ def add_role(connection: turso.Connection, role: Role) -> Role:
             role_status,
             notes,
             description,
-            posting_id
+            posting_id,
+            central_role_id,
+            central_source,
+            central_synced_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             role.company_id,
@@ -959,6 +1085,11 @@ def add_role(connection: turso.Connection, role: Role) -> Role:
             role.notes,
             role.description,
             role.posting_id,
+            role.central_role_id,
+            role.central_source,
+            role.central_synced_at.isoformat()
+            if role.central_synced_at is not None
+            else None,
         ),
     )
     connection.commit()
@@ -981,7 +1112,10 @@ def get_role(connection: turso.Connection, role_id: int) -> Role:
             updated_at,
             notes,
             description,
-            posting_id
+            posting_id,
+            central_role_id,
+            central_source,
+            central_synced_at
         FROM roles
         WHERE id = ?
         """,
@@ -1012,7 +1146,10 @@ def get_role_by_company_url(
             updated_at,
             notes,
             description,
-            posting_id
+            posting_id,
+            central_role_id,
+            central_source,
+            central_synced_at
         FROM roles
         WHERE company_id = ?
             AND role_url = ?
@@ -1024,6 +1161,86 @@ def get_role_by_company_url(
     return Role.model_validate(dict(row))
 
 
+def get_role_by_central_id(connection: turso.Connection, central_role_id: str) -> Role | None:
+    row = connection.execute(
+        """
+        SELECT
+            id,
+            company_id,
+            title,
+            role_url,
+            location,
+            role_status,
+            first_seen_at,
+            last_seen_at,
+            created_at,
+            updated_at,
+            notes,
+            description,
+            posting_id,
+            central_role_id,
+            central_source,
+            central_synced_at
+        FROM roles
+        WHERE central_role_id = ?
+        """,
+        (central_role_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return Role.model_validate(dict(row))
+
+
+def upsert_central_role(
+    connection: turso.Connection,
+    role: Role,
+) -> tuple[Role, bool]:
+    if role.central_role_id is None:
+        raise ValueError("central role must include central_role_id")
+
+    existing_by_central_id = get_role_by_central_id(connection, role.central_role_id)
+    if existing_by_central_id is not None:
+        updated = update_central_role_fields(
+            connection,
+            existing_by_central_id.id or 0,
+            title=role.title,
+            role_url=role.role_url,
+            location=role.location,
+            description=role.description,
+            posting_id=role.posting_id,
+            central_role_id=role.central_role_id,
+            central_source=role.central_source,
+        )
+        return updated, False
+
+    existing_by_url = get_role_by_company_url(connection, role.company_id, role.role_url)
+    if existing_by_url is not None:
+        updated = update_central_role_fields(
+            connection,
+            existing_by_url.id or 0,
+            title=role.title,
+            role_url=role.role_url,
+            location=role.location,
+            description=role.description,
+            posting_id=role.posting_id,
+            central_role_id=role.central_role_id,
+            central_source=role.central_source,
+        )
+        return updated, False
+
+    created = add_role(connection, role)
+    connection.execute(
+        """
+        UPDATE roles
+        SET central_synced_at = datetime('now')
+        WHERE id = ?
+        """,
+        (created.id,),
+    )
+    connection.commit()
+    return get_role(connection, created.id or 0), True
+
+
 def clear_roles(connection: turso.Connection) -> int:
     row = connection.execute("SELECT COUNT(*) AS count FROM roles").fetchone()
     role_count = int(row["count"]) if row is not None else 0
@@ -1032,6 +1249,48 @@ def clear_roles(connection: turso.Connection) -> int:
     connection.execute("DELETE FROM roles")
     connection.commit()
     return role_count
+
+
+def update_central_role_fields(
+    connection: turso.Connection,
+    role_id: int,
+    *,
+    title: str,
+    role_url: str,
+    location: str | None,
+    description: str | None,
+    posting_id: str | None,
+    central_role_id: str,
+    central_source: str = "central",
+) -> Role:
+    connection.execute(
+        """
+        UPDATE roles
+        SET
+            title = ?,
+            role_url = ?,
+            location = ?,
+            description = ?,
+            posting_id = ?,
+            central_role_id = ?,
+            central_source = ?,
+            central_synced_at = datetime('now'),
+            updated_at = datetime('now')
+        WHERE id = ?
+        """,
+        (
+            title,
+            role_url,
+            location,
+            description,
+            posting_id,
+            central_role_id,
+            central_source,
+            role_id,
+        ),
+    )
+    connection.commit()
+    return get_role(connection, role_id)
 
 
 def update_role(
@@ -1123,7 +1382,10 @@ def list_roles(
             updated_at,
             notes,
             description,
-            posting_id
+            posting_id,
+            central_role_id,
+            central_source,
+            central_synced_at
         FROM roles
         {where}
         ORDER BY updated_at DESC, id DESC
@@ -1197,6 +1459,9 @@ def list_role_items(
             roles.notes,
             roles.description,
             roles.posting_id,
+            roles.central_role_id,
+            roles.central_source,
+            roles.central_synced_at,
             COUNT(review_later_events.id) AS review_later_count
         FROM roles
         JOIN companies ON companies.id = roles.company_id
@@ -1218,7 +1483,10 @@ def list_role_items(
             roles.updated_at,
             roles.notes,
             roles.description,
-            roles.posting_id
+            roles.posting_id,
+            roles.central_role_id,
+            roles.central_source,
+            roles.central_synced_at
         ORDER BY roles.updated_at DESC, roles.id DESC
         """,
         [REVIEW_LATER_EVENT_TYPE, *values],

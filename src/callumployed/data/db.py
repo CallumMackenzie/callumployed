@@ -36,7 +36,9 @@ def run_migrations(connection: turso.Connection) -> None:
     _ensure_resume_feedback_history_table(connection)
     _ensure_company_is_active_column(connection)
     _ensure_company_browser_wait_column(connection)
+    _ensure_company_central_columns(connection)
     _ensure_role_information_columns(connection)
+    _ensure_role_central_columns(connection)
     _ensure_role_discovery_assessment_columns(connection)
     _backfill_legacy_company_career_pages(connection)
     connection.commit()
@@ -176,6 +178,34 @@ def _ensure_company_browser_wait_column(connection: turso.Connection) -> None:
         )
 
 
+def _ensure_company_central_columns(connection: turso.Connection) -> None:
+    company_columns = connection.execute("PRAGMA table_info(companies)").fetchall()
+    existing_columns = {row["name"] for row in company_columns}
+    columns = {
+        "central_company_id": "TEXT",
+        "canonical_domain": "TEXT",
+        "normalized_name": "TEXT",
+        "central_sync_status": "TEXT NOT NULL DEFAULT 'pending'",
+        "central_sync_error": "TEXT",
+        "central_matched_at": "TEXT",
+    }
+    for column_name, definition in columns.items():
+        if column_name not in existing_columns:
+            connection.execute(f"ALTER TABLE companies ADD COLUMN {column_name} {definition}")
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_companies_central_company_id
+            ON companies (central_company_id)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_companies_central_sync_status
+            ON companies (central_sync_status)
+        """
+    )
+
+
 def _ensure_company_is_active_column(connection: turso.Connection) -> None:
     company_columns = connection.execute("PRAGMA table_info(companies)").fetchall()
     existing_columns = {row["name"] for row in company_columns}
@@ -196,6 +226,26 @@ def _ensure_role_information_columns(connection: turso.Connection) -> None:
     for column_name, definition in columns.items():
         if column_name not in existing_columns:
             connection.execute(f"ALTER TABLE roles ADD COLUMN {column_name} {definition}")
+
+
+def _ensure_role_central_columns(connection: turso.Connection) -> None:
+    role_columns = connection.execute("PRAGMA table_info(roles)").fetchall()
+    existing_columns = {row["name"] for row in role_columns}
+    columns = {
+        "central_role_id": "TEXT",
+        "central_source": "TEXT NOT NULL DEFAULT 'local'",
+        "central_synced_at": "TEXT",
+    }
+    for column_name, definition in columns.items():
+        if column_name not in existing_columns:
+            connection.execute(f"ALTER TABLE roles ADD COLUMN {column_name} {definition}")
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_central_role_id
+            ON roles (central_role_id)
+            WHERE central_role_id IS NOT NULL
+        """
+    )
 
 
 def _ensure_role_discovery_assessment_columns(connection: turso.Connection) -> None:

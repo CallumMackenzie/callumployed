@@ -5,6 +5,7 @@ import os
 from io import BytesIO
 from pathlib import Path
 from threading import Event, Thread
+from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from zipfile import ZipFile
@@ -88,6 +89,11 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
             markup = response.read().decode()
 
         assert 'id="toggle-all"' in markup
+        assert (
+            '<link rel="icon" href="/assets/camackenzie-logo.svg" type="image/svg+xml" />'
+            in markup
+        )
+        assert '<link rel="apple-touch-icon" href="/assets/camackenzie-logo.svg" />' in markup
         assert "expand all" in markup
         assert 'id="expand-all"' not in markup
         assert 'id="collapse-all"' not in markup
@@ -121,6 +127,9 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'aria-label="open settings"' in markup
         assert 'id="settings-view"' in markup
         assert 'id="settings-options"' in markup
+        assert 'id="central-api-url-input"' in markup
+        assert 'id="central-passkey-input"' in markup
+        assert 'id="central-sync-button"' in markup
         assert 'id="stats"' in markup
         assert 'class="stats-grid"' in markup
         assert 'id="experience-note-upload"' in markup
@@ -131,8 +140,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="toolbar-summary"' in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=20260731-9" in markup
-        assert "/assets/app.js?v=20260731-9" in markup
+        assert "/assets/app.css?v=20260731-10" in markup
+        assert "/assets/app.js?v=20260731-10" in markup
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -1263,11 +1272,20 @@ def test_config_payload_returns_current_settings(
 ) -> None:
     database = tmp_path / "web-config.sqlite3"
     monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "get_central_passkey", lambda: None)
 
     defaults = build_config_payload()
 
     assert defaults["values"] == {}
     assert defaults["recommendation_history_count"] == 0
+    assert defaults["central"] == {
+        "api_url": None,
+        "passkey_configured": False,
+        "companies_linked": 0,
+        "companies_unlinked": 0,
+        "companies_needs_review": 0,
+        "companies_failed": 0,
+    }
     assert defaults["settings"] == [
         {
             "key": "include_graduate_degree_roles",
@@ -1333,6 +1351,7 @@ def test_config_endpoint_updates_settings(
 ) -> None:
     database = tmp_path / "web-config-endpoint.sqlite3"
     monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "get_central_passkey", lambda: None)
     server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -1375,6 +1394,76 @@ def test_config_endpoint_updates_settings(
             "internship_mode": False,
             "location_filter": "north_america",
         }
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_central_settings_and_company_sync_endpoints(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "web-central-settings.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    saved_passkey: dict[str, str | None] = {"value": None}
+    monkeypatch.setattr(web_server, "get_central_passkey", lambda: saved_passkey["value"])
+    monkeypatch.setattr(
+        web_server,
+        "set_central_passkey",
+        lambda passkey: saved_passkey.update({"value": passkey}),
+    )
+    monkeypatch.setattr(
+        web_server,
+        "resolve_unlinked_companies",
+        lambda connection, client: SimpleNamespace(
+            linked=1,
+            created=0,
+            needs_review=0,
+            failed=0,
+        ),
+    )
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        base_url = f"http://127.0.0.1:{port}"
+
+        config_request = Request(
+            f"{base_url}/api/config",
+            data=json.dumps(
+                {
+                    "central_api_url": "https://central.example",
+                    "central_passkey": "secret-passkey",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(config_request, timeout=5) as response:
+            config = json.loads(response.read().decode())
+
+        sync_request = Request(
+            f"{base_url}/api/central/resolve-companies",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(sync_request, timeout=5) as response:
+            sync_payload = json.loads(response.read().decode())
+
+        assert config["central"]["api_url"] == "https://central.example"
+        assert config["central"]["passkey_configured"] is True
+        assert saved_passkey["value"] == "secret-passkey"
+        assert sync_payload["result"] == {
+            "linked": 1,
+            "created": 0,
+            "needs_review": 0,
+            "failed": 0,
+        }
+        assert sync_payload["config"]["central"]["api_url"] == "https://central.example"
     finally:
         server.shutdown()
         thread.join(timeout=5)
