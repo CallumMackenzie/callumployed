@@ -6,6 +6,7 @@ from callumployed.central.models import (
     BulkUpsertRole,
     BulkUpsertRolesRequest,
     BulkUpsertRolesResponse,
+    CentralCompaniesResponse,
     CentralRolesResponse,
     ResolveCompanyRequest,
     ResolveCompanyResponse,
@@ -37,6 +38,9 @@ class CentralStoreClient:
 
     def list_roles(self) -> CentralRolesResponse:
         return CentralRolesResponse.model_validate(self._request("GET", "/v1/roles"))
+
+    def list_companies(self) -> CentralCompaniesResponse:
+        return CentralCompaniesResponse.model_validate(self._request("GET", "/v1/companies"))
 
     def bulk_upsert_roles(
         self,

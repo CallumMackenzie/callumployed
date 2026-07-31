@@ -4,7 +4,7 @@ import {getFirestore} from "firebase-admin/firestore";
 import {onRequest} from "firebase-functions/v2/https";
 
 import {centralPasskeySha256, hasValidPasskey, requirePasskey} from "./auth";
-import {resolveCompany} from "./companies";
+import {listCompanies, resolveCompany} from "./companies";
 import {bulkUpsertRoles, listRoles} from "./roles";
 
 initializeApp();
@@ -18,6 +18,10 @@ app.post("/v1/companies/resolve", async (req, res) => {
   } catch (error) {
     res.status(400).json({error: error instanceof Error ? error.message : "invalid request"});
   }
+});
+
+app.get("/v1/companies", requirePasskey, async (_req, res) => {
+  res.json({companies: await listCompanies(getFirestore())});
 });
 
 app.get("/v1/roles", requirePasskey, async (_req, res) => {

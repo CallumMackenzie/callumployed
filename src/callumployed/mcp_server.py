@@ -17,7 +17,7 @@ from callumployed.central.config import (
     set_central_passkey,
 )
 from callumployed.central.models import ResolveCompanyRequest
-from callumployed.central.sync import pull_roles, resolve_unlinked_companies
+from callumployed.central.sync import pull_companies, pull_roles, resolve_unlinked_companies
 from callumployed.data import db
 from callumployed.data import repositories as repo
 from callumployed.data.models import Company, CompanyCareerPage, Role, RoleStatus
@@ -477,9 +477,11 @@ def _central_pull_roles_payload() -> dict[str, Any]:
     with db.connect() as connection:
         client = _central_client_from_config(connection, require_passkey=True)
         resolve_result = resolve_unlinked_companies(connection, client)
+        company_pull_result = pull_companies(connection, client)
         pull_result = pull_roles(connection, client)
         payload = {
             "resolved_companies": _to_json(resolve_result),
+            "pulled_companies": _to_json(company_pull_result),
             "pulled_roles": _to_json(pull_result),
             "central": _central_status_payload(connection),
         }

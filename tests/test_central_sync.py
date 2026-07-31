@@ -7,18 +7,21 @@ from callumployed.central.config import (
     set_central_api_url,
 )
 from callumployed.central.models import (
+    CentralCompaniesResponse,
+    CentralCompany,
     CentralRole,
     CentralRolesResponse,
     ResolveCompanyRequest,
     ResolveCompanyResponse,
 )
-from callumployed.central.sync import pull_roles, resolve_unlinked_companies
+from callumployed.central.sync import pull_companies, pull_roles, resolve_unlinked_companies
 from callumployed.data import db
 from callumployed.data.models import Company, CompanyCareerPage, RoleStatus
 from callumployed.data.repositories import (
     add_company,
     add_company_career_page,
     get_company,
+    list_companies,
     list_roles,
 )
 
@@ -54,6 +57,26 @@ class FakeCentralClient:
                     tier_classification="tier 1",
                     status="open",
                 )
+            ]
+        )
+
+    def list_companies(self) -> CentralCompaniesResponse:
+        return CentralCompaniesResponse(
+            companies=[
+                CentralCompany(
+                    global_company_id="co_acme",
+                    display_name="Acme",
+                    normalized_names=["acme"],
+                    domains=["example.com"],
+                    default_tier="1",
+                ),
+                CentralCompany(
+                    global_company_id="co_beta",
+                    display_name="Beta",
+                    normalized_names=["beta"],
+                    domains=["beta.example"],
+                    default_tier="2",
+                ),
             ]
         )
 
@@ -107,6 +130,31 @@ def test_pull_roles_imports_central_roles_without_overwriting_local_status() -> 
     assert company.id is not None
     assert second_result.roles_updated == 1
     assert updated_role.role_status is RoleStatus.APPLIED
+
+
+def test_pull_companies_imports_remote_companies_and_links_existing() -> None:
+    connection = db.connect(":memory:")
+    db.run_migrations(connection)
+    company = add_company(connection, Company(name="Acme"))
+    assert company.id is not None
+    client = FakeCentralClient()
+
+    first_result = pull_companies(connection, client)  # type: ignore[arg-type]
+    companies = {company.name: company for company in list_companies(connection)}
+
+    assert first_result.companies_created == 1
+    assert first_result.companies_linked == 1
+    assert first_result.companies_existing == 0
+    assert companies["Acme"].central_company_id == "co_acme"
+    assert companies["Acme"].central_sync_status == "linked"
+    assert companies["Beta"].central_company_id == "co_beta"
+    assert companies["Beta"].prestige_tier == "2"
+
+    second_result = pull_companies(connection, client)  # type: ignore[arg-type]
+
+    assert second_result.companies_created == 0
+    assert second_result.companies_linked == 0
+    assert second_result.companies_existing == 2
 
 
 def test_central_client_resolves_company_without_passkey() -> None:

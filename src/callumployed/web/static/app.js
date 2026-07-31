@@ -760,9 +760,13 @@ async function syncCentralCompanies() {
     if (!response.ok) throw new Error("Central company sync failed");
     const payload = await response.json();
     const result = payload.result ?? {};
+    const pulled = payload.pulled_companies;
+    const pullSummary = pulled
+      ? ` remote: ${Number(pulled.created ?? 0)} created, ${Number(pulled.linked ?? 0)} linked, ${Number(pulled.existing ?? 0)} existing.`
+      : "";
     renderSettings(
       payload.config,
-      `company sync: ${Number(result.linked ?? 0)} matched, ${Number(result.created ?? 0)} created, ${Number(result.needs_review ?? 0)} review, ${Number(result.failed ?? 0)} failed.`,
+      `company sync: ${Number(result.linked ?? 0)} matched, ${Number(result.created ?? 0)} created, ${Number(result.needs_review ?? 0)} review, ${Number(result.failed ?? 0)} failed.${pullSummary}`,
     );
     if (payload.companies) {
       companiesData = payload.companies;

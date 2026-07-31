@@ -5,7 +5,7 @@ import pytest
 
 from callumployed import mcp_server
 from callumployed.central.config import DEFAULT_CENTRAL_API_URL
-from callumployed.central.models import ResolveCompanyResponse
+from callumployed.central.models import CentralCompaniesResponse, ResolveCompanyResponse
 
 
 @pytest.fixture(autouse=True)
@@ -199,6 +199,9 @@ def test_mcp_central_tools_configure_resolve_and_pull(
         def list_roles(self) -> object:
             return type("RolesResponse", (), {"roles": []})()
 
+        def list_companies(self) -> CentralCompaniesResponse:
+            return CentralCompaniesResponse(companies=[])
+
     monkeypatch.setattr(mcp_server, "CentralStoreClient", FakeCentralClient)
     mcp_server.add_company("Acme", "https://example.com/careers")
 
@@ -221,6 +224,11 @@ def test_mcp_central_tools_configure_resolve_and_pull(
     assert resolved["central"]["companies_linked"] == 1
 
     pulled = mcp_server.central_pull_roles()
+    assert pulled["pulled_companies"] == {
+        "companies_created": 0,
+        "companies_linked": 0,
+        "companies_existing": 0,
+    }
     assert pulled["pulled_roles"] == {
         "companies_created": 0,
         "roles_created": 0,

@@ -38,7 +38,7 @@ from callumployed.central.config import (
     set_central_passkey,
 )
 from callumployed.central.models import ResolveCompanyRequest
-from callumployed.central.sync import resolve_unlinked_companies
+from callumployed.central.sync import pull_companies, resolve_unlinked_companies
 from callumployed.data import db
 from callumployed.data.models import (
     Company,
@@ -618,7 +618,10 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             if payload is None:
                 return
             try:
-                company_id = int(payload.get("company_id"))
+                raw_company_id = payload.get("company_id")
+                if raw_company_id is None:
+                    raise TypeError
+                company_id = int(raw_company_id)
             except (TypeError, ValueError):
                 self.send_error(HTTPStatus.BAD_REQUEST, "Company is required")
                 return
@@ -1384,6 +1387,11 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 with db.connect() as connection:
                     client = _central_client_from_web_config(connection)
                     result = resolve_unlinked_companies(connection, client)
+                    pulled_companies = (
+                        pull_companies(connection, client)
+                        if get_central_passkey() is not None
+                        else None
+                    )
             except ValueError as error:
                 self.send_error(HTTPStatus.BAD_REQUEST, str(error))
                 return
@@ -1398,6 +1406,15 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                         "needs_review": result.needs_review,
                         "failed": result.failed,
                     },
+                    "pulled_companies": (
+                        {
+                            "created": pulled_companies.companies_created,
+                            "linked": pulled_companies.companies_linked,
+                            "existing": pulled_companies.companies_existing,
+                        }
+                        if pulled_companies is not None
+                        else None
+                    ),
                     "config": build_config_payload(),
                     "companies": build_companies_payload(),
                 }
@@ -1740,11 +1757,12 @@ def build_role_cover_letter(
     def search_cover_letters(query: str, *, limit: int = 3) -> list[dict[str, object]]:
         with db.connect() as connection:
             db.run_migrations(connection)
-            return list_cover_letter_example_knowledge(
+            matches = list_cover_letter_example_knowledge(
                 connection,
                 query=query,
                 limit=limit,
             )
+        return matches
 
     try:
         with db.connect() as connection:
@@ -1895,7 +1913,7 @@ def _escape_unescaped_latex_ampersands(latex: str) -> str:
 
 
 def _remove_cover_letter_website_header_lines(latex: str) -> str:
-    lines = []
+    lines: list[str] = []
     for line in latex.splitlines():
         normalized = line.lower()
         has_personal_site = "camackenzie.com" in normalized

@@ -26,7 +26,16 @@ class ResolveCompanyResponse(CentralModel):
 class CentralCompany(CentralModel):
     global_company_id: str
     display_name: str
+    normalized_names: list[str] = Field(default_factory=list)
+    compact_names: list[str] = Field(default_factory=list)
+    domains: list[str] = Field(default_factory=list)
+    ats_slugs: list[str] = Field(default_factory=list)
+    aliases: list[str] = Field(default_factory=list)
     default_tier: str | None = None
+
+
+class CentralCompaniesResponse(CentralModel):
+    companies: list[CentralCompany] = Field(default_factory=list)
 
 
 class CentralRole(CentralModel):

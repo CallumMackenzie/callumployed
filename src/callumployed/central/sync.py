@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import turso
 
 from callumployed.central.client import CentralStoreClient, CentralStoreError
-from callumployed.central.models import CentralRole, ResolveCompanyRequest
+from callumployed.central.models import CentralCompany, CentralRole, ResolveCompanyRequest
 from callumployed.data.models import Company, CompanyCareerPage, Role
 from callumployed.data.repositories import (
     add_company,
@@ -31,6 +31,13 @@ class PullRolesResult:
     roles_created: int = 0
     roles_updated: int = 0
     skipped_roles: int = 0
+
+
+@dataclass(frozen=True)
+class PullCompaniesResult:
+    companies_created: int = 0
+    companies_linked: int = 0
+    companies_existing: int = 0
 
 
 def resolve_unlinked_companies(
@@ -89,6 +96,65 @@ def resolve_unlinked_companies(
             needs_review=result.needs_review,
             failed=result.failed,
         )
+    return result
+
+
+def pull_companies(
+    connection: turso.Connection,
+    client: CentralStoreClient,
+) -> PullCompaniesResult:
+    central_companies = client.list_companies().companies
+    local_companies = list_companies(connection, include_inactive=True)
+    local_by_central_id = {
+        company.central_company_id: company
+        for company in local_companies
+        if company.central_company_id is not None
+    }
+    local_by_name = {
+        _normalize_local_name(company.name): company
+        for company in local_companies
+    }
+    result = PullCompaniesResult()
+
+    for central_company in central_companies:
+        if central_company.global_company_id in local_by_central_id:
+            result = PullCompaniesResult(
+                companies_created=result.companies_created,
+                companies_linked=result.companies_linked,
+                companies_existing=result.companies_existing + 1,
+            )
+            continue
+
+        local_company = local_by_name.get(_normalize_local_name(central_company.display_name))
+        if local_company is not None and local_company.id is not None:
+            set_company_central_link(
+                connection,
+                local_company.id,
+                central_company_id=central_company.global_company_id,
+                canonical_domain=central_company.domains[0] if central_company.domains else None,
+                normalized_name=(
+                    central_company.normalized_names[0]
+                    if central_company.normalized_names
+                    else None
+                ),
+            )
+            local_by_central_id[central_company.global_company_id] = local_company
+            result = PullCompaniesResult(
+                companies_created=result.companies_created,
+                companies_linked=result.companies_linked + 1,
+                companies_existing=result.companies_existing,
+            )
+            continue
+
+        created = _create_company_from_central_company(connection, central_company)
+        local_by_central_id[central_company.global_company_id] = created
+        local_by_name[_normalize_local_name(created.name)] = created
+        result = PullCompaniesResult(
+            companies_created=result.companies_created + 1,
+            companies_linked=result.companies_linked,
+            companies_existing=result.companies_existing,
+        )
+
     return result
 
 
@@ -164,3 +230,27 @@ def _create_company_from_central_role(
         )
     return company
 
+
+def _create_company_from_central_company(
+    connection: turso.Connection,
+    central_company: CentralCompany,
+) -> Company:
+    return add_company(
+        connection,
+        Company(
+            name=central_company.display_name,
+            prestige_tier=central_company.default_tier,
+            central_company_id=central_company.global_company_id,
+            canonical_domain=central_company.domains[0] if central_company.domains else None,
+            normalized_name=(
+                central_company.normalized_names[0]
+                if central_company.normalized_names
+                else None
+            ),
+            central_sync_status="linked",
+        ),
+    )
+
+
+def _normalize_local_name(value: str) -> str:
+    return "".join(character for character in value.lower() if character.isalnum())

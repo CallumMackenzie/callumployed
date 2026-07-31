@@ -13,7 +13,7 @@ from callumployed.central.config import (
     set_central_passkey,
 )
 from callumployed.central.models import ResolveCompanyRequest
-from callumployed.central.sync import pull_roles, resolve_unlinked_companies
+from callumployed.central.sync import pull_companies, pull_roles, resolve_unlinked_companies
 from callumployed.config import BrowserSettings
 from callumployed.data import db
 from callumployed.data.models import (
@@ -377,12 +377,19 @@ def central_pull_roles_command() -> None:
     with db.connect() as connection:
         client = _central_client_from_config(connection, require_passkey=True)
         resolve_result = resolve_unlinked_companies(connection, client)
+        company_pull_result = pull_companies(connection, client)
         pull_result = pull_roles(connection, client)
 
     typer.echo(
         "Resolved companies before pull: "
         f"{resolve_result.linked} matched, {resolve_result.created} created, "
         f"{resolve_result.needs_review} need review, {resolve_result.failed} failed"
+    )
+    typer.echo(
+        "Pulled companies: "
+        f"{company_pull_result.companies_created} created, "
+        f"{company_pull_result.companies_linked} linked, "
+        f"{company_pull_result.companies_existing} already linked"
     )
     typer.echo(
         "Pulled roles: "

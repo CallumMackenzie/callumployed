@@ -21,6 +21,17 @@ export interface PublicResolveCompanyResponse {
   global_company_id: string | null;
 }
 
+export interface CentralCompany {
+  global_company_id: string;
+  display_name: string;
+  normalized_names: string[];
+  compact_names: string[];
+  domains: string[];
+  ats_slugs: string[];
+  aliases: string[];
+  default_tier: string | null;
+}
+
 export interface CentralRole {
   global_role_id: string;
   global_company_id: string;

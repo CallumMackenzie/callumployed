@@ -142,8 +142,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="toolbar-summary"' in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=20260731-11" in markup
-        assert "/assets/app.js?v=20260731-11" in markup
+        assert "/assets/app.css?v=20260731-12" in markup
+        assert "/assets/app.js?v=20260731-12" in markup
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -1425,6 +1425,15 @@ def test_central_settings_and_company_sync_endpoints(
             failed=0,
         ),
     )
+    monkeypatch.setattr(
+        web_server,
+        "pull_companies",
+        lambda connection, client: SimpleNamespace(
+            companies_created=2,
+            companies_linked=1,
+            companies_existing=3,
+        ),
+    )
 
     server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -1464,6 +1473,11 @@ def test_central_settings_and_company_sync_endpoints(
             "created": 0,
             "needs_review": 0,
             "failed": 0,
+        }
+        assert sync_payload["pulled_companies"] == {
+            "created": 2,
+            "linked": 1,
+            "existing": 3,
         }
         assert sync_payload["config"]["central"]["api_url"] == "https://central.example"
     finally:

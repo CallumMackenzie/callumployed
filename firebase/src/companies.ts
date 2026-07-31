@@ -1,6 +1,7 @@
 import {FieldValue, type Firestore} from "firebase-admin/firestore";
 
 import type {
+  CentralCompany,
   PublicResolveCompanyResponse,
   ResolveCompanyRequest,
   ResolveCompanyResponse,
@@ -105,6 +106,23 @@ export async function resolveCompany(
   return includeMetadata ? response : redactResolveResponse(response);
 }
 
+export async function listCompanies(db: Firestore): Promise<CentralCompany[]> {
+  const snapshot = await db.collection("companies").orderBy("updated_at", "desc").limit(10000).get();
+  return snapshot.docs.map((doc) => {
+    const data = doc.data();
+    return {
+      global_company_id: doc.id,
+      display_name: stringValue(data.display_name, doc.id),
+      normalized_names: stringArray(data.normalized_names),
+      compact_names: stringArray(data.compact_names),
+      domains: stringArray(data.domains),
+      ats_slugs: stringArray(data.ats_slugs),
+      aliases: stringArray(data.aliases),
+      default_tier: nullableString(data.default_tier),
+    };
+  });
+}
+
 async function candidateCompanyIds(
   db: Firestore,
   normalizedName: string,
@@ -185,6 +203,10 @@ function requiredString(value: unknown, field: string): string {
 
 function stringValue(value: unknown, fallback: string): string {
   return typeof value === "string" && value.trim() ? value : fallback;
+}
+
+function nullableString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
 }
 
 function stringArray(value: unknown): string[] {
