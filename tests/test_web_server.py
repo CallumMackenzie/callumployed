@@ -129,6 +129,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="settings-view"' in markup
         assert 'id="settings-options"' in markup
         assert 'id="central-api-url-input"' in markup
+        assert DEFAULT_CENTRAL_API_URL in markup
         assert 'id="central-passkey-input"' in markup
         assert 'id="central-sync-button"' in markup
         assert 'id="stats"' in markup
@@ -141,8 +142,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="toolbar-summary"' in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=20260731-10" in markup
-        assert "/assets/app.js?v=20260731-10" in markup
+        assert "/assets/app.css?v=20260731-11" in markup
+        assert "/assets/app.js?v=20260731-11" in markup
     finally:
         server.shutdown()
         thread.join(timeout=5)
