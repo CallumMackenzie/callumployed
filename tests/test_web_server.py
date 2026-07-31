@@ -125,8 +125,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="toolbar-summary"' in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=20260731-6" in markup
-        assert "/assets/app.js?v=20260731-6" in markup
+        assert "/assets/app.css?v=20260731-7" in markup
+        assert "/assets/app.js?v=20260731-7" in markup
     finally:
         server.shutdown()
         thread.join(timeout=5)

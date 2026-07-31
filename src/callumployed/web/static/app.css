@@ -2334,13 +2334,50 @@ a:hover .role-link-icon {
 }
 
 .company-panel {
-  border: 1px solid rgb(255 255 255 / 0.72);
+  --company-tier-color: var(--line);
+  --company-tier-soft: rgb(255 255 255 / 0.68);
+  --company-tier-glow: rgb(30 41 59 / 0.06);
+  position: relative;
+  border: 1px solid color-mix(in srgb, var(--company-tier-color) 32%, white);
   border-radius: var(--radius);
   background:
-    linear-gradient(135deg, rgb(255 255 255 / 0.94), rgb(250 246 255 / 0.54)),
+    linear-gradient(135deg, rgb(255 255 255 / 0.94), var(--company-tier-soft)),
     var(--surface-solid);
-  box-shadow: var(--shadow-tight);
+  box-shadow:
+    inset 4px 0 0 var(--company-tier-color),
+    0 12px 28px var(--company-tier-glow),
+    var(--shadow-tight);
   overflow: hidden;
+}
+
+.company-tier-0 {
+  --company-tier-color: #f59e0b;
+  --company-tier-soft: rgb(255 247 212 / 0.88);
+  --company-tier-glow: rgb(245 158 11 / 0.13);
+}
+
+.company-tier-1 {
+  --company-tier-color: #8b5cf6;
+  --company-tier-soft: rgb(245 240 255 / 0.84);
+  --company-tier-glow: rgb(139 92 246 / 0.13);
+}
+
+.company-tier-2 {
+  --company-tier-color: #2563eb;
+  --company-tier-soft: rgb(225 239 255 / 0.8);
+  --company-tier-glow: rgb(37 99 235 / 0.12);
+}
+
+.company-tier-3 {
+  --company-tier-color: #16a34a;
+  --company-tier-soft: rgb(224 255 235 / 0.78);
+  --company-tier-glow: rgb(22 163 74 / 0.11);
+}
+
+.company-tier-4 {
+  --company-tier-color: #64748b;
+  --company-tier-soft: rgb(241 245 249 / 0.82);
+  --company-tier-glow: rgb(100 116 139 / 0.1);
 }
 
 .company-summary {
@@ -2366,7 +2403,7 @@ a:hover .role-link-icon {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: rgb(255 255 255 / 0.74);
-  color: var(--green);
+  color: var(--company-tier-color);
   font-size: 0.72rem;
   font-weight: 950;
   transition: transform 160ms ease;
@@ -2383,7 +2420,7 @@ a:hover .role-link-icon {
 }
 
 .company-name {
-  color: var(--ink);
+  color: color-mix(in srgb, var(--company-tier-color) 26%, var(--ink));
   font-size: 1.02rem;
   font-weight: 950;
   overflow: hidden;
@@ -2421,7 +2458,7 @@ a:hover .role-link-icon {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 9px 10px;
-  background: rgb(255 255 255 / 0.72);
+  background: rgb(255 255 255 / 0.76);
 }
 
 .company-info strong {
@@ -2450,7 +2487,7 @@ a:hover .role-link-icon {
   gap: 8px;
   align-items: center;
   min-width: 0;
-  border: 1px solid var(--line);
+  border: 1px solid color-mix(in srgb, var(--company-tier-color) 24%, var(--line));
   border-radius: var(--radius);
   padding: 9px 10px;
   background: rgb(255 255 255 / 0.76);
@@ -2459,7 +2496,7 @@ a:hover .role-link-icon {
 }
 
 .company-link-label {
-  color: var(--green);
+  color: color-mix(in srgb, var(--company-tier-color) 82%, var(--green));
   font-size: 0.74rem;
   font-weight: 950;
   white-space: nowrap;

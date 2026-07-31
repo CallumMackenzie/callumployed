@@ -705,8 +705,9 @@ function renderCompanies(payload, message = "") {
 function renderCompanyAccordion(company) {
   const careerPages = Array.isArray(company.career_pages) ? company.career_pages : [];
   const updated = formatCompactDate(company.updated_at);
+  const tierClass = renderCompanyTierClass(company.prestige_tier);
   return `
-    <details class="company-panel" data-company-id="${company.id}">
+    <details class="company-panel ${tierClass}" data-company-id="${company.id}">
       <summary class="company-summary">
         <span class="company-chevron">></span>
         <span class="company-summary-main">
@@ -752,6 +753,13 @@ function renderCompanyAccordion(company) {
       </div>
     </details>
   `;
+}
+
+function renderCompanyTierClass(currentTier) {
+  const normalizedTier = String(currentTier ?? "");
+  return ["0", "1", "2", "3", "4"].includes(normalizedTier)
+    ? `company-tier-${normalizedTier}`
+    : "company-tier-unset";
 }
 
 function renderCompanyTierOptions(currentTier) {
@@ -904,6 +912,7 @@ async function saveCompanyEdits(companyId) {
     company.notes = payload.notes;
     company.prestige_tier = payload.prestige_tier;
   }
+  applyCompanyTierClass(panel, payload.prestige_tier);
   setCompanySaveStatus("saving company...");
   const response = await fetch(`/api/companies/${encodeURIComponent(companyId)}`, {
     method: "POST",
@@ -914,6 +923,18 @@ async function saveCompanyEdits(companyId) {
   companiesData = await response.json();
   setCompanySaveStatus("company saved.");
   renderToolbarCompanyMeta(companyId);
+}
+
+function applyCompanyTierClass(panel, tier) {
+  panel.classList.remove(
+    "company-tier-unset",
+    "company-tier-0",
+    "company-tier-1",
+    "company-tier-2",
+    "company-tier-3",
+    "company-tier-4",
+  );
+  panel.classList.add(renderCompanyTierClass(tier));
 }
 
 function renderToolbarCompanyMeta(companyId) {
@@ -2452,6 +2473,8 @@ companiesList.addEventListener("input", (event) => {
 companiesList.addEventListener("change", (event) => {
   const tierControl = event.target.closest("[data-company-tier]");
   if (!tierControl) return;
+  const panel = tierControl.closest(".company-panel");
+  if (panel) applyCompanyTierClass(panel, tierControl.value);
   window.clearTimeout(companySaveTimers.get(tierControl.dataset.companyTier));
   saveCompanyEdits(tierControl.dataset.companyTier).catch(() => {
     setCompanySaveStatus("could not save company.");
