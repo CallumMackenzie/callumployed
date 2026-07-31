@@ -150,12 +150,8 @@ company and role IDs remain authoritative for each instance; central IDs are sto
 linking metadata so imported roles do not overwrite local status, notes, or application
 history.
 
-Configure a deployed central API:
-
-```bash
-callumployed central configure \
-  --api-url https://us-central1-<project-id>.cloudfunctions.net/centralApi
-```
+The default central API is the deployed Callumployed store:
+`https://us-central1-callumployed-central.cloudfunctions.net/centralApi`.
 
 Without a passkey, company resolution still works and stores only the returned central
 company ID:
@@ -167,9 +163,7 @@ callumployed central resolve-companies
 Configure a passkey when you want to pull the private central role feed:
 
 ```bash
-callumployed central configure \
-  --api-url https://us-central1-<project-id>.cloudfunctions.net/centralApi \
-  --prompt-passkey
+callumployed central configure --prompt-passkey
 ```
 
 ```bash
@@ -178,7 +172,8 @@ callumployed central sync
 
 The TypeScript Firebase Functions app lives in `firebase/`. It owns Firestore access,
 passkey auth, company matching, and the shared role feed. Python talks to it only over
-the HTTP API.
+the HTTP API. Set `CALLUMPLOYED_CENTRAL_API_URL` or run
+`callumployed central configure --api-url ...` only when overriding the default store.
 
 ### Optional LLM classifier
 

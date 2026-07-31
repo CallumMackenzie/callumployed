@@ -8,6 +8,7 @@ from callumployed.data.repositories import get_config_value, set_config_value
 CENTRAL_API_URL_CONFIG_KEY = "central_api_url"
 CENTRAL_PASSKEY_ENV = "CALLUMPLOYED_CENTRAL_PASSKEY"
 CENTRAL_API_URL_ENV = "CALLUMPLOYED_CENTRAL_API_URL"
+DEFAULT_CENTRAL_API_URL = "https://us-central1-callumployed-central.cloudfunctions.net/centralApi"
 CENTRAL_KEYRING_SERVICE = "callumployed-central"
 CENTRAL_KEYRING_USERNAME = "passkey"
 
@@ -16,9 +17,7 @@ def get_central_api_url(connection: turso.Connection) -> str | None:
     value = os.environ.get(CENTRAL_API_URL_ENV) or get_config_value(
         connection,
         CENTRAL_API_URL_CONFIG_KEY,
-    )
-    if value is None:
-        return None
+    ) or DEFAULT_CENTRAL_API_URL
     stripped = value.strip().rstrip("/")
     return stripped or None
 
@@ -53,4 +52,3 @@ def set_central_passkey(passkey: str) -> None:
         CENTRAL_KEYRING_USERNAME,
         cleaned_passkey,
     )
-

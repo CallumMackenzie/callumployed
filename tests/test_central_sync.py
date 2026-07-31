@@ -1,6 +1,11 @@
 import httpx
 
 from callumployed.central.client import CentralStoreClient
+from callumployed.central.config import (
+    DEFAULT_CENTRAL_API_URL,
+    get_central_api_url,
+    set_central_api_url,
+)
 from callumployed.central.models import (
     CentralRole,
     CentralRolesResponse,
@@ -124,6 +129,20 @@ def test_central_client_resolves_company_without_passkey() -> None:
     assert response.action == "matched"
     assert "authorization" not in seen_headers
     assert "x-callumployed-passkey" not in seen_headers
+
+
+def test_central_api_url_defaults_to_deployed_store(monkeypatch) -> None:
+    connection = db.connect(":memory:")
+    db.run_migrations(connection)
+    monkeypatch.delenv("CALLUMPLOYED_CENTRAL_API_URL", raising=False)
+
+    assert get_central_api_url(connection) == DEFAULT_CENTRAL_API_URL
+
+    set_central_api_url(connection, "https://central.example/")
+    assert get_central_api_url(connection) == "https://central.example"
+
+    monkeypatch.setenv("CALLUMPLOYED_CENTRAL_API_URL", "https://env.example/")
+    assert get_central_api_url(connection) == "https://env.example"
 
 
 def test_central_client_uses_custom_passkey_header() -> None:

@@ -38,27 +38,24 @@ Paste only the hash into the secret prompt.
 
 ## Local Python Client
 
-Configure a Callumployed instance after deploy:
+The Python client defaults to the deployed central store:
+`https://us-central1-callumployed-central.cloudfunctions.net/centralApi`.
 
 ```bash
-callumployed central configure \
-  --api-url https://us-central1-<project-id>.cloudfunctions.net/centralApi
-
 callumployed central resolve-companies
 ```
 
 Add the passkey when you want to pull the private role feed:
 
 ```bash
-callumployed central configure \
-  --api-url https://us-central1-<project-id>.cloudfunctions.net/centralApi \
-  --prompt-passkey
+callumployed central configure --prompt-passkey
 
 callumployed central sync
 ```
 
-When configured, the passkey is stored in the OS keyring. `CALLUMPLOYED_CENTRAL_API_URL` and
-`CALLUMPLOYED_CENTRAL_PASSKEY` can override saved config for automation.
+When configured, the passkey is stored in the OS keyring. `CALLUMPLOYED_CENTRAL_API_URL`
+can override the default API URL, and `CALLUMPLOYED_CENTRAL_PASSKEY` can override the
+saved passkey for automation.
 
 ## Deploy
 

@@ -14,6 +14,7 @@ import pytest
 from typer.testing import CliRunner
 
 import callumployed.web.server as web_server
+from callumployed.central.config import DEFAULT_CENTRAL_API_URL
 from callumployed.cli import app
 from callumployed.data import db
 from callumployed.data.models import Company, Role, ScanStatus
@@ -1279,7 +1280,7 @@ def test_config_payload_returns_current_settings(
     assert defaults["values"] == {}
     assert defaults["recommendation_history_count"] == 0
     assert defaults["central"] == {
-        "api_url": None,
+        "api_url": DEFAULT_CENTRAL_API_URL,
         "passkey_configured": False,
         "companies_linked": 0,
         "companies_unlinked": 0,
