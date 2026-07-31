@@ -1,4 +1,5 @@
 import os
+import uuid
 
 import keyring
 import turso
@@ -6,8 +7,10 @@ import turso
 from callumployed.data.repositories import get_config_value, set_config_value
 
 CENTRAL_API_URL_CONFIG_KEY = "central_api_url"
+CENTRAL_CLIENT_ID_CONFIG_KEY = "central_client_id"
 CENTRAL_PASSKEY_ENV = "CALLUMPLOYED_CENTRAL_PASSKEY"
 CENTRAL_API_URL_ENV = "CALLUMPLOYED_CENTRAL_API_URL"
+CENTRAL_CLIENT_ID_ENV = "CALLUMPLOYED_CENTRAL_CLIENT_ID"
 DEFAULT_CENTRAL_API_URL = "https://us-central1-callumployed-central.cloudfunctions.net/centralApi"
 CENTRAL_KEYRING_SERVICE = "callumployed-central"
 CENTRAL_KEYRING_USERNAME = "passkey"
@@ -27,6 +30,18 @@ def set_central_api_url(connection: turso.Connection, api_url: str) -> None:
     if not cleaned_url:
         raise ValueError("central API URL cannot be empty")
     set_config_value(connection, CENTRAL_API_URL_CONFIG_KEY, cleaned_url)
+
+
+def get_central_client_id(connection: turso.Connection) -> str:
+    value = os.environ.get(CENTRAL_CLIENT_ID_ENV) or get_config_value(
+        connection,
+        CENTRAL_CLIENT_ID_CONFIG_KEY,
+    )
+    if value is not None and value.strip():
+        return value.strip()
+    generated = uuid.uuid4().hex
+    set_config_value(connection, CENTRAL_CLIENT_ID_CONFIG_KEY, generated)
+    return generated
 
 
 def get_central_passkey() -> str | None:

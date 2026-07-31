@@ -5,6 +5,8 @@ export interface ResolveCompanyRequest {
   name: string;
   career_page_urls?: string[];
   role_urls?: string[];
+  prestige_tier?: string | null;
+  tier_source_id?: string | null;
 }
 
 export interface ResolveCompanyResponse {
@@ -14,11 +16,14 @@ export interface ResolveCompanyResponse {
   matched_on: string[];
   canonical_domain: string | null;
   normalized_name: string | null;
+  default_tier: string | null;
+  career_page_urls: string[];
   candidates: Array<Record<string, unknown>>;
 }
 
 export interface PublicResolveCompanyResponse {
   global_company_id: string | null;
+  default_tier: string | null;
 }
 
 export interface CentralCompany {
@@ -30,6 +35,7 @@ export interface CentralCompany {
   ats_slugs: string[];
   aliases: string[];
   default_tier: string | null;
+  career_page_urls: string[];
 }
 
 export interface CentralRole {

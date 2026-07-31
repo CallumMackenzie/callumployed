@@ -854,21 +854,23 @@ def set_company_central_link(
     central_company_id: str,
     canonical_domain: str | None = None,
     normalized_name: str | None = None,
+    prestige_tier: str | None = None,
 ) -> Company:
     connection.execute(
         """
         UPDATE companies
         SET
             central_company_id = ?,
-            canonical_domain = ?,
-            normalized_name = ?,
+            canonical_domain = COALESCE(?, canonical_domain),
+            normalized_name = COALESCE(?, normalized_name),
+            prestige_tier = COALESCE(?, prestige_tier),
             central_sync_status = 'linked',
             central_sync_error = NULL,
             central_matched_at = datetime('now'),
             updated_at = datetime('now')
         WHERE id = ?
         """,
-        (central_company_id, canonical_domain, normalized_name, company_id),
+        (central_company_id, canonical_domain, normalized_name, prestige_tier, company_id),
     )
     connection.commit()
     return get_company(connection, company_id)

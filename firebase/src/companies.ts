@@ -30,6 +30,8 @@ export async function resolveCompany(
   const normalizedName = normalizeCompanyName(name);
   const domains = unique(urls.map(canonicalDomain).filter((domain) => domain !== null));
   const atsSlugs = unique(urls.map(atsSlug).filter((slug) => slug !== null));
+  const submittedTier = companyTier(request.prestige_tier);
+  const tierSourceId = sourceId(request.tier_source_id);
   const candidateIds = await candidateCompanyIds(db, normalizedName, domains, atsSlugs);
   const candidates = await loadCandidates(db, candidateIds);
   const scored = candidates
@@ -41,6 +43,17 @@ export async function resolveCompany(
 
   const best = scored[0];
   if (best && best.score.confidence >= AUTO_MATCH_THRESHOLD) {
+    const defaultTier = await recordCompanyTier(
+      db,
+      best.candidate.id,
+      submittedTier,
+      tierSourceId,
+    );
+    const returnedCareerPageUrls = await mergeCompanyCareerPageUrls(
+      db,
+      best.candidate.id,
+      careerPageUrls,
+    );
     const response: ResolveCompanyResponse = {
       action: "matched",
       global_company_id: best.candidate.id,
@@ -48,6 +61,8 @@ export async function resolveCompany(
       matched_on: best.score.matched_on,
       canonical_domain: domains[0] ?? null,
       normalized_name: normalizedName,
+      default_tier: defaultTier,
+      career_page_urls: returnedCareerPageUrls,
       candidates: scored.slice(0, 5).map(toCandidateResponse),
     };
     return includeMetadata ? response : redactResolveResponse(response);
@@ -60,6 +75,8 @@ export async function resolveCompany(
       matched_on: best.score.matched_on,
       canonical_domain: domains[0] ?? null,
       normalized_name: normalizedName,
+      default_tier: null,
+      career_page_urls: [],
       candidates: scored.slice(0, 5).map(toCandidateResponse),
     };
   }
@@ -74,6 +91,7 @@ export async function resolveCompany(
         normalized_names: [normalizedName],
         compact_names: [compactName(name)],
         domains,
+        career_page_urls: careerPageUrls,
         ats_slugs: atsSlugs,
         aliases: [],
         default_tier: null,
@@ -93,6 +111,12 @@ export async function resolveCompany(
       {merge: true},
     );
   });
+  const defaultTier = await recordCompanyTier(db, globalCompanyId, submittedTier, tierSourceId);
+  const returnedCareerPageUrls = await mergeCompanyCareerPageUrls(
+    db,
+    globalCompanyId,
+    careerPageUrls,
+  );
 
   const response: ResolveCompanyResponse = {
     action: "created",
@@ -101,6 +125,8 @@ export async function resolveCompany(
     matched_on: [],
     canonical_domain: domains[0] ?? null,
     normalized_name: normalizedName,
+    default_tier: defaultTier,
+    career_page_urls: returnedCareerPageUrls,
     candidates: [],
   };
   return includeMetadata ? response : redactResolveResponse(response);
@@ -119,6 +145,7 @@ export async function listCompanies(db: Firestore): Promise<CentralCompany[]> {
       ats_slugs: stringArray(data.ats_slugs),
       aliases: stringArray(data.aliases),
       default_tier: nullableString(data.default_tier),
+      career_page_urls: stringArray(data.career_page_urls),
     };
   });
 }
@@ -191,7 +218,10 @@ function toCandidateResponse(scored: {
 function redactResolveResponse(
   response: ResolveCompanyResponse,
 ): PublicResolveCompanyResponse {
-  return {global_company_id: response.global_company_id};
+  return {
+    global_company_id: response.global_company_id,
+    default_tier: response.default_tier,
+  };
 }
 
 function requiredString(value: unknown, field: string): string {
@@ -209,6 +239,22 @@ function nullableString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
+function companyTier(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const cleaned = value.trim();
+  return /^[0-4]$/.test(cleaned) ? cleaned : null;
+}
+
+function sourceId(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const cleaned = value.trim().replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80);
+  return cleaned || null;
+}
+
 function stringArray(value: unknown): string[] {
   if (!Array.isArray(value)) {
     return [];
@@ -218,4 +264,82 @@ function stringArray(value: unknown): string[] {
 
 function unique(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+async function recordCompanyTier(
+  db: Firestore,
+  globalCompanyId: string,
+  tier: string | null,
+  tierSourceId: string | null,
+): Promise<string | null> {
+  if (tier === null || tierSourceId === null) {
+    const company = await db.collection("companies").doc(globalCompanyId).get();
+    return nullableString(company.get("default_tier"));
+  }
+
+  const companyRef = db.collection("companies").doc(globalCompanyId);
+  const voteRef = companyRef.collection("tierVotes").doc(tierSourceId);
+  return db.runTransaction(async (transaction) => {
+    const votes = await transaction.get(companyRef.collection("tierVotes"));
+    const tierBySource = new Map<string, string>();
+    for (const doc of votes.docs) {
+      const savedTier = companyTier(doc.get("tier"));
+      if (savedTier !== null) {
+        tierBySource.set(doc.id, savedTier);
+      }
+    }
+    tierBySource.set(tierSourceId, tier);
+    const tiers = [...tierBySource.values()]
+      .map((value) => Number(value))
+      .sort((left, right) => left - right);
+    const defaultTier = medianTier(tiers);
+    transaction.set(
+      voteRef,
+      {
+        tier,
+        updated_at: new Date().toISOString(),
+      },
+      {merge: true},
+    );
+    transaction.set(
+      companyRef,
+      {
+        default_tier: defaultTier,
+        updated_at: new Date().toISOString(),
+      },
+      {merge: true},
+    );
+    return defaultTier;
+  });
+}
+
+function medianTier(tiers: number[]): string | null {
+  if (tiers.length === 0) {
+    return null;
+  }
+  const middle = Math.floor(tiers.length / 2);
+  if (tiers.length % 2 === 1) {
+    return String(tiers[middle]);
+  }
+  return String(Math.round((tiers[middle - 1] + tiers[middle]) / 2));
+}
+
+async function mergeCompanyCareerPageUrls(
+  db: Firestore,
+  globalCompanyId: string,
+  careerPageUrls: string[],
+): Promise<string[]> {
+  const companyRef = db.collection("companies").doc(globalCompanyId);
+  const uniqueUrls = unique(careerPageUrls);
+  if (uniqueUrls.length > 0) {
+    await companyRef.set(
+      {
+        career_page_urls: FieldValue.arrayUnion(...uniqueUrls),
+        updated_at: new Date().toISOString(),
+      },
+      {merge: true},
+    );
+  }
+  const company = await companyRef.get();
+  return stringArray(company.get("career_page_urls"));
 }

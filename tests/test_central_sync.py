@@ -22,6 +22,7 @@ from callumployed.data.repositories import (
     add_company_career_page,
     get_company,
     list_companies,
+    list_company_career_pages,
     list_roles,
 )
 
@@ -69,6 +70,7 @@ class FakeCentralClient:
                     normalized_names=["acme"],
                     domains=["example.com"],
                     default_tier="1",
+                    career_page_urls=["https://example.com/careers"],
                 ),
                 CentralCompany(
                     global_company_id="co_beta",
@@ -76,6 +78,7 @@ class FakeCentralClient:
                     normalized_names=["beta"],
                     domains=["beta.example"],
                     default_tier="2",
+                    career_page_urls=["https://beta.example/careers"],
                 ),
             ]
         )
@@ -149,6 +152,15 @@ def test_pull_companies_imports_remote_companies_and_links_existing() -> None:
     assert companies["Acme"].central_sync_status == "linked"
     assert companies["Beta"].central_company_id == "co_beta"
     assert companies["Beta"].prestige_tier == "2"
+    assert company.id is not None
+    assert [
+        career_page.url
+        for career_page in list_company_career_pages(connection, companies["Acme"].id or 0)
+    ] == ["https://example.com/careers"]
+    assert [
+        career_page.url
+        for career_page in list_company_career_pages(connection, companies["Beta"].id or 0)
+    ] == ["https://beta.example/careers"]
 
     second_result = pull_companies(connection, client)  # type: ignore[arg-type]
 

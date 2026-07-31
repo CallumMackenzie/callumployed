@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import turso
 
 from callumployed.central.client import CentralStoreClient, CentralStoreError
+from callumployed.central.config import get_central_client_id
 from callumployed.central.models import CentralCompany, CentralRole, ResolveCompanyRequest
 from callumployed.data.models import Company, CompanyCareerPage, Role
 from callumployed.data.repositories import (
@@ -56,6 +57,8 @@ def resolve_unlinked_companies(
                         career_page.url
                         for career_page in list_company_career_pages(connection, company.id)
                     ],
+                    prestige_tier=company.prestige_tier,
+                    tier_source_id=get_central_client_id(connection),
                 )
             )
         except CentralStoreError as error:
@@ -89,6 +92,7 @@ def resolve_unlinked_companies(
             central_company_id=response.global_company_id,
             canonical_domain=response.canonical_domain,
             normalized_name=response.normalized_name,
+            prestige_tier=response.default_tier,
         )
         result = ResolveCompaniesResult(
             linked=result.linked + int(response.action == "matched"),
@@ -117,7 +121,21 @@ def pull_companies(
     result = PullCompaniesResult()
 
     for central_company in central_companies:
-        if central_company.global_company_id in local_by_central_id:
+        existing_company = local_by_central_id.get(central_company.global_company_id)
+        if existing_company is not None and existing_company.id is not None:
+            set_company_central_link(
+                connection,
+                existing_company.id,
+                central_company_id=central_company.global_company_id,
+                canonical_domain=central_company.domains[0] if central_company.domains else None,
+                normalized_name=(
+                    central_company.normalized_names[0]
+                    if central_company.normalized_names
+                    else None
+                ),
+                prestige_tier=central_company.default_tier,
+            )
+            _sync_central_company_career_pages(connection, existing_company, central_company)
             result = PullCompaniesResult(
                 companies_created=result.companies_created,
                 companies_linked=result.companies_linked,
@@ -137,7 +155,9 @@ def pull_companies(
                     if central_company.normalized_names
                     else None
                 ),
+                prestige_tier=central_company.default_tier,
             )
+            _sync_central_company_career_pages(connection, local_company, central_company)
             local_by_central_id[central_company.global_company_id] = local_company
             result = PullCompaniesResult(
                 companies_created=result.companies_created,
@@ -235,7 +255,7 @@ def _create_company_from_central_company(
     connection: turso.Connection,
     central_company: CentralCompany,
 ) -> Company:
-    return add_company(
+    company = add_company(
         connection,
         Company(
             name=central_company.display_name,
@@ -250,6 +270,29 @@ def _create_company_from_central_company(
             central_sync_status="linked",
         ),
     )
+    _sync_central_company_career_pages(connection, company, central_company)
+    return company
+
+
+def _sync_central_company_career_pages(
+    connection: turso.Connection,
+    company: Company,
+    central_company: CentralCompany,
+) -> None:
+    if company.id is None:
+        return
+    existing_urls = {
+        career_page.url
+        for career_page in list_company_career_pages(connection, company.id)
+    }
+    for url in central_company.career_page_urls:
+        if url in existing_urls:
+            continue
+        add_company_career_page(
+            connection,
+            CompanyCareerPage(company_id=company.id, url=url, label="Central"),
+        )
+        existing_urls.add(url)
 
 
 def _normalize_local_name(value: str) -> str:

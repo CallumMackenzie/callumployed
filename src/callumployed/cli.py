@@ -9,6 +9,7 @@ import typer
 from callumployed.central.client import CentralStoreClient, CentralStoreError
 from callumployed.central.config import (
     get_central_api_url,
+    get_central_client_id,
     get_central_passkey,
     set_central_api_url,
     set_central_passkey,
@@ -1211,6 +1212,8 @@ def _try_resolve_company_with_central_store(
             ResolveCompanyRequest(
                 name=company.name,
                 career_page_urls=career_page_urls,
+                prestige_tier=company.prestige_tier,
+                tier_source_id=get_central_client_id(connection),
             )
         )
     except CentralStoreError as error:
@@ -1236,6 +1239,7 @@ def _try_resolve_company_with_central_store(
         central_company_id=response.global_company_id,
         canonical_domain=response.canonical_domain,
         normalized_name=response.normalized_name,
+        prestige_tier=response.default_tier,
     )
 
 

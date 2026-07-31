@@ -11,6 +11,8 @@ class ResolveCompanyRequest(CentralModel):
     name: str
     career_page_urls: list[str] = Field(default_factory=list)
     role_urls: list[str] = Field(default_factory=list)
+    prestige_tier: str | None = None
+    tier_source_id: str | None = None
 
 
 class ResolveCompanyResponse(CentralModel):
@@ -20,6 +22,8 @@ class ResolveCompanyResponse(CentralModel):
     matched_on: list[str] = Field(default_factory=list)
     canonical_domain: str | None = None
     normalized_name: str | None = None
+    default_tier: str | None = None
+    career_page_urls: list[str] = Field(default_factory=list)
     candidates: list[dict[str, object]] = Field(default_factory=list)
 
 
@@ -32,6 +36,7 @@ class CentralCompany(CentralModel):
     ats_slugs: list[str] = Field(default_factory=list)
     aliases: list[str] = Field(default_factory=list)
     default_tier: str | None = None
+    career_page_urls: list[str] = Field(default_factory=list)
 
 
 class CentralCompaniesResponse(CentralModel):
