@@ -43,6 +43,7 @@ APPLICATION_STATUSES = (
 REVIEW_LATER_EVENT_TYPE = "review_later"
 MASTER_RESUME_ID = 1
 RESUME_FEEDBACK_HISTORY_LIMIT = 50
+RESUME_FEEDBACK_SIMILARITY_THRESHOLD = 0.12
 RESUME_FEEDBACK_RESPONSE_VALUES = {"accepted", "ignored"}
 _VECTOR_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9+#.-]{2,}")
 _VECTOR_STOP_WORDS = {
@@ -75,15 +76,17 @@ def add_company(connection: turso.Connection, company: Company) -> Company:
                 careers_url,
                 notes,
                 prestige_tier,
+                is_active,
                 browser_extra_wait_ms
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 company.name,
                 "",
                 company.notes,
                 company.prestige_tier,
+                int(company.is_active),
                 company.browser_extra_wait_ms,
             ),
         )
@@ -92,13 +95,14 @@ def add_company(connection: turso.Connection, company: Company) -> Company:
 
     cursor = connection.execute(
         """
-        INSERT INTO companies (name, notes, prestige_tier, browser_extra_wait_ms)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO companies (name, notes, prestige_tier, is_active, browser_extra_wait_ms)
+        VALUES (?, ?, ?, ?, ?)
         """,
         (
             company.name,
             company.notes,
             company.prestige_tier,
+            int(company.is_active),
             company.browser_extra_wait_ms,
         ),
     )
@@ -240,9 +244,7 @@ def list_resume_feedback_knowledge(
     role_title = _role_value(role, "title")
     role_description = _role_value(role, "description")
     role_location = _role_value(role, "location")
-    query_vector = _text_vector(
-        " ".join([role_title, role_description, role_location, resume_content])
-    )
+    query_vector = _text_vector(" ".join([role_title, role_description, role_location]))
     rows = connection.execute(
         """
         SELECT
@@ -254,7 +256,6 @@ def list_resume_feedback_knowledge(
             response,
             comment,
             knowledge_text,
-            vector_json,
             created_at
         FROM resume_feedback_history
         ORDER BY created_at DESC, id DESC
@@ -265,7 +266,16 @@ def list_resume_feedback_knowledge(
     matches: list[dict[str, object]] = []
     for row in rows:
         row_dict = dict(row)
-        similarity = _cosine_similarity(query_vector, _load_vector(row_dict["vector_json"]))
+        preference_summary = _resume_feedback_preference_summary(
+            role_title=str(row_dict["role_title"] or ""),
+            feedback_title=str(row_dict["feedback_title"] or ""),
+            feedback_detail=str(row_dict["feedback_detail"] or ""),
+            response=str(row_dict["response"] or ""),
+            comment=row_dict["comment"] if isinstance(row_dict["comment"], str) else None,
+        )
+        similarity = _cosine_similarity(query_vector, _text_vector(preference_summary))
+        if similarity < RESUME_FEEDBACK_SIMILARITY_THRESHOLD:
+            continue
         matches.append(
             {
                 "id": row_dict["id"],
@@ -275,13 +285,14 @@ def list_resume_feedback_knowledge(
                 "feedback_detail": row_dict["feedback_detail"],
                 "response": row_dict["response"],
                 "comment": row_dict["comment"],
-                "knowledge_text": row_dict["knowledge_text"],
+                "knowledge_text": preference_summary,
+                "preference_summary": preference_summary,
                 "created_at": row_dict["created_at"],
                 "similarity": similarity,
             }
         )
     matches.sort(
-        key=lambda item: (float(item["similarity"]), str(item["created_at"])),
+        key=lambda item: (_similarity_value(item), str(item["created_at"])),
         reverse=True,
     )
     return matches[:limit]
@@ -309,10 +320,26 @@ def _resume_feedback_knowledge_text(
     response: str,
     comment: str | None,
 ) -> str:
+    return _resume_feedback_preference_summary(
+        role_title=role.title,
+        feedback_title=feedback_title,
+        feedback_detail=feedback_detail,
+        response=response,
+        comment=comment,
+    )
+
+
+def _resume_feedback_preference_summary(
+    *,
+    role_title: str,
+    feedback_title: str,
+    feedback_detail: str,
+    response: str,
+    comment: str | None,
+) -> str:
     parts = [
         f"user {response} resume feedback",
-        f"role title: {role.title}",
-        f"job description: {role.description or ''}",
+        f"role title: {role_title}",
         f"feedback: {feedback_title}",
         f"detail: {feedback_detail}",
     ]
@@ -326,6 +353,11 @@ def _feedback_text(value: object) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
+
+
+def _similarity_value(item: dict[str, object]) -> float:
+    value = item.get("similarity")
+    return value if isinstance(value, float) else 0.0
 
 
 def _role_value(role: Role | dict[str, object], field: str) -> str:
@@ -560,7 +592,7 @@ def list_cover_letter_example_knowledge(
                 "similarity": similarity,
             }
         )
-    matches.sort(key=lambda item: float(item["similarity"]), reverse=True)
+    matches.sort(key=_similarity_value, reverse=True)
     return matches[:limit]
 
 
@@ -706,6 +738,7 @@ def get_company(connection: turso.Connection, company_id: int) -> Company:
             updated_at,
             notes,
             prestige_tier,
+            is_active,
             browser_extra_wait_ms
         FROM companies
         WHERE id = ?
@@ -717,9 +750,14 @@ def get_company(connection: turso.Connection, company_id: int) -> Company:
     return Company.model_validate(dict(row))
 
 
-def list_companies(connection: turso.Connection) -> list[Company]:
+def list_companies(
+    connection: turso.Connection,
+    *,
+    include_inactive: bool = False,
+) -> list[Company]:
+    where = "" if include_inactive else "WHERE is_active = 1"
     rows = connection.execute(
-        """
+        f"""
         SELECT
             id,
             name,
@@ -727,12 +765,52 @@ def list_companies(connection: turso.Connection) -> list[Company]:
             updated_at,
             notes,
             prestige_tier,
+            is_active,
             browser_extra_wait_ms
         FROM companies
+        {where}
         ORDER BY name
         """
     ).fetchall()
     return [Company.model_validate(dict(row)) for row in rows]
+
+
+def update_company(
+    connection: turso.Connection,
+    company_id: int,
+    *,
+    notes: str | None = None,
+    prestige_tier: str | None = None,
+) -> Company:
+    connection.execute(
+        """
+        UPDATE companies
+        SET
+            notes = ?,
+            prestige_tier = ?,
+            updated_at = datetime('now')
+        WHERE id = ?
+        """,
+        (notes, prestige_tier, company_id),
+    )
+    connection.commit()
+    return get_company(connection, company_id)
+
+
+def deactivate_company(connection: turso.Connection, company_id: int) -> Company:
+    get_company(connection, company_id)
+    connection.execute(
+        """
+        UPDATE companies
+        SET
+            is_active = 0,
+            updated_at = datetime('now')
+        WHERE id = ?
+        """,
+        (company_id,),
+    )
+    connection.commit()
+    return get_company(connection, company_id)
 
 
 def increase_company_browser_wait(
@@ -772,6 +850,22 @@ def add_company_career_page(
     )
     connection.commit()
     return get_company_career_page(connection, _lastrowid(cursor))
+
+
+def delete_company_career_page(
+    connection: turso.Connection,
+    career_page_id: int,
+) -> CompanyCareerPage:
+    career_page = get_company_career_page(connection, career_page_id)
+    connection.execute(
+        """
+        DELETE FROM company_career_pages
+        WHERE id = ?
+        """,
+        (career_page_id,),
+    )
+    connection.commit()
+    return career_page
 
 
 def set_primary_company_career_page_url(
@@ -1133,7 +1227,9 @@ def list_role_items(
 
 
 def get_tracking_stats(connection: turso.Connection) -> dict[str, object]:
-    company_row = connection.execute("SELECT COUNT(*) AS count FROM companies").fetchone()
+    company_row = connection.execute(
+        "SELECT COUNT(*) AS count FROM companies WHERE is_active = 1"
+    ).fetchone()
     company_count = int(company_row["count"]) if company_row is not None else 0
 
     role_rows = connection.execute(

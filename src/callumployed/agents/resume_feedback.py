@@ -48,8 +48,10 @@ SYSTEM_PROMPT = """
 You are evaluating whether a LaTeX resume is ready for a specific job application.
 
 Reply with exactly one verdict:
-- "ready_to_apply" when the resume already fits the job description well enough.
-- "tweak" when the resume should be tailored before applying.
+- "ready_to_apply" when the resume already fits the job description well enough, or
+  when every possible edit would be speculative, generic, unsupported, or marginal.
+- "tweak" only when at least one concrete resume edit is clearly supported by the
+  current resume or by explicitly supplied other-experience notes.
 
 Use the resume context and job context directly. Evaluate:
 - visible overlap with the role's required skills, domains, and seniority
@@ -64,16 +66,20 @@ When the verdict is "tweak", return concise feedback items one by one. Each item
 be a concrete resume-edit operation, not generic application advice. Use one of these
 operation styles:
 - title: "add skills matching the posting: ..." when supported skills/projects are
-  present or implied in the resume but missing the posting's wording
+  present in the resume or explicitly supplied notes but missing the posting's wording
 - title: "change wording to align with posting: ..." when an existing bullet should
   be rewritten to use the posting's language
 - title: "move emphasis earlier: ..." when relevant experience exists but is buried
 - title: "remove or avoid unsupported claim: ..." when a tempting keyword is not
   supported by the resume context
 
-Prefer target_text + replacement_text when an exact resume phrase should be replaced.
-Use latex_addition only when a small standalone LaTeX line or bullet should be
-inserted. Do not invent experience.
+Every add_skills or change_wording item must include either:
+- target_text copied exactly from resume_context.content plus replacement_text, or
+- latex_addition for a small standalone LaTeX line or bullet whose source is named in
+  detail.
+Do not return broad keyword advice such as "mention distributed systems" unless the
+exact supported resume text to edit or the exact supported LaTeX addition is provided.
+Do not invent experience.
 
 For move_emphasis items, first verify the current resume ordering from
 resume_context.content. Only suggest moving a role/project earlier when the exact
@@ -83,23 +89,20 @@ do not suggest moving it earlier; suggest a wording or bullet-content edit
 instead. Never use placeholders such as "[current ordering]" or replacement text
 that only says to move a role.
 
-Use other_experience_context as projects / employment history notes that may or
-may not already be on the resume. You may suggest adding supported experience
-from those notes, but mark it as optional and only if accurate. Do not assume
-those notes are already present in the resume.
-For every role, explicitly compare other_experience_context against the job
-description after checking the resume. If a note contains clearly relevant
-experience, project work, tools, domains, or measurable outcomes that are absent
-or under-emphasized in the resume, include a concrete optional add_skills or
-change_wording feedback item that names the source note and explains what could
-be added or swapped in. If none of the notes are relevant, say so briefly in the
-overview.
+Use other_experience_context only as secondary evidence. These notes may or may not
+already be on the resume. Never assume they are visible in resume_context.content.
+Suggest adding note-derived material only when the note is clearly relevant to the
+job and supports an exact, truthful latex_addition. If the note-derived edit would be
+nice-to-have, speculative, or less important than the current resume fit, keep the
+verdict ready_to_apply and mention the note briefly in the overview at most.
 
 Use the recommendation knowledge base as preference memory:
 - accepted feedback means a similar recommendation was useful before
 - ignored feedback means a similar recommendation was not useful
 - user comments explain why a recommendation was accepted or ignored
 - treat ignored feedback with comments as strong negative examples
+- when accepted and ignored examples conflict, prefer specific user comments such as
+  "not true", "unsupported", "already covered", "redundant", or "too generic"
 - do not repeat a recommendation when the knowledge base says the user ignored
   that kind of edit as too generic, unsupported, irrelevant, or already covered
 - avoid repeating ignored recommendation patterns unless the current job clearly
@@ -146,7 +149,8 @@ def build_resume_feedback_prompt(
                 "role_title": item.get("role_title"),
                 "feedback_title": item.get("feedback_title"),
                 "feedback_detail": item.get("feedback_detail"),
-                "knowledge_text": item.get("knowledge_text"),
+                "preference_summary": item.get("preference_summary")
+                or item.get("knowledge_text"),
                 "similarity": item.get("similarity"),
             }
             for item in knowledge_base or []
@@ -241,10 +245,17 @@ def _normalize_feedback_title(item: ResumeFeedbackItem) -> ResumeFeedbackItem:
 
 
 def _is_actionable_feedback_item(item: ResumeFeedbackItem, resume_content: str) -> bool:
-    if item.label != "move_emphasis":
-        return True
     target_text = (item.target_text or "").strip()
     replacement_text = (item.replacement_text or "").strip()
+    latex_addition = (item.latex_addition or "").strip()
+    if item.label in {"add_skills", "change_wording"}:
+        if target_text:
+            return bool(replacement_text) and _contains_normalized_text(
+                resume_content, target_text
+            )
+        return bool(latex_addition)
+    if item.label != "move_emphasis":
+        return True
     if not target_text:
         return False
     if "[" in target_text or "]" in target_text:

@@ -57,7 +57,7 @@ def test_initial_schema_creates_minimal_tracking_tables() -> None:
     company_columns = {
         row[1] for row in connection.execute("PRAGMA table_info(companies)").fetchall()
     }
-    assert "browser_extra_wait_ms" in company_columns
+    assert {"browser_extra_wait_ms", "is_active"}.issubset(company_columns)
 
 
 def test_initial_schema_rejects_invalid_role_status() -> None:

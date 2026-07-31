@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS companies (
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     notes TEXT,
     prestige_tier TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
     browser_extra_wait_ms INTEGER NOT NULL DEFAULT 0
 );
 

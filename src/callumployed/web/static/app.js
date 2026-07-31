@@ -39,6 +39,7 @@ const prepProgress = document.querySelector("#prep-progress");
 const prepCard = document.querySelector("#prep-card");
 const closePrepButton = document.querySelector("#close-prep");
 const scanAllButton = document.querySelector("#scan-all-button");
+const manageCompaniesButton = document.querySelector("#manage-companies-button");
 const scanStatusBar = document.querySelector("#scan-status-bar");
 const scanStatusText = document.querySelector("#scan-status-text");
 const scanLastTime = document.querySelector("#scan-last-time");
@@ -53,6 +54,11 @@ const settingsForm = document.querySelector("#settings-form");
 const settingsOptions = document.querySelector("#settings-options");
 const recommendationHistorySummary = document.querySelector("#recommendation-history-summary");
 const clearRecommendationHistoryButton = document.querySelector("#clear-recommendation-history");
+const companiesView = document.querySelector("#companies-view");
+const companiesCloseButton = document.querySelector("#companies-close");
+const companiesStatus = document.querySelector("#companies-status");
+const companyCreateForm = document.querySelector("#company-create-form");
+const companiesList = document.querySelector("#companies-list");
 
 const REVIEW_LATER_RECOMMENDATION_THRESHOLD = 3;
 const COVER_LETTER_AUTOSAVE_DELAY_MS = 1200;
@@ -75,6 +81,8 @@ let materialsInitialized = false;
 let scanStatusPoll = null;
 let wasScanning = false;
 let settingsData = null;
+let companiesData = null;
+const companySaveTimers = new Map();
 
 function getActiveSearchQuery() {
   return trackerData?.query?.trim() ?? "";
@@ -147,6 +155,27 @@ function renderLinkIcon() {
     <svg class="role-link-icon" viewBox="0 0 24 24" aria-hidden="true">
       <path d="M7 17 17 7"></path>
       <path d="M8 7h9v9"></path>
+    </svg>
+  `;
+}
+
+function renderPlusIcon() {
+  return `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 5v14"></path>
+      <path d="M5 12h14"></path>
+    </svg>
+  `;
+}
+
+function renderTrashIcon() {
+  return `
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3 6h18"></path>
+      <path d="M8 6V4h8v2"></path>
+      <path d="m19 6-1 14H6L5 6"></path>
+      <path d="M10 11v5"></path>
+      <path d="M14 11v5"></path>
     </svg>
   `;
 }
@@ -658,6 +687,244 @@ async function clearRecommendationHistory() {
   } catch {
     settingsStatus.textContent = "could not clear recommendation history.";
     clearRecommendationHistoryButton.disabled = false;
+  }
+}
+
+function renderCompanies(payload, message = "") {
+  companiesData = payload;
+  const companies = Array.isArray(payload?.companies) ? payload.companies : [];
+  companiesStatus.textContent = message || `${companies.length} ${companies.length === 1 ? "company" : "companies"} stored`;
+  companiesStatus.classList.toggle("is-empty", companies.length === 0 && !message);
+  if (companies.length === 0) {
+    companiesList.innerHTML = '<p class="empty-copy">no companies yet.</p>';
+    return;
+  }
+  companiesList.innerHTML = companies.map((company) => renderCompanyAccordion(company)).join("");
+}
+
+function renderCompanyAccordion(company) {
+  const careerPages = Array.isArray(company.career_pages) ? company.career_pages : [];
+  const updated = formatCompactDate(company.updated_at);
+  return `
+    <details class="company-panel" data-company-id="${company.id}">
+      <summary class="company-summary">
+        <span class="company-chevron">></span>
+        <span class="company-summary-main">
+          <span class="company-name">${escapeUiText(company.name)}</span>
+          <span class="company-summary-meta">${careerPages.length} ${careerPages.length === 1 ? "link" : "links"}${updated ? ` | updated ${escapeUiText(updated)}` : ""}</span>
+        </span>
+      </summary>
+      <div class="company-body">
+        <div class="company-info">
+          <label class="company-notes-field">
+            <span>notes</span>
+            <textarea data-company-notes="${company.id}" rows="3">${escapeHtml(company.notes ?? "")}</textarea>
+          </label>
+          <label>
+            <span>tier</span>
+            <select data-company-tier="${company.id}">
+              ${renderCompanyTierOptions(company.prestige_tier)}
+            </select>
+          </label>
+          <div>
+            <span>browser wait</span>
+            <strong>${Number(company.browser_extra_wait_ms ?? 0)}ms</strong>
+          </div>
+        </div>
+        <div class="company-links">
+          ${careerPages.length > 0 ? careerPages.map((page) => renderCompanyLink(page)).join("") : '<p class="company-empty-links">no career links yet.</p>'}
+        </div>
+        <section class="company-link-panel" aria-label="add career link">
+          <form class="company-link-form" data-company-link-form="${company.id}">
+            <input name="label" type="text" placeholder="label" aria-label="career link label" />
+            <input name="url" type="url" placeholder="https://..." aria-label="career link url" required />
+            <button class="company-link-add" type="submit" aria-label="add career link" title="add career link">
+              ${renderPlusIcon()}
+            </button>
+          </form>
+        </section>
+        <div class="company-danger-row">
+          <button class="company-delete-button" type="button" data-delete-company="${company.id}">
+            ${renderTrashIcon()}
+            <span>deactivate company</span>
+          </button>
+        </div>
+      </div>
+    </details>
+  `;
+}
+
+function renderCompanyTierOptions(currentTier) {
+  const normalizedCurrent = String(currentTier ?? "");
+  return ["", "0", "1", "2", "3", "4"]
+    .map((value) => {
+      const label = value ? `tier ${value}` : "not set";
+      const selected = value === normalizedCurrent ? " selected" : "";
+      return `<option value="${escapeHtml(value)}"${selected}>${escapeUiText(label)}</option>`;
+    })
+    .join("");
+}
+
+function renderCompanyLink(page) {
+  const label = page.label ? escapeUiText(page.label) : "career page";
+  const url = escapeHtml(page.url);
+  return `
+    <div class="company-link-row" data-career-page-id="${page.id}">
+      <a class="company-link-url" href="${url}" target="_blank" rel="noreferrer">
+        <span class="company-link-label">${label}</span>
+        <span class="company-link-text">${escapeHtml(page.url)}</span>
+      </a>
+      <button class="company-link-delete" type="button" data-delete-career-page="${page.id}" aria-label="delete ${label} link" title="delete link">
+        ${renderTrashIcon()}
+      </button>
+    </div>
+  `;
+}
+
+async function openCompaniesView() {
+  companiesView.hidden = false;
+  document.body.classList.add("companies-open");
+  companiesCloseButton.focus();
+  if (companiesData) {
+    renderCompanies(companiesData);
+  } else {
+    companiesStatus.textContent = "loading companies...";
+    companiesStatus.classList.remove("is-empty");
+    companiesList.innerHTML = "";
+  }
+  try {
+    await loadCompanies();
+  } catch {
+    companiesStatus.textContent = "could not load companies.";
+  }
+}
+
+function closeCompaniesView() {
+  companiesView.hidden = true;
+  document.body.classList.remove("companies-open");
+  manageCompaniesButton.focus();
+}
+
+async function loadCompanies(message = "") {
+  const response = await fetch("/api/companies");
+  if (!response.ok) throw new Error("Companies request failed");
+  renderCompanies(await response.json(), message);
+}
+
+async function createCompany(form) {
+  const formData = new FormData(form);
+  const payload = {
+    name: String(formData.get("name") ?? ""),
+    career_url: String(formData.get("career_url") ?? ""),
+    notes: String(formData.get("notes") ?? ""),
+  };
+  companiesStatus.textContent = "adding company...";
+  const response = await fetch("/api/companies", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw new Error("Company create failed");
+  form.reset();
+  renderCompanies(await response.json(), "company added.");
+  loadTracker(getActiveSearchQuery()).catch(() => {});
+}
+
+async function addCompanyCareerPage(form) {
+  const companyId = form.dataset.companyLinkForm;
+  if (!companyId) return;
+  const formData = new FormData(form);
+  const payload = {
+    label: String(formData.get("label") ?? ""),
+    url: String(formData.get("url") ?? ""),
+  };
+  companiesStatus.textContent = "adding link...";
+  const response = await fetch(`/api/companies/${encodeURIComponent(companyId)}/career-pages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw new Error("Career page create failed");
+  form.reset();
+  renderCompanies(await response.json(), "link added.");
+}
+
+async function deleteCompanyCareerPage(careerPageId) {
+  companiesStatus.textContent = "deleting link...";
+  const response = await fetch(`/api/company-career-pages/${encodeURIComponent(careerPageId)}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) throw new Error("Career page delete failed");
+  renderCompanies(await response.json(), "link deleted.");
+}
+
+async function deactivateCompany(companyId) {
+  companiesStatus.textContent = "deactivating company...";
+  const response = await fetch(`/api/companies/${encodeURIComponent(companyId)}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) throw new Error("Company deactivate failed");
+  renderCompanies(await response.json(), "company deactivated.");
+  loadTracker(getActiveSearchQuery()).catch(() => {});
+}
+
+function companyById(companyId) {
+  const companies = Array.isArray(companiesData?.companies) ? companiesData.companies : [];
+  return companies.find((company) => String(company.id) === String(companyId));
+}
+
+function setCompanySaveStatus(message) {
+  companiesStatus.textContent = message;
+  companiesStatus.classList.remove("is-empty");
+}
+
+function scheduleCompanyAutosave(companyId) {
+  window.clearTimeout(companySaveTimers.get(companyId));
+  companySaveTimers.set(
+    companyId,
+    window.setTimeout(() => {
+      saveCompanyEdits(companyId).catch(() => {
+        setCompanySaveStatus("could not save company.");
+      });
+    }, 700),
+  );
+}
+
+async function saveCompanyEdits(companyId) {
+  const panel = companiesList.querySelector(`[data-company-id="${CSS.escape(String(companyId))}"]`);
+  if (!panel) return;
+  const notesControl = panel.querySelector(`[data-company-notes="${CSS.escape(String(companyId))}"]`);
+  const tierControl = panel.querySelector(`[data-company-tier="${CSS.escape(String(companyId))}"]`);
+  const company = companyById(companyId);
+  const payload = {
+    notes: notesControl?.value ?? company?.notes ?? "",
+    prestige_tier: tierControl?.value ?? company?.prestige_tier ?? "",
+  };
+  if (company) {
+    company.notes = payload.notes;
+    company.prestige_tier = payload.prestige_tier;
+  }
+  setCompanySaveStatus("saving company...");
+  const response = await fetch(`/api/companies/${encodeURIComponent(companyId)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw new Error("Company update failed");
+  companiesData = await response.json();
+  setCompanySaveStatus("company saved.");
+  renderToolbarCompanyMeta(companyId);
+}
+
+function renderToolbarCompanyMeta(companyId) {
+  const panel = companiesList.querySelector(`[data-company-id="${CSS.escape(String(companyId))}"]`);
+  const company = companyById(companyId);
+  if (!panel || !company) return;
+  const careerPages = Array.isArray(company.career_pages) ? company.career_pages : [];
+  const updated = formatCompactDate(company.updated_at);
+  const meta = panel.querySelector(".company-summary-meta");
+  if (meta) {
+    meta.textContent = `${careerPages.length} ${careerPages.length === 1 ? "link" : "links"}${updated ? ` | updated ${updated}` : ""}`;
   }
 }
 
@@ -2103,6 +2370,7 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !reviewView.hidden) closeReviewView();
   if (event.key === "Escape" && !prepView.hidden) closePrepView();
   if (event.key === "Escape" && !settingsView.hidden) closeSettingsView();
+  if (event.key === "Escape" && !companiesView.hidden) closeCompaniesView();
 });
 
 function statusPaneToggles() {
@@ -2154,6 +2422,70 @@ collapseEmptyButton.addEventListener("click", () => {
 settingsOpenButton.addEventListener("click", openSettingsView);
 
 settingsCloseButton.addEventListener("click", closeSettingsView);
+
+manageCompaniesButton.addEventListener("click", openCompaniesView);
+
+companiesCloseButton.addEventListener("click", closeCompaniesView);
+
+companyCreateForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  createCompany(companyCreateForm).catch(() => {
+    companiesStatus.textContent = "could not add company.";
+  });
+});
+
+companiesList.addEventListener("submit", (event) => {
+  const form = event.target.closest("[data-company-link-form]");
+  if (!form) return;
+  event.preventDefault();
+  addCompanyCareerPage(form).catch(() => {
+    companiesStatus.textContent = "could not add link.";
+  });
+});
+
+companiesList.addEventListener("input", (event) => {
+  const notesControl = event.target.closest("[data-company-notes]");
+  if (!notesControl) return;
+  scheduleCompanyAutosave(notesControl.dataset.companyNotes);
+});
+
+companiesList.addEventListener("change", (event) => {
+  const tierControl = event.target.closest("[data-company-tier]");
+  if (!tierControl) return;
+  window.clearTimeout(companySaveTimers.get(tierControl.dataset.companyTier));
+  saveCompanyEdits(tierControl.dataset.companyTier).catch(() => {
+    setCompanySaveStatus("could not save company.");
+  });
+});
+
+companiesList.addEventListener("click", (event) => {
+  const companyDeleteButton = event.target.closest("[data-delete-company]");
+  if (companyDeleteButton) {
+    const company = companyById(companyDeleteButton.dataset.deleteCompany);
+    const name = company?.name ? formatUiText(company.name) : "this company";
+    const confirmed = window.confirm(
+      `Deactivate ${name}? It will be hidden from company counts and skipped during scans.`,
+    );
+    if (!confirmed) return;
+    companyDeleteButton.disabled = true;
+    deactivateCompany(companyDeleteButton.dataset.deleteCompany).catch(() => {
+      companiesStatus.textContent = "could not deactivate company.";
+      companyDeleteButton.disabled = false;
+    });
+    return;
+  }
+  const deleteButton = event.target.closest("[data-delete-career-page]");
+  if (!deleteButton) return;
+  const linkRow = deleteButton.closest(".company-link-row");
+  const linkText = linkRow?.querySelector(".company-link-text")?.textContent?.trim();
+  const confirmed = window.confirm(`Delete ${linkText || "this career link"}?`);
+  if (!confirmed) return;
+  deleteButton.disabled = true;
+  deleteCompanyCareerPage(deleteButton.dataset.deleteCareerPage).catch(() => {
+    companiesStatus.textContent = "could not delete link.";
+    deleteButton.disabled = false;
+  });
+});
 
 settingsForm.addEventListener("change", (event) => {
   const control = event.target.closest('input[type="checkbox"], select');

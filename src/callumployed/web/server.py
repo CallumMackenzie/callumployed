@@ -32,24 +32,33 @@ from callumployed.agents.cover_letter import (
 from callumployed.agents.resume_feedback import evaluate_resume_feedback
 from callumployed.data import db
 from callumployed.data.models import (
+    Company,
+    CompanyCareerPage,
     CoverLetterExample,
     ExperienceNote,
     MasterResume,
     Role,
     RoleListItem,
     RoleStatus,
+    ScanStatus,
 )
 from callumployed.data.repositories import (
+    add_company,
+    add_company_career_page,
     add_cover_letter_example,
     add_experience_note,
     clear_resume_feedback_history,
     count_resume_feedback_history,
+    deactivate_company,
+    delete_company_career_page,
+    finish_scan_run,
     get_company,
     get_location_filter,
     get_master_resume,
     get_role,
     get_tracking_stats,
     list_companies,
+    list_company_career_pages,
     list_config_values,
     list_cover_letter_example_knowledge,
     list_cover_letter_examples,
@@ -69,12 +78,14 @@ from callumployed.data.repositories import (
     should_include_hardware_roles,
     should_require_software_keywords,
     should_use_internship_mode,
+    update_company,
     upsert_master_resume,
 )
 from callumployed.services.scan_workflow import scan_company as run_scan_company
 from callumployed.webscraping.profile_manager import BrowserProfileManager
 
 STATIC_PACKAGE = "callumployed.web.static"
+SCAN_ALL_COMPANY_TIMEOUT_SECONDS = 5 * 60
 STATUS_LABELS: dict[str, str] = {
     RoleStatus.DISCOVERED.value: "discovered",
     RoleStatus.INTERESTED.value: "interested",
@@ -102,7 +113,11 @@ class ScanCoordinatorSnapshot:
 
 
 class ScanCoordinator:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        company_timeout_seconds: float = SCAN_ALL_COMPANY_TIMEOUT_SECONDS,
+    ) -> None:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._started_at: datetime | None = None
@@ -111,6 +126,7 @@ class ScanCoordinator:
         self._total_companies = 0
         self._failed_companies = 0
         self._error: str | None = None
+        self._company_timeout_seconds = company_timeout_seconds
 
     def start(self) -> bool:
         with self._lock:
@@ -162,10 +178,23 @@ class ScanCoordinator:
         browser_profile_manager = BrowserProfileManager()
         for company in companies:
             try:
-                await run_scan_company(
-                    company,
-                    browser_profile_manager=browser_profile_manager,
+                await asyncio.wait_for(
+                    run_scan_company(
+                        company,
+                        browser_profile_manager=browser_profile_manager,
+                    ),
+                    timeout=self._company_timeout_seconds,
                 )
+            except TimeoutError:
+                error_message = (
+                    f"Timed out scanning {company.name} after "
+                    f"{self._company_timeout_seconds:g} seconds."
+                )
+                if company.id is not None:
+                    _mark_latest_running_scan_failed(company.id, error_message)
+                with self._lock:
+                    self._failed_companies += 1
+                    self._error = error_message
             except Exception as error:
                 with self._lock:
                     self._failed_companies += 1
@@ -173,6 +202,17 @@ class ScanCoordinator:
             finally:
                 with self._lock:
                     self._completed_companies += 1
+
+
+def _mark_latest_running_scan_failed(company_id: int, error_message: str) -> None:
+    with db.connect() as connection:
+        latest_scan_runs = list_scan_runs(connection, company_id=company_id, limit=1)
+        if not latest_scan_runs:
+            return
+        latest_scan = latest_scan_runs[0]
+        if latest_scan.id is None or latest_scan.scan_status != ScanStatus.RUNNING:
+            return
+        finish_scan_run(connection, latest_scan.id, ScanStatus.FAILED, error=error_message)
 
 
 SCAN_COORDINATOR = ScanCoordinator()
@@ -215,6 +255,25 @@ def build_tracker_payload(query: str | None = None) -> dict[str, Any]:
     }
 
 
+def build_companies_payload() -> dict[str, Any]:
+    with db.connect() as connection:
+        companies = list_companies(connection)
+        career_pages_by_company_id = {
+            company.id: list_company_career_pages(connection, company.id)
+            for company in companies
+            if company.id is not None
+        }
+    return {
+        "companies": [
+            _company_payload(
+                company,
+                career_pages_by_company_id.get(company.id, []) if company.id is not None else [],
+            )
+            for company in companies
+        ]
+    }
+
+
 def create_handler() -> type[BaseHTTPRequestHandler]:
     class CallumployedHandler(BaseHTTPRequestHandler):
         server_version = "callumployed"
@@ -237,6 +296,9 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
             if parsed_url.path == "/api/config":
                 self._send_json(build_config_payload())
+                return
+            if parsed_url.path == "/api/companies":
+                self._send_json(build_companies_payload())
                 return
             if parsed_url.path == "/api/master-resume":
                 self._send_json(build_master_resume_payload())
@@ -381,6 +443,24 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             if len(path_parts) == 2 and path_parts == ["api", "experience-notes"]:
                 self._add_experience_note()
                 return
+            if len(path_parts) == 2 and path_parts == ["api", "companies"]:
+                self._add_company()
+                return
+            if (
+                len(path_parts) == 3
+                and path_parts[0] == "api"
+                and path_parts[1] == "companies"
+            ):
+                self._update_company(path_parts[2])
+                return
+            if (
+                len(path_parts) == 4
+                and path_parts[0] == "api"
+                and path_parts[1] == "companies"
+                and path_parts[3] == "career-pages"
+            ):
+                self._add_company_career_page(path_parts[2])
+                return
             if len(path_parts) == 2 and path_parts == ["api", "resume-resources"]:
                 self._upload_resume_resource()
                 return
@@ -396,6 +476,25 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 "clear",
             ]:
                 self._clear_recommendation_history()
+                return
+            self.send_error(HTTPStatus.NOT_FOUND)
+
+        def do_DELETE(self) -> None:
+            parsed_url = urlparse(self.path)
+            path_parts = [part for part in PurePosixPath(parsed_url.path).parts if part != "/"]
+            if (
+                len(path_parts) == 3
+                and path_parts[0] == "api"
+                and path_parts[1] == "companies"
+            ):
+                self._delete_company(path_parts[2])
+                return
+            if (
+                len(path_parts) == 3
+                and path_parts[0] == "api"
+                and path_parts[1] == "company-career-pages"
+            ):
+                self._delete_company_career_page(path_parts[2])
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -494,6 +593,120 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
 
             self._send_json({"role": _role_payload(role)})
+
+        def _add_company(self) -> None:
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            name = _optional_text(payload.get("name"))
+            if name is None:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Company name is required")
+                return
+            notes = _optional_text(payload.get("notes"))
+            prestige_tier = _optional_text(payload.get("prestige_tier"))
+            if not _is_valid_company_tier(prestige_tier):
+                self.send_error(HTTPStatus.BAD_REQUEST, "Company tier must be 0-4")
+                return
+            career_url = _optional_text(payload.get("career_url"))
+            career_label = _optional_text(payload.get("career_label")) or "Main"
+            with db.connect() as connection:
+                company = add_company(
+                    connection,
+                    Company(name=name, notes=notes, prestige_tier=prestige_tier),
+                )
+                if career_url is not None:
+                    if company.id is None:
+                        raise RuntimeError("created company did not include an id")
+                    add_company_career_page(
+                        connection,
+                        CompanyCareerPage(
+                            company_id=company.id,
+                            url=career_url,
+                            label=career_label,
+                        ),
+                    )
+            self._send_json(build_companies_payload())
+
+        def _update_company(self, company_id_text: str) -> None:
+            try:
+                company_id = int(company_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid company ID")
+                return
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            notes = _optional_text(payload.get("notes"))
+            prestige_tier = _optional_text(payload.get("prestige_tier"))
+            if not _is_valid_company_tier(prestige_tier):
+                self.send_error(HTTPStatus.BAD_REQUEST, "Company tier must be 0-4")
+                return
+            try:
+                with db.connect() as connection:
+                    update_company(
+                        connection,
+                        company_id,
+                        notes=notes,
+                        prestige_tier=prestige_tier,
+                    )
+            except LookupError:
+                self.send_error(HTTPStatus.NOT_FOUND, "Company not found")
+                return
+            self._send_json(build_companies_payload())
+
+        def _add_company_career_page(self, company_id_text: str) -> None:
+            try:
+                company_id = int(company_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid company ID")
+                return
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            url = _optional_text(payload.get("url"))
+            if url is None:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Career page URL is required")
+                return
+            label = _optional_text(payload.get("label"))
+            try:
+                with db.connect() as connection:
+                    get_company(connection, company_id)
+                    add_company_career_page(
+                        connection,
+                        CompanyCareerPage(company_id=company_id, url=url, label=label),
+                    )
+            except LookupError:
+                self.send_error(HTTPStatus.NOT_FOUND, "Company not found")
+                return
+            self._send_json(build_companies_payload())
+
+        def _delete_company(self, company_id_text: str) -> None:
+            try:
+                company_id = int(company_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid company ID")
+                return
+            try:
+                with db.connect() as connection:
+                    deactivate_company(connection, company_id)
+            except LookupError:
+                self.send_error(HTTPStatus.NOT_FOUND, "Company not found")
+                return
+            self._send_json(build_companies_payload())
+
+        def _delete_company_career_page(self, career_page_id_text: str) -> None:
+            try:
+                career_page_id = int(career_page_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid career page ID")
+                return
+            try:
+                with db.connect() as connection:
+                    delete_company_career_page(connection, career_page_id)
+            except LookupError:
+                self.send_error(HTTPStatus.NOT_FOUND, "Career page not found")
+                return
+            self._send_json(build_companies_payload())
 
         def _send_prep_analysis(self, role_id_text: str) -> None:
             try:
@@ -1896,6 +2109,17 @@ def _optional_comment(value: object) -> str | None:
     return cleaned or None
 
 
+def _optional_text(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _is_valid_company_tier(value: str | None) -> bool:
+    return value is None or value in {"0", "1", "2", "3", "4"}
+
+
 def _optional_cover_letter_tweaks(value: object) -> str | None:
     if not isinstance(value, str):
         return None
@@ -2273,6 +2497,34 @@ def _experience_note_context(note: ExperienceNote) -> dict[str, Any]:
         "filename": note.filename,
         "content": note.content,
         "updated_at": note.updated_at.isoformat() if note.updated_at else None,
+    }
+
+
+def _company_payload(
+    company: Company,
+    career_pages: list[CompanyCareerPage],
+) -> dict[str, Any]:
+    return {
+        "id": company.id,
+        "name": company.name,
+        "notes": company.notes,
+        "prestige_tier": company.prestige_tier,
+        "is_active": company.is_active,
+        "browser_extra_wait_ms": company.browser_extra_wait_ms,
+        "created_at": company.created_at.isoformat() if company.created_at else None,
+        "updated_at": company.updated_at.isoformat() if company.updated_at else None,
+        "career_pages": [_company_career_page_payload(page) for page in career_pages],
+    }
+
+
+def _company_career_page_payload(career_page: CompanyCareerPage) -> dict[str, Any]:
+    return {
+        "id": career_page.id,
+        "company_id": career_page.company_id,
+        "url": career_page.url,
+        "label": career_page.label,
+        "created_at": career_page.created_at.isoformat() if career_page.created_at else None,
+        "updated_at": career_page.updated_at.isoformat() if career_page.updated_at else None,
     }
 
 

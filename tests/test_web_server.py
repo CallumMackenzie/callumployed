@@ -15,14 +15,18 @@ from typer.testing import CliRunner
 import callumployed.web.server as web_server
 from callumployed.cli import app
 from callumployed.data import db
-from callumployed.data.models import Company, Role
+from callumployed.data.models import Company, Role, ScanStatus
 from callumployed.data.repositories import (
     add_company,
     add_experience_note,
     count_resume_feedback_history,
     create_scan_run,
+    finish_scan_run,
+    get_company,
+    list_company_career_pages,
     list_cover_letter_examples,
     list_experience_notes,
+    list_scan_runs,
     record_resume_feedback_history,
 )
 from callumployed.web.server import (
@@ -88,6 +92,11 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="expand-all"' not in markup
         assert 'id="collapse-all"' not in markup
         assert 'id="scan-all-button"' in markup
+        assert 'id="manage-companies-button"' in markup
+        assert 'id="companies-view"' in markup
+        assert 'class="company-form-panel"' in markup
+        assert 'id="company-create-form"' in markup
+        assert 'id="companies-list"' in markup
         assert 'id="prep-interested"' in markup
         assert 'id="prep-view"' in markup
         assert 'id="resume-resource-upload"' in markup
@@ -96,7 +105,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-summary"' in markup
         assert markup.index('id="review-discovered"') < markup.index('id="prep-interested"')
         assert markup.index('id="prep-interested"') < markup.index('id="scan-all-button"')
-        assert markup.index('id="scan-all-button"') < markup.index('id="scan-summary"')
+        assert markup.index('id="scan-all-button"') < markup.index('id="manage-companies-button"')
+        assert markup.index('id="manage-companies-button"') < markup.index('id="scan-summary"')
         assert markup.index('id="scan-all-button"') < markup.index('class="status-toolbar"')
         assert 'id="scan-status-bar"' in markup
         assert 'id="scan-status-text"' in markup
@@ -115,8 +125,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="toolbar-summary"' in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=20260729-14" in markup
-        assert "/assets/app.js?v=20260729-14" in markup
+        assert "/assets/app.css?v=20260731-6" in markup
+        assert "/assets/app.js?v=20260731-6" in markup
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -1417,6 +1427,135 @@ def test_recommendation_history_clear_endpoint_removes_feedback_decisions(
         server.server_close()
 
 
+def test_company_management_endpoints_create_link_and_delete_link(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "web-company-management.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        company_request = Request(
+            f"http://127.0.0.1:{port}/api/companies",
+            data=json.dumps(
+                {
+                    "name": "Acme",
+                    "notes": "interesting infra team",
+                    "career_url": "https://example.com/careers",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urlopen(company_request, timeout=5) as response:
+            created_payload = json.loads(response.read().decode())
+
+        assert response.status == 200
+        [company] = created_payload["companies"]
+        assert company["name"] == "Acme"
+        assert company["notes"] == "interesting infra team"
+        assert company["career_pages"][0]["url"] == "https://example.com/careers"
+
+        company_id = company["id"]
+        update_request = Request(
+            f"http://127.0.0.1:{port}/api/companies/{company_id}",
+            data=json.dumps(
+                {
+                    "notes": "autosaved note",
+                    "prestige_tier": "1",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urlopen(update_request, timeout=5) as response:
+            updated_payload = json.loads(response.read().decode())
+
+        assert response.status == 200
+        [company] = updated_payload["companies"]
+        assert company["notes"] == "autosaved note"
+        assert company["prestige_tier"] == "1"
+
+        invalid_tier_request = Request(
+            f"http://127.0.0.1:{port}/api/companies/{company_id}",
+            data=json.dumps(
+                {
+                    "notes": "autosaved note",
+                    "prestige_tier": "A",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with pytest.raises(HTTPError) as error:
+            urlopen(invalid_tier_request, timeout=5)
+
+        assert error.value.code == 400
+
+        link_request = Request(
+            f"http://127.0.0.1:{port}/api/companies/{company_id}/career-pages",
+            data=json.dumps(
+                {
+                    "label": "students",
+                    "url": "https://example.com/students",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urlopen(link_request, timeout=5) as response:
+            linked_payload = json.loads(response.read().decode())
+
+        assert response.status == 200
+        [company] = linked_payload["companies"]
+        assert [page["label"] for page in company["career_pages"]] == ["Main", "students"]
+
+        career_page_id = company["career_pages"][0]["id"]
+        delete_request = Request(
+            f"http://127.0.0.1:{port}/api/company-career-pages/{career_page_id}",
+            method="DELETE",
+        )
+
+        with urlopen(delete_request, timeout=5) as response:
+            deleted_payload = json.loads(response.read().decode())
+
+        assert response.status == 200
+        [company] = deleted_payload["companies"]
+        assert [page["url"] for page in company["career_pages"]] == [
+            "https://example.com/students"
+        ]
+
+        delete_company_request = Request(
+            f"http://127.0.0.1:{port}/api/companies/{company_id}",
+            method="DELETE",
+        )
+
+        with urlopen(delete_company_request, timeout=5) as response:
+            deleted_company_payload = json.loads(response.read().decode())
+
+        assert response.status == 200
+        assert deleted_company_payload["companies"] == []
+        with db.connect() as connection:
+            deactivated_company = get_company(connection, company_id)
+            assert deactivated_company.is_active is False
+            assert [
+                page.url for page in list_company_career_pages(connection, company_id)
+            ] == ["https://example.com/students"]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_scan_all_endpoint_runs_in_background_and_reports_status(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1471,6 +1610,51 @@ def test_scan_all_endpoint_runs_in_background_and_reports_status(
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+def test_scan_all_times_out_company_and_continues(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-scan-all-timeout.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        slow_company = add_company(connection, Company(name="A Slowco"))
+        fast_company = add_company(connection, Company(name="B Fastco"))
+    assert slow_company.id is not None
+    assert fast_company.id is not None
+
+    scanned_companies: list[str] = []
+
+    async def fake_scan_company(company: Company, **_kwargs: object) -> None:
+        scanned_companies.append(company.name)
+        with db.connect() as connection:
+            scan_run = create_scan_run(connection, company.id)
+        if company.name == "A Slowco":
+            await asyncio.sleep(1)
+            return
+        with db.connect() as connection:
+            finish_scan_run(connection, scan_run.id, ScanStatus.SUCCEEDED)
+
+    monkeypatch.setattr("callumployed.web.server.run_scan_company", fake_scan_company)
+    coordinator = ScanCoordinator(company_timeout_seconds=0.01)
+
+    asyncio.run(coordinator._scan_all_companies())
+
+    snapshot = coordinator.snapshot()
+    assert scanned_companies == ["A Slowco", "B Fastco"]
+    assert snapshot.completed_companies == 2
+    assert snapshot.failed_companies == 1
+    assert snapshot.error == "Timed out scanning A Slowco after 0.01 seconds."
+
+    with db.connect() as connection:
+        slow_scan = list_scan_runs(connection, company_id=slow_company.id, limit=1)[0]
+        fast_scan = list_scan_runs(connection, company_id=fast_company.id, limit=1)[0]
+
+    assert slow_scan.scan_status == ScanStatus.FAILED
+    assert slow_scan.error == "Timed out scanning A Slowco after 0.01 seconds."
+    assert fast_scan.scan_status == ScanStatus.SUCCEEDED
 
 
 def test_scan_status_reports_persisted_started_time_for_interrupted_scan(

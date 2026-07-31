@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>callumployed</title>
-    <link rel="stylesheet" href="/assets/app.css?v=20260729-14" />
+    <link rel="stylesheet" href="/assets/app.css?v=20260731-6" />
   </head>
   <body>
     <main class="shell">
@@ -96,6 +96,7 @@
         <button type="button" id="review-discovered">review discovered</button>
         <button type="button" id="prep-interested">prep interested</button>
         <button type="button" id="scan-all-button">scan roles</button>
+        <button type="button" id="manage-companies-button">manage companies</button>
         <div class="scan-summary" id="scan-summary" aria-live="polite">
           <span id="scan-status-text">scan idle</span>
           <span class="scan-status-last" id="scan-last-time">last scan: never</span>
@@ -212,6 +213,37 @@
       </div>
     </section>
 
-    <script src="/assets/app.js?v=20260729-14" type="module"></script>
+    <section class="companies-view" id="companies-view" aria-label="manage companies" hidden>
+      <div class="companies-shell">
+        <header class="companies-header">
+          <div>
+            <p class="eyebrow">callumployed</p>
+            <h2 id="companies-heading">manage companies</h2>
+          </div>
+          <button type="button" id="companies-close">close</button>
+        </header>
+        <div class="companies-status" id="companies-status" role="status" aria-live="polite"></div>
+        <section class="company-form-panel" aria-label="add company">
+          <form class="company-create-form" id="company-create-form">
+            <label>
+              <span>company</span>
+              <input id="company-name-input" name="name" type="text" autocomplete="organization" required />
+            </label>
+            <label>
+              <span>career link</span>
+              <input id="company-url-input" name="career_url" type="url" placeholder="https://..." />
+            </label>
+            <label>
+              <span>notes</span>
+              <input id="company-notes-input" name="notes" type="text" />
+            </label>
+            <button type="submit">add company</button>
+          </form>
+        </section>
+        <div class="companies-list" id="companies-list"></div>
+      </div>
+    </section>
+
+    <script src="/assets/app.js?v=20260731-6" type="module"></script>
   </body>
 </html>

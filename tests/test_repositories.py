@@ -22,11 +22,13 @@ from callumployed.data.repositories import (
     clear_roles,
     count_resume_feedback_history,
     create_scan_run,
+    deactivate_company,
     finish_scan_run,
     get_company,
     get_event,
     get_location_filter,
     get_master_resume,
+    get_tracking_stats,
     increase_company_browser_wait,
     list_companies,
     list_company_career_pages,
@@ -79,7 +81,30 @@ def test_company_repository_adds_and_lists_companies() -> None:
 
     assert company.id == 1
     assert company.browser_extra_wait_ms == 0
+    assert company.is_active is True
     assert list_companies(connection) == [company]
+
+
+def test_deactivate_company_hides_it_without_deleting_data() -> None:
+    connection = db.connect(":memory:")
+    db.run_migrations(connection)
+
+    company = add_company(connection, Company(name="Acme"))
+    assert company.id is not None
+    role = add_role(
+        connection,
+        Role(company_id=company.id, title="Backend Engineer", role_url="https://example.com"),
+    )
+
+    deactivated = deactivate_company(connection, company.id)
+
+    assert deactivated.is_active is False
+    assert list_companies(connection) == []
+    assert list_companies(connection, include_inactive=True) == [deactivated]
+    assert get_company(connection, company.id).is_active is False
+    assert role.id is not None
+    assert list_roles(connection) == [role]
+    assert get_tracking_stats(connection)["companies_total"] == 0
 
 
 def test_company_repository_increases_browser_wait_time() -> None:
@@ -142,6 +167,9 @@ def test_resume_feedback_history_records_ranks_and_clears_decisions() -> None:
 
     assert knowledge[0]["response"] == "ignored"
     assert knowledge[0]["comment"] == "too generic for this resume"
+    assert "preference_summary" in knowledge[0]
+    assert "Python distributed systems internship" not in str(knowledge[0]["knowledge_text"])
+    assert "Python distributed systems internship" not in str(knowledge[0]["preference_summary"])
     assert knowledge[0]["similarity"] > 0
     assert clear_resume_feedback_history(connection) == 1
     assert count_resume_feedback_history(connection) == 0

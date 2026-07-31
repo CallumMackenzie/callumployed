@@ -117,12 +117,11 @@ def test_resume_feedback_prompt_includes_other_experience_context() -> None:
     )
 
     assert "other_experience_context" in prompt
-    assert "projects / employment history notes" in prompt
+    assert "secondary evidence" in prompt
     assert "may or" in prompt
-    assert "may not already be on the resume" in prompt
-    assert "explicitly compare other_experience_context against the job" in prompt
-    assert "include a concrete optional add_skills or" in prompt
-    assert "names the source note" in prompt
+    assert "Never assume they are visible" in prompt
+    assert "exact, truthful latex_addition" in prompt
+    assert "ready_to_apply" in prompt
     assert "Built an internal scheduler with Kubernetes and Redis." in prompt
 
 
@@ -298,6 +297,7 @@ def test_resume_feedback_prompt_includes_recommendation_history() -> None:
     assert "recommendation_knowledge_base" in prompt
     assert "ignored feedback means a similar recommendation was not useful" in prompt
     assert "strong negative examples" in prompt
+    assert "prefer specific user comments" in prompt
     assert "do not suggest generic skills blocks" in prompt
     assert "user ignored this because it was unsupported" in prompt
 
@@ -341,11 +341,16 @@ def test_resume_feedback_agent_normalizes_operation_titles() -> None:
                         "label": "add_skills",
                         "title": "Add specific tech keywords from job posting",
                         "detail": "mention supported skills from the posting",
+                        "latex_addition": (
+                            "\\resumeItem{Built Python systems for backend services.}"
+                        ),
                     },
                     {
                         "label": "change_wording",
                         "title": "Change wording to align with posting: distributed systems",
                         "detail": "rewrite one bullet around distributed systems",
+                        "target_text": "Python systems",
+                        "replacement_text": "Python distributed systems",
                     },
                 ],
             }
@@ -365,6 +370,41 @@ def test_resume_feedback_agent_normalizes_operation_titles() -> None:
     assert response.feedback_items[1].title == (
         "change wording to align with posting: distributed systems"
     )
+
+
+def test_resume_feedback_agent_drops_vague_keyword_feedback() -> None:
+    class FakeResumeFeedbackModel:
+        async def ainvoke(self, _input: object) -> dict[str, object]:
+            return {
+                "verdict": "tweak",
+                "overview": "needs tailoring",
+                "feedback_items": [
+                    {
+                        "label": "add_skills",
+                        "title": "add skills matching the posting: distributed systems",
+                        "detail": "mention distributed systems where supported",
+                    },
+                    {
+                        "label": "change_wording",
+                        "title": "change wording to align with posting: Linux C++",
+                        "detail": "say the Amazon role used C++ on Linux",
+                        "target_text": "Amazon backend work",
+                        "replacement_text": "Amazon C++ development on Linux",
+                    },
+                ],
+            }
+
+    response = asyncio.run(
+        ResumeFeedbackAgent(
+            chat_model_factory=lambda _settings: FakeResumeFeedbackModel()
+        ).evaluate(
+            role={"id": 1, "title": "Backend Intern"},
+            resume_content="Python systems",
+        )
+    )
+
+    assert response.verdict == "ready_to_apply"
+    assert response.feedback_items == []
 
 
 def test_resume_feedback_agent_drops_unanchored_move_emphasis_feedback() -> None:

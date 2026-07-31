@@ -34,6 +34,7 @@ def run_migrations(connection: turso.Connection) -> None:
     _ensure_cover_letter_example_vectors_table(connection)
     _ensure_experience_notes_table(connection)
     _ensure_resume_feedback_history_table(connection)
+    _ensure_company_is_active_column(connection)
     _ensure_company_browser_wait_column(connection)
     _ensure_role_information_columns(connection)
     _ensure_role_discovery_assessment_columns(connection)
@@ -172,6 +173,16 @@ def _ensure_company_browser_wait_column(connection: turso.Connection) -> None:
     if "browser_extra_wait_ms" not in existing_columns:
         connection.execute(
             "ALTER TABLE companies ADD COLUMN browser_extra_wait_ms INTEGER NOT NULL DEFAULT 0"
+        )
+
+
+def _ensure_company_is_active_column(connection: turso.Connection) -> None:
+    company_columns = connection.execute("PRAGMA table_info(companies)").fetchall()
+    existing_columns = {row["name"] for row in company_columns}
+    if "is_active" not in existing_columns:
+        connection.execute(
+            "ALTER TABLE companies ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1 "
+            "CHECK (is_active IN (0, 1))"
         )
 
 
