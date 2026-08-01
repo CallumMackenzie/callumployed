@@ -43,6 +43,7 @@ const manageCompaniesButton = document.querySelector("#manage-companies-button")
 const scanStatusBar = document.querySelector("#scan-status-bar");
 const scanStatusText = document.querySelector("#scan-status-text");
 const scanLastTime = document.querySelector("#scan-last-time");
+const scanErrors = document.querySelector("#scan-errors");
 const toggleAllButton = document.querySelector("#toggle-all");
 const collapseEmptyButton = document.querySelector("#collapse-empty");
 const toolbarSummary = document.querySelector("#toolbar-summary");
@@ -91,6 +92,7 @@ let prepCoverLetterSaveStateByRoleId = new Map();
 let materialsInitialized = false;
 let scanStatusPoll = null;
 let wasScanning = false;
+let scanStatusData = null;
 let settingsData = null;
 let companiesData = null;
 let roleCompanyData = [];
@@ -647,26 +649,55 @@ function render(data) {
 }
 
 function renderScanStatus(payload) {
+  scanStatusData = payload ?? null;
   const scanning = Boolean(payload?.scanning);
+  const cancelRequested = scanning && Boolean(payload?.cancel_requested);
   const completed = Number(payload?.completed_companies ?? 0);
   const total = Number(payload?.total_companies ?? 0);
   const failed = Number(payload?.failed_companies ?? 0);
   const errorText = typeof payload?.error === "string" ? payload.error.trim() : "";
+  const failures = Array.isArray(payload?.failures) ? payload.failures : [];
 
-  scanAllButton.disabled = scanning;
-  scanAllButton.textContent = scanning ? "scanning..." : "scan roles";
-  scanStatusBar.hidden = !scanning && !errorText;
+  scanAllButton.disabled = cancelRequested;
+  scanAllButton.textContent = scanning
+    ? cancelRequested
+      ? "cancelling..."
+      : "cancel scan"
+    : "scan roles";
+  scanAllButton.classList.toggle("danger", scanning && !cancelRequested);
+  scanStatusBar.hidden = !scanning && !errorText && failures.length === 0;
   scanStatusBar.classList.toggle("scanning", scanning);
-  scanStatusBar.classList.toggle("scan-error", !scanning && Boolean(errorText));
+  scanStatusBar.classList.toggle("scan-error", (!scanning && Boolean(errorText)) || failures.length > 0);
 
-  if (scanning) {
+  if (cancelRequested) {
+    scanStatusText.textContent = "cancelling scan...";
+  } else if (scanning) {
     const progressText = total > 0 ? ` ${completed}/${total}` : "";
     const failureText = failed > 0 ? `, ${failed} failed` : "";
     scanStatusText.textContent = `scanning roles${progressText}${failureText}`;
+  } else if (failures.length > 0) {
+    scanStatusText.textContent = `${failures.length} recent scan ${failures.length === 1 ? "failure" : "failures"}`;
   } else if (errorText) {
     scanStatusText.textContent = `last scan error: ${errorText}`;
   } else {
     scanStatusText.textContent = "scan idle";
+  }
+
+  if (scanErrors) {
+    scanErrors.hidden = failures.length === 0;
+    scanErrors.innerHTML = failures
+      .slice(0, 5)
+      .map((failure) => {
+        const company = failure?.company_name || "unknown company";
+        const error = failure?.error || "scan failed";
+        return `
+          <p>
+            <span>${escapeUiText(company)}</span>
+            <span>${escapeHtml(error)}</span>
+          </p>
+        `;
+      })
+      .join("");
   }
 
   const lastScanAt = payload?.last_scan_at;
@@ -1244,7 +1275,7 @@ function startScanStatusPolling() {
 
 async function startScanAll() {
   scanAllButton.disabled = true;
-  scanAllButton.textContent = "scanning...";
+  scanAllButton.textContent = "starting...";
   try {
     const response = await fetch("/api/scan/all", { method: "POST" });
     if (response.status === 404) {
@@ -1264,6 +1295,31 @@ async function startScanAll() {
     scanStatusBar.hidden = true;
     scanStatusBar.classList.add("scan-error");
     scanStatusText.textContent = "could not start scan";
+  }
+}
+
+async function cancelScanAll() {
+  scanAllButton.disabled = true;
+  scanAllButton.textContent = "cancelling...";
+  try {
+    const response = await fetch("/api/scan/cancel", { method: "POST" });
+    if (response.status === 404) {
+      scanAllButton.disabled = true;
+      scanAllButton.textContent = "scan roles";
+      scanStatusBar.hidden = true;
+      scanStatusBar.classList.add("scan-error");
+      scanStatusText.textContent = "restart server to enable scanning";
+      return;
+    }
+    if (!response.ok && response.status !== 409) throw new Error("Scan cancel failed");
+    renderScanStatus(await response.json());
+    startScanStatusPolling();
+  } catch {
+    scanAllButton.disabled = false;
+    scanAllButton.textContent = "cancel scan";
+    scanStatusBar.hidden = false;
+    scanStatusBar.classList.add("scan-error");
+    scanStatusText.textContent = "could not cancel scan";
   }
 }
 
@@ -1504,6 +1560,11 @@ materialsToggle.addEventListener("click", () => {
 });
 
 scanAllButton.addEventListener("click", () => {
+  if (scanStatusData?.scanning) {
+    if (!window.confirm("Cancel the running scan?")) return;
+    cancelScanAll();
+    return;
+  }
   startScanAll();
 });
 

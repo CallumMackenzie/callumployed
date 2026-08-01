@@ -140,10 +140,11 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="materials-required-warning"' in markup
         assert 'aria-label="missing required application materials"' in markup
         assert 'id="toolbar-summary"' in markup
+        assert 'id="scan-errors"' in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=20260731-12" in markup
-        assert "/assets/app.js?v=20260731-12" in markup
+        assert "/assets/app.css?v=20260731-16" in markup
+        assert "/assets/app.js?v=20260731-16" in markup
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -1721,6 +1722,94 @@ def test_scan_all_endpoint_runs_in_background_and_reports_status(
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+def test_scan_all_endpoint_can_cancel_running_scan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-scan-cancel.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "SCAN_COORDINATOR", ScanCoordinator())
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        add_company(connection, Company(name="Acme"))
+
+    scan_started = Event()
+    scan_release = Event()
+
+    async def fake_scan_company(*args: object, **kwargs: object) -> None:
+        scan_started.set()
+        await asyncio.to_thread(scan_release.wait, 5)
+
+    monkeypatch.setattr("callumployed.web.server.run_scan_company", fake_scan_company)
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        base_url = f"http://127.0.0.1:{port}"
+
+        with urlopen(Request(f"{base_url}/api/scan/all", data=b"{}", method="POST"), timeout=5):
+            pass
+        assert scan_started.wait(timeout=5)
+
+        with urlopen(
+            Request(f"{base_url}/api/scan/cancel", data=b"{}", method="POST"),
+            timeout=5,
+        ) as response:
+            cancel_payload = json.loads(response.read().decode())
+
+        assert response.status == 202
+        assert cancel_payload["cancel_requested"] is True
+
+        for _ in range(20):
+            with urlopen(f"{base_url}/api/scan/status", timeout=5) as response:
+                finished_payload = json.loads(response.read().decode())
+            if not finished_payload["scanning"]:
+                break
+            scan_release.wait(timeout=0.05)
+
+        assert finished_payload["scanning"] is False
+        assert finished_payload["cancel_requested"] is False
+        assert finished_payload["error"] == "Cancelled scan while scanning Acme."
+    finally:
+        scan_release.set()
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_scan_status_reports_recent_company_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-scan-failures.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    coordinator = ScanCoordinator()
+    monkeypatch.setattr(web_server, "SCAN_COORDINATOR", coordinator)
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        add_company(connection, Company(name="Acme"))
+
+    async def fake_scan_company(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("AI classification failed: quota exceeded")
+
+    monkeypatch.setattr("callumployed.web.server.run_scan_company", fake_scan_company)
+
+    asyncio.run(coordinator._scan_all_companies())
+
+    payload = build_scan_status_payload()
+
+    assert payload["failed_companies"] == 1
+    assert payload["failures"] == [
+        {
+            "company_id": 1,
+            "company_name": "Acme",
+            "error": "AI classification failed: quota exceeded",
+        }
+    ]
 
 
 def test_scan_all_times_out_company_and_continues(

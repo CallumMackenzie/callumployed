@@ -4,6 +4,7 @@ import asyncio
 import base64
 import binascii
 import json
+import logging
 import re
 import shutil
 import subprocess
@@ -99,6 +100,7 @@ from callumployed.services.scan_workflow import scan_company as run_scan_company
 from callumployed.webscraping.profile_manager import BrowserProfileManager
 
 STATIC_PACKAGE = "callumployed.web.static"
+LOGGER = logging.getLogger(__name__)
 SCAN_ALL_COMPANY_TIMEOUT_SECONDS = 5 * 60
 STATUS_LABELS: dict[str, str] = {
     RoleStatus.DISCOVERED.value: "discovered",
@@ -116,14 +118,23 @@ STATUS_LABELS: dict[str, str] = {
 
 
 @dataclass(frozen=True)
+class ScanCoordinatorFailure:
+    company_id: int | None
+    company_name: str
+    error: str
+
+
+@dataclass(frozen=True)
 class ScanCoordinatorSnapshot:
     scanning: bool
+    cancel_requested: bool
     started_at: datetime | None
     finished_at: datetime | None
     completed_companies: int
     total_companies: int
     failed_companies: int
     error: str | None
+    failures: tuple[ScanCoordinatorFailure, ...]
 
 
 class ScanCoordinator:
@@ -140,6 +151,10 @@ class ScanCoordinator:
         self._total_companies = 0
         self._failed_companies = 0
         self._error: str | None = None
+        self._failures: list[ScanCoordinatorFailure] = []
+        self._cancel_requested = threading.Event()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._current_task: asyncio.Task[None] | None = None
         self._company_timeout_seconds = company_timeout_seconds
 
     def start(self) -> bool:
@@ -152,6 +167,10 @@ class ScanCoordinator:
             self._total_companies = 0
             self._failed_companies = 0
             self._error = None
+            self._failures = []
+            self._cancel_requested.clear()
+            self._loop = None
+            self._current_task = None
             self._thread = threading.Thread(
                 target=self._run,
                 name="callumployed-scan-all",
@@ -160,27 +179,51 @@ class ScanCoordinator:
             self._thread.start()
             return True
 
+    def cancel(self) -> bool:
+        with self._lock:
+            scanning = self._thread is not None and self._thread.is_alive()
+            if not scanning:
+                return False
+            self._cancel_requested.set()
+            self._error = "Scan cancellation requested."
+            loop = self._loop
+            current_task = self._current_task
+        if loop is not None and current_task is not None:
+            loop.call_soon_threadsafe(current_task.cancel)
+        return True
+
     def snapshot(self) -> ScanCoordinatorSnapshot:
         with self._lock:
             scanning = self._thread is not None and self._thread.is_alive()
             return ScanCoordinatorSnapshot(
                 scanning=scanning,
+                cancel_requested=scanning and self._cancel_requested.is_set(),
                 started_at=self._started_at,
                 finished_at=self._finished_at,
                 completed_companies=self._completed_companies,
                 total_companies=self._total_companies,
                 failed_companies=self._failed_companies,
                 error=self._error,
+                failures=tuple(self._failures),
             )
 
     def _run(self) -> None:
         try:
-            asyncio.run(self._scan_all_companies())
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            with self._lock:
+                self._loop = loop
+            try:
+                loop.run_until_complete(self._scan_all_companies())
+            finally:
+                loop.close()
         except Exception as error:
             with self._lock:
                 self._error = str(error)
         finally:
             with self._lock:
+                self._loop = None
+                self._current_task = None
                 self._finished_at = _now_utc()
 
     async def _scan_all_companies(self) -> None:
@@ -191,14 +234,30 @@ class ScanCoordinator:
 
         browser_profile_manager = BrowserProfileManager()
         for company in companies:
+            if self._cancel_requested.is_set():
+                LOGGER.info("Scan cancelled before scanning %s.", company.name)
+                break
             try:
-                await asyncio.wait_for(
+                task = asyncio.create_task(
                     run_scan_company(
                         company,
                         browser_profile_manager=browser_profile_manager,
-                    ),
+                    )
+                )
+                with self._lock:
+                    self._current_task = task
+                await asyncio.wait_for(
+                    task,
                     timeout=self._company_timeout_seconds,
                 )
+            except asyncio.CancelledError:
+                error_message = f"Cancelled scan while scanning {company.name}."
+                if company.id is not None:
+                    _mark_latest_running_scan_failed(company.id, error_message)
+                with self._lock:
+                    self._error = error_message
+                LOGGER.info(error_message)
+                break
             except TimeoutError:
                 error_message = (
                     f"Timed out scanning {company.name} after "
@@ -206,16 +265,28 @@ class ScanCoordinator:
                 )
                 if company.id is not None:
                     _mark_latest_running_scan_failed(company.id, error_message)
-                with self._lock:
-                    self._failed_companies += 1
-                    self._error = error_message
+                self._record_company_failure(company, error_message)
             except Exception as error:
-                with self._lock:
-                    self._failed_companies += 1
-                    self._error = str(error)
+                error_message = str(error) or error.__class__.__name__
+                self._record_company_failure(company, error_message)
             finally:
                 with self._lock:
+                    if self._current_task is not None and self._current_task.done():
+                        self._current_task = None
                     self._completed_companies += 1
+
+    def _record_company_failure(self, company: Company, error_message: str) -> None:
+        LOGGER.warning("Scan failed for %s: %s", company.name, error_message)
+        failure = ScanCoordinatorFailure(
+            company_id=company.id,
+            company_name=company.name,
+            error=error_message,
+        )
+        with self._lock:
+            self._failed_companies += 1
+            self._error = error_message
+            self._failures.append(failure)
+            self._failures = self._failures[-8:]
 
 
 def _mark_latest_running_scan_failed(company_id: int, error_message: str) -> None:
@@ -483,6 +554,9 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
             if len(path_parts) == 3 and path_parts == ["api", "scan", "all"]:
                 self._start_scan_all()
+                return
+            if len(path_parts) == 3 and path_parts == ["api", "scan", "cancel"]:
+                self._cancel_scan_all()
                 return
             if len(path_parts) == 3 and path_parts == ["api", "central", "resolve-companies"]:
                 self._resolve_central_companies()
@@ -1304,6 +1378,11 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             status = HTTPStatus.ACCEPTED if started else HTTPStatus.CONFLICT
             self._send_json_with_status(build_scan_status_payload(), status)
 
+        def _cancel_scan_all(self) -> None:
+            cancelled = SCAN_COORDINATOR.cancel()
+            status = HTTPStatus.ACCEPTED if cancelled else HTTPStatus.CONFLICT
+            self._send_json_with_status(build_scan_status_payload(), status)
+
         def _update_config(self) -> None:
             payload = self._read_json_body()
             if payload is None:
@@ -1460,7 +1539,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
 def build_scan_status_payload() -> dict[str, Any]:
     snapshot = SCAN_COORDINATOR.snapshot()
     with db.connect() as connection:
-        latest_scan_runs = list_scan_runs(connection, limit=1)
+        latest_scan_runs = list_scan_runs(connection, limit=8)
     latest_scan = latest_scan_runs[0] if latest_scan_runs else None
     latest_started_at = latest_scan.started_at if latest_scan else None
     latest_finished_at = latest_scan.finished_at if latest_scan else None
@@ -1471,8 +1550,14 @@ def build_scan_status_payload() -> dict[str, Any]:
         latest_started_at,
     )
     latest_scan_status = latest_scan.scan_status if latest_scan else None
+    recent_failed_scans = [
+        scan
+        for scan in latest_scan_runs
+        if scan.scan_status == ScanStatus.FAILED and scan.error
+    ][:5]
     return {
         "scanning": snapshot.scanning,
+        "cancel_requested": snapshot.cancel_requested,
         "started_at": _datetime_or_none(snapshot.started_at),
         "finished_at": _datetime_or_none(snapshot.finished_at),
         "last_scan_at": _datetime_or_none(last_scan_at),
@@ -1480,6 +1565,22 @@ def build_scan_status_payload() -> dict[str, Any]:
         "total_companies": snapshot.total_companies,
         "failed_companies": snapshot.failed_companies,
         "error": snapshot.error,
+        "failures": [
+            {
+                "company_id": failure.company_id,
+                "company_name": failure.company_name,
+                "error": failure.error,
+            }
+            for failure in snapshot.failures
+        ]
+        or [
+            {
+                "company_id": scan.company_id,
+                "company_name": scan.company_name,
+                "error": scan.error,
+            }
+            for scan in recent_failed_scans
+        ],
         "latest_scan": (
             {
                 "id": latest_scan.id,
@@ -1488,6 +1589,7 @@ def build_scan_status_payload() -> dict[str, Any]:
                 "scan_status": latest_scan_status.value if latest_scan_status else None,
                 "started_at": _datetime_or_none(latest_started_at),
                 "finished_at": _datetime_or_none(latest_finished_at),
+                "error": latest_scan.error,
             }
             if latest_scan
             else None
