@@ -76,6 +76,7 @@ from callumployed.data.repositories import (
     list_cover_letter_examples,
     list_experience_notes,
     list_resume_feedback_knowledge,
+    list_role_discovery_attempts,
     list_role_items,
     list_scan_runs,
     record_resume_feedback_history,
@@ -317,10 +318,30 @@ def build_tracker_payload(query: str | None = None) -> dict[str, Any]:
     with db.connect() as connection:
         stats = get_tracking_stats(connection)
         roles = list_role_items(connection, query=query)
+        latest_scan_runs = list_scan_runs(connection, limit=1)
+        latest_scan_run_id = latest_scan_runs[0].id if latest_scan_runs else None
+        latest_scan_role_ids = (
+            {
+                attempt.role_id
+                for attempt in list_role_discovery_attempts(
+                    connection,
+                    scan_run_id=latest_scan_run_id,
+                )
+                if attempt.role_id is not None
+            }
+            if latest_scan_run_id is not None
+            else set()
+        )
 
     grouped_roles: dict[str, list[dict[str, Any]]] = {status.value: [] for status in RoleStatus}
     for role in roles:
-        grouped_roles[role.role_status.value].append(_role_payload(role))
+        payload = _role_payload(role)
+        payload["updated_in_latest_scan"] = role.id in latest_scan_role_ids
+        grouped_roles[role.role_status.value].append(payload)
+    grouped_roles[RoleStatus.CLOSED.value].sort(
+        key=lambda role: bool(role["updated_in_latest_scan"]),
+        reverse=True,
+    )
 
     statuses = [
         {

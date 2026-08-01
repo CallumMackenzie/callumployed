@@ -1233,6 +1233,16 @@ a:hover .role-link-icon {
   transform: translate(1px, -1px);
 }
 
+.latest-scan-dot {
+  width: 0.58rem;
+  height: 0.58rem;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #f28c18;
+  box-shadow: 0 0 0 2px #fff4e3;
+  transform: translateY(-0.02rem);
+}
+
 .job-company {
   flex: 0 0 auto;
   max-width: min(46%, 18rem);

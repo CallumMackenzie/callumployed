@@ -534,6 +534,7 @@ function renderJob(job, statusKey) {
         <span class="job-identity">
           <span class="job-company">[${escapeUiText(job.company_name)}]</span>
           ${renderRoleTitle(job.title, job.role_url, "job-title")}
+          ${statusKey === "closed" && job.updated_in_latest_scan ? renderLatestScanDot() : ""}
         </span>
       </summary>
       <div class="job-detail">
@@ -542,6 +543,7 @@ function renderJob(job, statusKey) {
         ${statusKey === "applied" ? renderAppliedActions(job) : ""}
         ${statusKey === "OA" ? renderOaActions(job) : ""}
         ${statusKey === "interview" ? renderInterviewActions(job) : ""}
+        ${statusKey === "closed" ? renderClosedActions(job) : ""}
         <dl>
           ${
             job.location
@@ -559,6 +561,10 @@ function renderJob(job, statusKey) {
       </div>
     </details>
   `;
+}
+
+function renderLatestScanDot() {
+  return '<span class="latest-scan-dot" title="updated in latest scan" aria-label="updated in latest scan"></span>';
 }
 
 function renderDiscoveredActions(job) {
@@ -607,6 +613,14 @@ function renderInterviewActions(job) {
     <div class="job-actions" aria-label="interview role actions">
       <button class="job-action danger" type="button" data-role-id="${job.id}" data-status="rejected">rejected</button>
       <button class="job-action success" type="button" data-role-id="${job.id}" data-status="offer">offer</button>
+    </div>
+  `;
+}
+
+function renderClosedActions(job) {
+  return `
+    <div class="job-actions" aria-label="closed role actions">
+      <button class="job-action" type="button" data-role-id="${job.id}" data-status="interested">interested</button>
     </div>
   `;
 }

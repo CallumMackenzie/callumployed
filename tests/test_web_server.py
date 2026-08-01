@@ -6,6 +6,7 @@ from io import BytesIO
 from pathlib import Path
 from threading import Event, Thread
 from types import SimpleNamespace
+from typing import Any
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from zipfile import ZipFile
@@ -17,10 +18,11 @@ import callumployed.web.server as web_server
 from callumployed.central.config import DEFAULT_CENTRAL_API_URL
 from callumployed.cli import app
 from callumployed.data import db
-from callumployed.data.models import Company, Role, ScanStatus
+from callumployed.data.models import Company, Role, RoleDiscoveryAttempt, ScanStatus
 from callumployed.data.repositories import (
     add_company,
     add_experience_note,
+    add_role_discovery_attempt,
     count_resume_feedback_history,
     create_scan_run,
     finish_scan_run,
@@ -41,6 +43,33 @@ from callumployed.web.server import (
 )
 
 runner = CliRunner()
+
+
+def _add_scan_candidate(connection: Any, scan_run_id: int, url: str) -> int:
+    page_cursor = connection.execute(
+        """
+        INSERT INTO scan_pages (scan_run_id, source_url, final_url, candidates_scanned, confidence)
+        VALUES (?, ?, ?, 1, 'high')
+        """,
+        (scan_run_id, "https://example.com/careers", "https://example.com/careers"),
+    )
+    scan_page_id = int(page_cursor.lastrowid)
+    candidate_cursor = connection.execute(
+        """
+        INSERT INTO scan_candidates (
+            scan_page_id,
+            url,
+            source_url,
+            text,
+            tag,
+            confidence,
+            selected
+        )
+        VALUES (?, ?, ?, 'Backend Engineer', 'a', 0.95, 1)
+        """,
+        (scan_page_id, url, "https://example.com/careers"),
+    )
+    return int(candidate_cursor.lastrowid)
 
 
 def _minimal_docx(paragraphs: list[str]) -> bytes:
@@ -1922,6 +1951,73 @@ def test_tracker_payload_groups_roles_by_status(
     assert applied["jobs"][0]["updated_at"].endswith("Z")
 
 
+def test_tracker_payload_marks_closed_roles_updated_in_latest_scan_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-latest-closed-updates.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Older Closed", "https://example.com/jobs/older"],
+        env=env,
+    )
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Latest Closed", "https://example.com/jobs/latest"],
+        env=env,
+    )
+    runner.invoke(app, ["roles", "set-status", "1", "closed"], env=env)
+    runner.invoke(app, ["roles", "set-status", "2", "closed"], env=env)
+
+    with db.connect() as connection:
+        old_scan = create_scan_run(connection, 1)
+        assert old_scan.id is not None
+        add_role_discovery_attempt(
+            connection,
+            RoleDiscoveryAttempt(
+                scan_run_id=old_scan.id,
+                scan_candidate_id=_add_scan_candidate(
+                    connection,
+                    old_scan.id,
+                    "https://example.com/jobs/older",
+                ),
+                company_id=1,
+                role_id=1,
+                url="https://example.com/jobs/older",
+            ),
+        )
+        finish_scan_run(connection, old_scan.id, ScanStatus.SUCCEEDED)
+
+        latest_scan = create_scan_run(connection, 1)
+        assert latest_scan.id is not None
+        add_role_discovery_attempt(
+            connection,
+            RoleDiscoveryAttempt(
+                scan_run_id=latest_scan.id,
+                scan_candidate_id=_add_scan_candidate(
+                    connection,
+                    latest_scan.id,
+                    "https://example.com/jobs/latest",
+                ),
+                company_id=1,
+                role_id=2,
+                url="https://example.com/jobs/latest",
+            ),
+        )
+        finish_scan_run(connection, latest_scan.id, ScanStatus.SUCCEEDED)
+
+    payload = build_tracker_payload()
+    closed = next(status for status in payload["statuses"] if status["key"] == "closed")
+    assert [job["title"] for job in closed["jobs"]] == ["Latest Closed", "Older Closed"]
+    jobs_by_title = {job["title"]: job for job in closed["jobs"]}
+    assert jobs_by_title["Older Closed"]["updated_in_latest_scan"] is False
+    assert jobs_by_title["Latest Closed"]["updated_in_latest_scan"] is True
+
+
 def test_tracker_status_endpoint_moves_role(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2670,3 +2766,47 @@ def test_tracker_status_endpoint_moves_interview_role(
     target = next(item for item in payload["statuses"] if item["key"] == status)
     assert interview["count"] == 0
     assert target["count"] == 1
+
+
+def test_tracker_status_endpoint_moves_closed_role_to_interested(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-closed-interested.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Backend Engineer", "https://example.com/jobs/backend"],
+        env=env,
+    )
+    runner.invoke(app, ["roles", "set-status", "1", "closed"], env=env)
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        url = f"http://127.0.0.1:{port}/api/roles/1/status"
+        request = Request(
+            url,
+            data=b'{"status":"interested"}',
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urlopen(request, timeout=5) as response:
+            assert response.status == 200
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    payload = build_tracker_payload()
+    closed = next(item for item in payload["statuses"] if item["key"] == "closed")
+    interested = next(item for item in payload["statuses"] if item["key"] == "interested")
+    assert closed["count"] == 0
+    assert interested["count"] == 1
