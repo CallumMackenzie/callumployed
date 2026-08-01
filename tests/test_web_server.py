@@ -161,6 +161,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert DEFAULT_CENTRAL_API_URL in markup
         assert 'id="central-passkey-input"' in markup
         assert 'id="central-sync-button"' in markup
+        assert 'id="app-update-button"' in markup
         assert 'id="stats"' in markup
         assert 'class="stats-grid"' in markup
         assert 'id="experience-note-upload"' in markup
@@ -172,8 +173,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=20260731-18" in markup
-        assert "/assets/app.js?v=20260731-18" in markup
+        assert "/assets/app.css?v=20260801-4" in markup
+        assert "/assets/app.js?v=20260801-4" in markup
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -1566,6 +1567,73 @@ def test_recommendation_history_clear_endpoint_removes_feedback_decisions(
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+def test_app_update_endpoint_starts_detached_update_and_shutdown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "web-app-update.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    popen_calls: list[dict[str, object]] = []
+    shutdown_called = Event()
+
+    class FakeProcess:
+        pass
+
+    def fake_popen(
+        args: list[str],
+        *,
+        cwd: Path,
+        start_new_session: bool,
+    ) -> FakeProcess:
+        popen_calls.append(
+            {
+                "args": args,
+                "cwd": cwd,
+                "start_new_session": start_new_session,
+            }
+        )
+        return FakeProcess()
+
+    def fake_shutdown(_server: object) -> None:
+        shutdown_called.set()
+
+    monkeypatch.setattr(web_server.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(web_server, "_shutdown_server", fake_shutdown)
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        request = Request(
+            f"http://127.0.0.1:{port}/api/app/update",
+            data=b"{}",
+            method="POST",
+        )
+
+        with urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode())
+
+        assert response.status == 202
+        assert payload["message"] == "update started; callumployed will restart shortly"
+        assert shutdown_called.wait(timeout=5)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    assert len(popen_calls) == 1
+    call = popen_calls[0]
+    assert call["start_new_session"] is True
+    args = call["args"]
+    assert isinstance(args, list)
+    assert args[:2] == ["bash", "-lc"]
+    script = args[2]
+    assert "scripts/install.sh" in script
+    assert f"--port {port}" in script
 
 
 def test_company_management_endpoints_create_link_and_delete_link(

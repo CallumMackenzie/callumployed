@@ -6,8 +6,10 @@ import binascii
 import json
 import logging
 import re
+import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 from contextlib import suppress
@@ -103,6 +105,9 @@ from callumployed.services.scan_workflow import scan_company as run_scan_company
 from callumployed.webscraping.profile_manager import BrowserProfileManager
 
 STATIC_PACKAGE = "callumployed.web.static"
+INSTALLER_SCRIPT_URL = (
+    "https://raw.githubusercontent.com/CallumMackenzie/callumployed/master/scripts/install.sh"
+)
 LOGGER = logging.getLogger(__name__)
 SCAN_ALL_COMPANY_TIMEOUT_SECONDS = 5 * 60
 STATUS_LABELS: dict[str, str] = {
@@ -611,6 +616,9 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 "clear",
             ]:
                 self._clear_recommendation_history()
+                return
+            if len(path_parts) == 3 and path_parts == ["api", "app", "update"]:
+                self._update_and_restart_app()
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -1546,6 +1554,20 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                     "config": build_config_payload(),
                 }
             )
+
+        def _update_and_restart_app(self) -> None:
+            host = str(getattr(self.server, "server_name", "127.0.0.1"))
+            port = int(getattr(self.server, "server_port", 8765))
+            try:
+                _start_update_and_restart(host=host, port=port)
+            except OSError:
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Could not start updater")
+                return
+            self._send_json_with_status(
+                {"message": "update started; callumployed will restart shortly"},
+                HTTPStatus.ACCEPTED,
+            )
+            threading.Thread(target=_shutdown_server, args=(self.server,), daemon=True).start()
 
         def _send_static_file(self, filename: str, content_type: str) -> None:
             try:
@@ -2974,6 +2996,52 @@ def _datetime_sort_key(value: datetime) -> float:
     if value.tzinfo is None:
         value = value.replace(tzinfo=UTC)
     return value.timestamp()
+
+
+def _start_update_and_restart(*, host: str, port: int) -> None:
+    subprocess.Popen(
+        ["bash", "-lc", _update_restart_script(host=host, port=port)],
+        cwd=Path.cwd(),
+        start_new_session=True,
+    )
+
+
+def _update_restart_script(*, host: str, port: int) -> str:
+    executable = _current_callumployed_executable()
+    update_log_path = Path("/tmp/callumployed-web-update.log")
+    serve_log_path = Path("/tmp/callumployed-tmux.log")
+    return "\n".join(
+        [
+            "set -eu",
+            "sleep 3",
+            f"cd {shlex.quote(str(Path.cwd()))}",
+            f"echo '--- update started '$(date) >> {shlex.quote(str(update_log_path))}",
+            (
+                f"curl -fsSL {shlex.quote(INSTALLER_SCRIPT_URL)} | bash "
+                f">> {shlex.quote(str(update_log_path))} 2>&1"
+            ),
+            f"echo '--- restart started '$(date) >> {shlex.quote(str(update_log_path))}",
+            (
+                f"exec {shlex.quote(str(executable))} serve "
+                f"--host {shlex.quote(host)} --port {port} "
+                f">> {shlex.quote(str(serve_log_path))} 2>&1"
+            ),
+        ]
+    )
+
+
+def _current_callumployed_executable() -> Path:
+    command_path = Path(sys.argv[0]).resolve()
+    if command_path.exists():
+        return command_path
+    path_command = shutil.which(sys.argv[0]) or shutil.which("callumployed")
+    if path_command:
+        return Path(path_command).resolve()
+    return command_path
+
+
+def _shutdown_server(server: BaseServer) -> None:
+    server.shutdown()
 
 
 def run_server(host: str, port: int) -> None:

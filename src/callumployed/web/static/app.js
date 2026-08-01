@@ -61,6 +61,7 @@ const centralSaveButton = document.querySelector("#central-save-button");
 const centralSyncButton = document.querySelector("#central-sync-button");
 const recommendationHistorySummary = document.querySelector("#recommendation-history-summary");
 const clearRecommendationHistoryButton = document.querySelector("#clear-recommendation-history");
+const appUpdateButton = document.querySelector("#app-update-button");
 const companiesView = document.querySelector("#companies-view");
 const companiesCloseButton = document.querySelector("#companies-close");
 const companiesStatus = document.querySelector("#companies-status");
@@ -806,6 +807,7 @@ function setSettingsDisabled(disabled) {
   });
   centralSaveButton.disabled = disabled;
   centralSyncButton.disabled = disabled || !centralApiUrlInput.value.trim();
+  appUpdateButton.disabled = disabled;
 }
 
 async function openSettingsView() {
@@ -934,6 +936,23 @@ async function syncCentralCompanies() {
   } catch {
     settingsStatus.textContent = "could not sync companies.";
     centralSyncButton.disabled = !centralApiUrlInput.value.trim();
+  }
+}
+
+async function updateApp() {
+  const confirmed = window.confirm("Update callumployed and restart the tracker?");
+  if (!confirmed) return;
+  setSettingsDisabled(true);
+  appUpdateButton.disabled = true;
+  settingsStatus.textContent = "updating callumployed; tracker will restart shortly...";
+  settingsStatus.classList.remove("is-empty");
+  try {
+    const response = await fetch("/api/app/update", { method: "POST" });
+    if (!response.ok) throw new Error("App update failed");
+    settingsStatus.textContent = "update started. reconnect in a moment.";
+  } catch {
+    settingsStatus.textContent = "could not start update.";
+    setSettingsDisabled(false);
   }
 }
 
@@ -2882,6 +2901,8 @@ centralApiUrlInput.addEventListener("input", () => {
 centralSyncButton.addEventListener("click", syncCentralCompanies);
 
 clearRecommendationHistoryButton.addEventListener("click", clearRecommendationHistory);
+
+appUpdateButton.addEventListener("click", updateApp);
 
 loadTracker().catch(() => {
   statusListEl.innerHTML = '<p class="empty-copy">could not load jobs.</p>';
