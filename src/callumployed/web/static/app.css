@@ -96,6 +96,13 @@ body::after {
   pointer-events: none;
 }
 
+.review-open::after,
+.prep-open::after,
+.settings-open::after,
+.companies-open::after {
+  animation-play-state: paused;
+}
+
 .shell {
   position: relative;
   z-index: 1;
@@ -1342,8 +1349,7 @@ a:hover .role-link-icon {
   background:
     linear-gradient(115deg, rgb(45 224 111 / 0.18), transparent 28%),
     linear-gradient(245deg, rgb(95 43 216 / 0.18), transparent 30%),
-    rgb(255 254 253 / 0.72);
-  backdrop-filter: blur(2px);
+    rgb(255 254 253 / 0.96);
 }
 
 .review-view[hidden] {
@@ -1594,8 +1600,7 @@ a:hover .role-link-icon {
   gap: 10px;
   padding: 12px max(16px, calc((100% - 900px) / 2));
   border-top: 1px solid rgb(255 255 255 / 0.72);
-  background: linear-gradient(180deg, rgb(255 255 255 / 0.84), rgb(246 255 250 / 0.94));
-  backdrop-filter: blur(14px);
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.96), rgb(246 255 250 / 0.98));
 }
 
 .prep-actions {
@@ -2170,8 +2175,7 @@ a:hover .role-link-icon {
   background:
     linear-gradient(115deg, rgb(45 224 111 / 0.18), transparent 28%),
     linear-gradient(245deg, rgb(95 43 216 / 0.18), transparent 30%),
-    rgb(255 254 253 / 0.72);
-  backdrop-filter: blur(2px);
+    rgb(255 254 253 / 0.96);
 }
 
 .settings-view[hidden] {
@@ -2458,8 +2462,7 @@ a:hover .role-link-icon {
   background:
     linear-gradient(115deg, rgb(45 224 111 / 0.18), transparent 28%),
     linear-gradient(245deg, rgb(95 43 216 / 0.18), transparent 30%),
-    rgb(255 254 253 / 0.72);
-  backdrop-filter: blur(2px);
+    rgb(255 254 253 / 0.96);
 }
 
 .companies-view[hidden] {
