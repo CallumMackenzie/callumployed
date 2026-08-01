@@ -90,6 +90,8 @@ def test_resume_feedback_prompt_includes_verdict_rules_and_context() -> None:
     assert '"tweak"' in prompt
     assert "add skills matching the posting" in prompt
     assert "change wording to align with posting" in prompt
+    assert "match the existing resume structure" in prompt
+    assert "macros" in prompt
     assert "resume_context" in prompt
     assert "job_context" in prompt
     assert "Python distributed systems internship" in prompt

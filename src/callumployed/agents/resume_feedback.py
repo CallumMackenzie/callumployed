@@ -80,6 +80,10 @@ Every add_skills or change_wording item must include either:
 Do not return broad keyword advice such as "mention distributed systems" unless the
 exact supported resume text to edit or the exact supported LaTeX addition is provided.
 Do not invent experience.
+When proposing LaTeX additions or replacements, match the existing resume structure
+and layout when that makes sense: reuse the resume's current section style, bullet
+macros, indentation, tone, density, and ordering conventions instead of introducing
+a new visual pattern.
 
 For move_emphasis items, first verify the current resume ordering from
 resume_context.content. Only suggest moving a role/project earlier when the exact
