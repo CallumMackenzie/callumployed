@@ -453,6 +453,67 @@ def test_scan_company_persists_page_and_candidates(
     assert "already in database" in existing.reasons
 
 
+def test_scan_company_closes_disinterested_roles_missing_from_scan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+        **_render_options: object,
+    ) -> RenderedPageState:
+        return _page(url)
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Acme"))
+        if company.id is None:
+            raise AssertionError("company id missing")
+        add_company_career_page(
+            connection,
+            CompanyCareerPage(company_id=company.id, url="https://example.com/careers"),
+        )
+        seen_role = add_role(
+            connection,
+            Role(
+                company_id=company.id,
+                title="Seen disinterested",
+                role_url="https://example.com/jobs/software-engineering-intern-12345",
+                role_status=RoleStatus.DISINTERESTED,
+            ),
+        )
+        missing_role = add_role(
+            connection,
+            Role(
+                company_id=company.id,
+                title="Missing disinterested",
+                role_url="https://example.com/jobs/missing",
+                role_status=RoleStatus.DISINTERESTED,
+            ),
+        )
+        if seen_role.id is None or missing_role.id is None:
+            raise AssertionError("role ids missing")
+
+    scan = asyncio.run(
+        scan_workflow.scan_company(
+            company,
+            chat_model_factory=lambda _settings: EmptyStructuredModel(),
+        )
+    )
+
+    assert scan is not None
+    with db.connect() as connection:
+        seen_role = get_role(connection, seen_role.id)
+        missing_role = get_role(connection, missing_role.id)
+
+    assert seen_role.role_status is RoleStatus.DISINTERESTED
+    assert missing_role.role_status is RoleStatus.CLOSED
+
+
 def test_scan_company_skips_previously_rejected_role_candidates(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

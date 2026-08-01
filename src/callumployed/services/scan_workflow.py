@@ -42,6 +42,8 @@ from callumployed.data.repositories import (
     list_rejected_role_urls,
     list_role_discovery_attempts,
     list_roles,
+    list_scan_candidates,
+    list_scan_pages,
     set_role_status,
     should_include_graduate_degree_roles,
     should_include_hardware_roles,
@@ -1301,6 +1303,12 @@ async def scan_company(
             connection,
             scan_run_id=scan_run.id,
         )
+        _close_missing_disinterested_roles(
+            connection,
+            company_id=company.id,
+            scan_run_id=scan_run.id,
+            role_discovery_attempts=role_discovery_attempts,
+        )
 
     return {
         "company": current_company,
@@ -1314,6 +1322,40 @@ async def scan_company(
         "internship_mode": internship_mode,
         "location_filter": location_filter,
     }
+
+
+def _close_missing_disinterested_roles(
+    connection: Any,
+    *,
+    company_id: int,
+    scan_run_id: int,
+    role_discovery_attempts: list[RoleDiscoveryAttempt],
+) -> None:
+    seen_role_ids = {
+        attempt.role_id for attempt in role_discovery_attempts if attempt.role_id is not None
+    }
+    seen_role_urls = {
+        candidate.url
+        for page in list_scan_pages(connection, scan_run_id)
+        if page.id is not None
+        for candidate in list_scan_candidates(connection, page.id)
+    }
+    for role in list_roles(connection):
+        if (
+            role.id is None
+            or role.company_id != company_id
+            or role.role_status is not RoleStatus.DISINTERESTED
+        ):
+            continue
+        if role.id in seen_role_ids or role.role_url in seen_role_urls:
+            continue
+        set_role_status(
+            connection,
+            role.id,
+            RoleStatus.CLOSED,
+            summary="Disinterested role marked closed after it was missing from scan.",
+            source=EventSource.SCAN,
+        )
 
 
 async def _scan_career_page_with_timeout_retry(

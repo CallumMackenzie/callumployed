@@ -78,6 +78,8 @@ from callumployed.data.repositories import (
     list_resume_feedback_knowledge,
     list_role_discovery_attempts,
     list_role_items,
+    list_scan_candidates,
+    list_scan_pages,
     list_scan_runs,
     record_resume_feedback_history,
     record_role_review_later,
@@ -318,25 +320,44 @@ def build_tracker_payload(query: str | None = None) -> dict[str, Any]:
     with db.connect() as connection:
         stats = get_tracking_stats(connection)
         roles = list_role_items(connection, query=query)
-        latest_scan_runs = list_scan_runs(connection, limit=1)
-        latest_scan_run_id = latest_scan_runs[0].id if latest_scan_runs else None
-        latest_scan_role_ids = (
-            {
+        latest_scan_ids_by_company: dict[int, int] = {}
+        latest_scan_role_ids_by_company: dict[int, set[int]] = {}
+        latest_scan_role_urls_by_company: dict[int, set[str]] = {}
+        for company_id in {role.company_id for role in roles}:
+            latest_scan_runs = list_scan_runs(connection, company_id=company_id, limit=1)
+            if not latest_scan_runs or latest_scan_runs[0].id is None:
+                continue
+            latest_scan_run = latest_scan_runs[0]
+            latest_scan_ids_by_company[company_id] = latest_scan_run.id
+            latest_scan_role_ids_by_company[company_id] = {
                 attempt.role_id
                 for attempt in list_role_discovery_attempts(
                     connection,
-                    scan_run_id=latest_scan_run_id,
+                    scan_run_id=latest_scan_run.id,
                 )
                 if attempt.role_id is not None
             }
-            if latest_scan_run_id is not None
-            else set()
-        )
+            latest_scan_role_urls_by_company[company_id] = {
+                candidate.url
+                for page in list_scan_pages(connection, latest_scan_run.id)
+                if page.id is not None
+                for candidate in list_scan_candidates(connection, page.id)
+            }
 
     grouped_roles: dict[str, list[dict[str, Any]]] = {status.value: [] for status in RoleStatus}
     for role in roles:
         payload = _role_payload(role)
+        latest_scan_role_ids = latest_scan_role_ids_by_company.get(role.company_id, set())
+        latest_scan_role_urls = latest_scan_role_urls_by_company.get(role.company_id, set())
+        seen_in_latest_scan = (
+            role.id in latest_scan_role_ids or role.role_url in latest_scan_role_urls
+        )
         payload["updated_in_latest_scan"] = role.id in latest_scan_role_ids
+        payload["missing_from_latest_scan"] = (
+            role.role_status in {RoleStatus.DISCOVERED, RoleStatus.INTERESTED}
+            and role.company_id in latest_scan_ids_by_company
+            and not seen_in_latest_scan
+        )
         grouped_roles[role.role_status.value].append(payload)
     grouped_roles[RoleStatus.CLOSED.value].sort(
         key=lambda role: bool(role["updated_in_latest_scan"]),

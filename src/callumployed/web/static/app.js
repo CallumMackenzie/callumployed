@@ -535,6 +535,7 @@ function renderJob(job, statusKey) {
           <span class="job-company">[${escapeUiText(job.company_name)}]</span>
           ${renderRoleTitle(job.title, job.role_url, "job-title")}
           ${statusKey === "closed" && job.updated_in_latest_scan ? renderLatestScanDot() : ""}
+          ${["discovered", "interested"].includes(statusKey) && job.missing_from_latest_scan ? renderMissingLatestScanDot() : ""}
         </span>
       </summary>
       <div class="job-detail">
@@ -565,6 +566,10 @@ function renderJob(job, statusKey) {
 
 function renderLatestScanDot() {
   return '<span class="latest-scan-dot" title="updated in latest scan" aria-label="updated in latest scan"></span>';
+}
+
+function renderMissingLatestScanDot() {
+  return '<span class="missing-latest-scan-dot" title="not seen in latest scan" aria-label="not seen in latest scan"></span>';
 }
 
 function renderDiscoveredActions(job) {

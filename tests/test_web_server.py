@@ -2018,6 +2018,67 @@ def test_tracker_payload_marks_closed_roles_updated_in_latest_scan_only(
     assert jobs_by_title["Latest Closed"]["updated_in_latest_scan"] is True
 
 
+def test_tracker_payload_marks_discovered_and_interested_roles_missing_from_latest_scan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-missing-latest-scan.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(app, ["companies", "add", "Beta", "https://beta.example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Missing Discovered", "https://example.com/jobs/missing"],
+        env=env,
+    )
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Seen Interested", "https://example.com/jobs/seen"],
+        env=env,
+    )
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Stale Interested", "https://example.com/jobs/stale"],
+        env=env,
+    )
+    runner.invoke(
+        app,
+        [
+            "roles",
+            "add",
+            "2",
+            "Other Company Interested",
+            "https://beta.example.com/jobs/other",
+        ],
+        env=env,
+    )
+    runner.invoke(app, ["roles", "set-status", "2", "interested"], env=env)
+    runner.invoke(app, ["roles", "set-status", "3", "interested"], env=env)
+    runner.invoke(app, ["roles", "set-status", "4", "interested"], env=env)
+
+    with db.connect() as connection:
+        old_scan = create_scan_run(connection, 1)
+        assert old_scan.id is not None
+        _add_scan_candidate(connection, old_scan.id, "https://example.com/jobs/stale")
+        finish_scan_run(connection, old_scan.id, ScanStatus.SUCCEEDED)
+
+        latest_scan = create_scan_run(connection, 1)
+        assert latest_scan.id is not None
+        _add_scan_candidate(connection, latest_scan.id, "https://example.com/jobs/seen")
+        finish_scan_run(connection, latest_scan.id, ScanStatus.SUCCEEDED)
+
+    payload = build_tracker_payload()
+    discovered = next(status for status in payload["statuses"] if status["key"] == "discovered")
+    interested = next(status for status in payload["statuses"] if status["key"] == "interested")
+    assert discovered["jobs"][0]["missing_from_latest_scan"] is True
+    interested_by_title = {job["title"]: job for job in interested["jobs"]}
+    assert interested_by_title["Seen Interested"]["missing_from_latest_scan"] is False
+    assert interested_by_title["Stale Interested"]["missing_from_latest_scan"] is True
+    assert interested_by_title["Other Company Interested"]["missing_from_latest_scan"] is False
+
+
 def test_tracker_status_endpoint_moves_role(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
