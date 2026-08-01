@@ -9,7 +9,6 @@ def test_role_status_values_match_planned_lifecycle() -> None:
         "discovered",
         "interested",
         "disinterested",
-        "prepared",
         "applied",
         "OA",
         "interview",

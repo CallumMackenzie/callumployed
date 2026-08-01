@@ -81,7 +81,6 @@ CREATE TABLE IF NOT EXISTS roles (
             'discovered',
             'interested',
             'disinterested',
-            'prepared',
             'applied',
             'OA',
             'interview',

@@ -8,7 +8,6 @@ class RoleStatus(StrEnum):
     DISCOVERED = "discovered"
     INTERESTED = "interested"
     DISINTERESTED = "disinterested"
-    PREPARED = "prepared"
     APPLIED = "applied"
     OA = "OA"
     INTERVIEW = "interview"

@@ -106,7 +106,6 @@ STATUS_LABELS: dict[str, str] = {
     RoleStatus.DISCOVERED.value: "discovered",
     RoleStatus.INTERESTED.value: "interested",
     RoleStatus.DISINTERESTED.value: "disinterested",
-    RoleStatus.PREPARED.value: "prepared",
     RoleStatus.APPLIED.value: "applied",
     RoleStatus.OA.value: "oa",
     RoleStatus.INTERVIEW.value: "interview",
@@ -945,12 +944,6 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                     feedback=feedback,
                     response="accepted",
                     comment=_optional_comment(payload.get("comment")),
-                )
-                role = set_role_status(
-                    connection,
-                    role_id,
-                    RoleStatus.PREPARED,
-                    summary="Custom resume prepared from accepted AI feedback.",
                 )
             self._send_json(
                 {

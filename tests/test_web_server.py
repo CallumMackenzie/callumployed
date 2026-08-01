@@ -143,8 +143,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=20260731-17" in markup
-        assert "/assets/app.js?v=20260731-17" in markup
+        assert "/assets/app.css?v=20260731-18" in markup
+        assert "/assets/app.js?v=20260731-18" in markup
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -367,7 +367,7 @@ def test_prep_feedback_acceptance_updates_role_resume_copy(
         resume_path = Path(payload["resume_path"])
         assert response.status == 200
         assert payload["accepted"] is True
-        assert payload["role"]["role_status"] == "prepared"
+        assert payload["role"]["role_status"] == "discovered"
         assert resume_path == resume_root / "role-1" / "resume.tex"
         resume_content = resume_path.read_text()
         assert "% callumployed accepted prep feedback" in resume_content

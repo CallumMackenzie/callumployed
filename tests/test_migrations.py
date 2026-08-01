@@ -1,6 +1,8 @@
 import sqlite3
 from pathlib import Path
 
+from callumployed.data import db as app_db
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -91,6 +93,68 @@ def test_initial_schema_rejects_invalid_role_status() -> None:
         return
 
     raise AssertionError("invalid role_status should violate the CHECK constraint")
+
+
+def test_initial_schema_rejects_prepared_role_status() -> None:
+    connection = sqlite3.connect(":memory:")
+    apply_initial_schema(connection)
+    connection.execute("INSERT INTO companies (id, name) VALUES (1, 'Acme')")
+
+    try:
+        connection.execute(
+            """
+            INSERT INTO roles (company_id, title, role_url, role_status)
+            VALUES (1, 'Software Engineer', 'https://example.com/jobs/1', 'prepared')
+            """
+        )
+    except sqlite3.IntegrityError:
+        return
+
+    raise AssertionError("prepared should no longer be a valid role_status")
+
+
+def test_migrations_convert_legacy_prepared_roles_to_interested() -> None:
+    connection = app_db.connect(":memory:")
+    connection.execute(
+        """
+        CREATE TABLE companies (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE roles (
+            id INTEGER PRIMARY KEY,
+            company_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            role_url TEXT NOT NULL,
+            role_status TEXT NOT NULL DEFAULT 'discovered' CHECK (
+                role_status IN ('discovered', 'interested', 'prepared')
+            ),
+            first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (company_id) REFERENCES companies (id) ON DELETE CASCADE
+        )
+        """
+    )
+    connection.execute("INSERT INTO companies (id, name) VALUES (1, 'Acme')")
+    connection.execute(
+        """
+        INSERT INTO roles (company_id, title, role_url, role_status)
+        VALUES (1, 'Software Engineer', 'https://example.com/jobs/1', 'prepared')
+        """
+    )
+
+    app_db.run_migrations(connection)
+
+    row = connection.execute("SELECT role_status FROM roles WHERE id = 1").fetchone()
+    assert row["role_status"] == "interested"
 
 
 def test_initial_schema_supports_company_role_scan_and_event() -> None:

@@ -1049,13 +1049,6 @@ h1 {
   --bucket-glow: rgb(98 105 112 / 0.16);
 }
 
-.status-pane[data-bucket="prepared"] {
-  --bucket: #00a6d6;
-  --bucket-bg: #e2f8ff;
-  --bucket-line: #abe4f2;
-  --bucket-glow: rgb(0 166 214 / 0.18);
-}
-
 .status-pane[data-bucket="applied"] {
   --bucket: #2257ad;
   --bucket-bg: #e7f0fb;
@@ -1948,76 +1941,6 @@ a:hover .role-link-icon {
   color: var(--text);
   font: 0.74rem/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   text-transform: none;
-}
-
-.latex-editor {
-  position: relative;
-  min-height: 260px;
-}
-
-.latex-editor-highlight,
-.latex-editor textarea {
-  width: 100%;
-  min-height: 260px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 10px;
-  font: 0.74rem/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  letter-spacing: 0;
-  tab-size: 2;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.latex-editor-highlight {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  margin: 0;
-  background: rgb(255 255 255 / 0.86);
-  color: var(--text);
-  pointer-events: none;
-}
-
-.latex-editor-highlight code {
-  font: inherit;
-}
-
-.latex-editor textarea {
-  position: relative;
-  z-index: 1;
-  background: transparent;
-  color: transparent;
-  caret-color: var(--text);
-  -webkit-text-fill-color: transparent;
-}
-
-.latex-editor textarea::selection {
-  background: rgb(45 224 111 / 0.22);
-}
-
-.latex-token-command {
-  color: #2463eb;
-  font-weight: 850;
-}
-
-.latex-token-environment {
-  color: #7c3aed;
-  font-weight: 850;
-}
-
-.latex-token-comment {
-  color: #64748b;
-  font-style: italic;
-}
-
-.latex-token-math {
-  color: #b45309;
-}
-
-.latex-token-punctuation {
-  color: #0f766e;
-  font-weight: 800;
 }
 
 .prep-cover-latex textarea:focus {

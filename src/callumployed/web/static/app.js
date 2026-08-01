@@ -259,36 +259,11 @@ function renderLatexHighlight(value) {
 }
 
 function syncLatexEditorHighlight(textarea) {
-  const highlight = textarea
-    ?.closest(".latex-editor")
-    ?.querySelector(".latex-editor-highlight code");
-  if (!highlight) return;
-  highlight.innerHTML = renderLatexHighlight(textarea.value);
-  const mirror = highlight.parentElement;
-  mirror.scrollTop = textarea.scrollTop;
-  mirror.scrollLeft = textarea.scrollLeft;
-  mirror.style.height = `${textarea.clientHeight}px`;
+  return textarea;
 }
 
 function enhanceLatexEditor(textarea) {
-  if (!textarea || textarea.closest(".latex-editor")) {
-    syncLatexEditorHighlight(textarea);
-    return;
-  }
-  const wrapper = document.createElement("div");
-  wrapper.className = "latex-editor";
-  const mirror = document.createElement("pre");
-  mirror.className = "latex-editor-highlight";
-  mirror.setAttribute("aria-hidden", "true");
-  mirror.append(document.createElement("code"));
-
-  textarea.before(wrapper);
-  wrapper.append(mirror, textarea);
-  if (window.ResizeObserver) {
-    const observer = new ResizeObserver(() => syncLatexEditorHighlight(textarea));
-    observer.observe(textarea);
-  }
-  syncLatexEditorHighlight(textarea);
+  return textarea;
 }
 
 function enhancePrepLatexEditors(root = prepCard) {

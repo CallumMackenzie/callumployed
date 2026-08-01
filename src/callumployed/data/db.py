@@ -40,6 +40,7 @@ def run_migrations(connection: turso.Connection) -> None:
     _ensure_role_information_columns(connection)
     _ensure_role_central_columns(connection)
     _ensure_role_discovery_assessment_columns(connection)
+    _remove_prepared_role_status(connection)
     _backfill_legacy_company_career_pages(connection)
     connection.commit()
 
@@ -269,6 +270,17 @@ def _ensure_role_discovery_assessment_columns(connection: turso.Connection) -> N
             connection.execute(
                 f"ALTER TABLE role_discovery_attempts ADD COLUMN {column_name} {definition}"
             )
+
+
+def _remove_prepared_role_status(connection: turso.Connection) -> None:
+    connection.execute(
+        """
+        UPDATE roles
+        SET role_status = 'interested',
+            updated_at = datetime('now')
+        WHERE role_status = 'prepared'
+        """
+    )
 
 
 def _backfill_legacy_company_career_pages(connection: turso.Connection) -> None:
