@@ -276,7 +276,7 @@ def _score_closed_role(path: str, haystack: str) -> ScoreRuleResult | None:
 
 def _score_numeric_job_id(path: str) -> ScoreRuleResult | None:
     if JOB_ID_PATTERN.search(path):
-        return 0.18, "numeric job id"
+        return 0.28, "numeric job id"
     return None
 
 

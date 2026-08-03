@@ -32,12 +32,13 @@ SEARCH_FILTER_NOISE_PATTERN = re.compile(
     r"\b(?:state\s*[-:]\s*select|help\s+us\s+improve\s+our\s+website|"
     r"privacy\s*&\s*legal|skip\s+navigation|street\s+view\s+puzzles|"
     r"departments\s+open\s+roles\s+programs|who\s+we\s+are\s+trade\s+with\s+us|"
-    r"diversity\s*&\s+inclusion\s+contact|north\s+america\s+new\s+york\s+city)\b",
+    r"diversity\s*&\s+inclusion\s+contact|early\s+careers\s+blog\s+jobs|"
+    r"north\s+america\s+new\s+york\s+city)\b",
     re.I,
 )
 LOCATION_CONTEXT_PATTERNS = (
     re.compile(
-        r"\blocation\s+(.{2,140}?)(?=\s+(?:department|team|apply|share\b|$))",
+        r"\blocation\s*:?\s+(.{2,140}?)(?=\s+(?:department|team|apply|share\b|$))",
         re.I,
     ),
     re.compile(

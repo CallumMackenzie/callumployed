@@ -85,7 +85,17 @@ ROLE_PAGE_CONTENT_SETTLE_POLL_MS = browser.ROLE_PAGE_CONTENT_SETTLE_POLL_MS
 ROLE_PAGE_LAZY_SCROLL_STEP_DELAY_MS = browser.ROLE_PAGE_LAZY_SCROLL_STEP_DELAY_MS
 render_careers_page = browser.render_careers_page
 GRADUATE_DEGREE_ROLE_PATTERN = re.compile(
-    r"\b(?:ph\.?\s*d\.?|phd|doctorate|doctoral|master'?s|masters|m\.?\s*sc\.?)\b",
+    r"\b(?:ph\.?\s*d\.?|phd|doctorate|doctoral|mba|m\.?\s*sc\.?)\b",
+    re.I,
+)
+MASTER_DEGREE_PATTERN = re.compile(r"\b(?:master'?s|masters)\b", re.I)
+BACHELOR_OR_MASTER_PATTERN = re.compile(
+    r"\b(?:bachelor'?s|bachelors|bs|b\.?\s*s\.?|ba|b\.?\s*a\.?)"
+    r"(?:\s*/\s*|\s+or\s+|\s+and\s+)"
+    r"(?:master'?s|masters|ms|m\.?\s*s\.?|m\.?\s*sc\.?)\b|"
+    r"\b(?:master'?s|masters|ms|m\.?\s*s\.?|m\.?\s*sc\.?)"
+    r"(?:\s*/\s*|\s+or\s+|\s+and\s+)"
+    r"(?:bachelor'?s|bachelors|bs|b\.?\s*s\.?|ba|b\.?\s*a\.?)\b",
     re.I,
 )
 HARDWARE_ROLE_PATTERN = re.compile(r"\bhardware\b", re.I)
@@ -98,6 +108,7 @@ SOFTWARE_KEYWORD_PATTERN = re.compile(
     r"software|ai|artificial intelligence|ml|machine learning|developer|swe|sde|"
     r"development|firmware|backend|back-end|frontend|front-end|full[ -]?stack|"
     r"mobile|ios|android|web|platform|infrastructure|infra|data|cloud|systems|"
+    r"llm|foundation model|multimodal|speech model|vision model|"
     r"security|devops|site reliability|sre|distributed systems|compiler|"
     r"programming|coding|automation|qa|quality assurance|test engineering"
     r")\b",
@@ -116,8 +127,9 @@ CANADA_LOCATION_PATTERN = re.compile(
 USA_LOCATION_PATTERN = re.compile(
     r"\b(?:united states|usa|u\.s\.a\.|u\.s\.|us|new york|nyc|chicago|"
     r"palo alto|san francisco|san mateo|santa clara|santa clarita|"
-    r"mountain view|menlo park|los gatos|austin|bellevue|carrollton|"
-    r"fremont|miami|california|texas|washington|ca|ny|il|tx|wa|fl)\b",
+    r"mountain view|menlo park|los gatos|san jose|seattle|los angeles|"
+    r"austin|bellevue|carrollton|fremont|miami|california|texas|"
+    r"washington|ca|ny|il|tx|wa|fl)\b",
     re.I,
 )
 INTERNATIONAL_LOCATION_PATTERN = re.compile(
@@ -1073,7 +1085,11 @@ def _location_categories(location: str | None) -> set[str]:
 
 def _is_graduate_degree_role(title: str | None, description: str | None) -> bool:
     text = " ".join(part for part in (title, description) if part)
-    return bool(GRADUATE_DEGREE_ROLE_PATTERN.search(text))
+    if GRADUATE_DEGREE_ROLE_PATTERN.search(text):
+        return True
+    if not MASTER_DEGREE_PATTERN.search(text):
+        return False
+    return not bool(BACHELOR_OR_MASTER_PATTERN.search(text))
 
 
 def _is_hardware_only_role(title: str | None) -> bool:

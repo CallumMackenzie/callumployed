@@ -1439,6 +1439,41 @@ def test_location_filter_treats_calgary_as_canada() -> None:
     assert not scan_workflow._location_matches_filter("Calgary, AB", "international")
 
 
+def test_location_filter_treats_san_jose_as_usa() -> None:
+    assert scan_workflow._location_matches_filter("San Jose", "usa")
+    assert scan_workflow._location_matches_filter("Seattle", "usa")
+    assert scan_workflow._location_matches_filter("Los Angeles", "usa")
+    assert scan_workflow._location_matches_filter("San Jose", "north_america")
+    assert not scan_workflow._location_matches_filter("San Jose", "canada")
+    assert not scan_workflow._location_matches_filter("San Jose", "international")
+
+
+def test_software_keyword_filter_allows_foundation_model_roles() -> None:
+    assert scan_workflow._has_software_keyword(
+        "Student Researcher (LLM - Seed) - 2027 Start (BS/MS)",
+        None,
+    )
+    assert scan_workflow._has_software_keyword(
+        "Student Researcher (Speech Foundation Model - Seed) - 2027 Start",
+        None,
+    )
+
+
+def test_graduate_degree_filter_allows_bachelors_or_masters_roles() -> None:
+    assert not scan_workflow._is_graduate_degree_role(
+        "Student Researcher (LLM - Seed) - 2027 Start (BS/MS)",
+        "Minimum Qualifications: Currently pursuing a Bachelor's or Master's degree.",
+    )
+    assert scan_workflow._is_graduate_degree_role(
+        "Payment Partnership Project Intern (Global Payment) - 2026 Start (MBA)",
+        None,
+    )
+    assert scan_workflow._is_graduate_degree_role(
+        "Student Researcher - 2026 Start (PhD)",
+        "Must be pursuing a PhD or Master's degree.",
+    )
+
+
 def test_scan_company_requires_intern_keywords_when_internship_mode_enabled(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

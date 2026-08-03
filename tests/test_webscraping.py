@@ -413,6 +413,26 @@ def test_score_candidates_includes_reasons() -> None:
     assert top.reasons
 
 
+def test_bytedance_search_job_id_links_clear_heuristic_threshold() -> None:
+    page = RenderedPageState(
+        url="https://joinbytedance.com/search",
+        final_url="https://joinbytedance.com/search",
+        html="""
+        <a href="/search/7639884334834862341">
+          Student Researcher (AI Foundation Models Infrastructure) Technology Project Intern
+        </a>
+        <a href="/search">Jobs</a>
+        """,
+    )
+    scored = score_candidates(prepare_candidates(extract_link_candidates(page)))
+    links = select_heuristic_links(scored)
+
+    assert "https://joinbytedance.com/search/7639884334834862341" in {
+        link.url for link in links
+    }
+    assert "https://joinbytedance.com/search" not in {link.url for link in links}
+
+
 def test_score_candidates_hard_declines_existing_posting_urls() -> None:
     existing_url = "https://example.com/jobs/software-engineer-product"
     candidates = prepare_candidates(extract_link_candidates(_fixture_page()))
@@ -569,6 +589,16 @@ def test_parse_job_location_normalizes_geograpy_places(
     assert (
         parse_job_location(hrt_nav_location, context_text=hrt_context)
         == "Austin; Chicago; New York; Singapore"
+    )
+    bytedance_nav_location = "s Early Careers Blog Jobs"
+    bytedance_context = (
+        "Life at ByteDance Teams How We Hire Locations Early Careers Blog Jobs Apply EN "
+        "Student Researcher Location: San Jose Team: Technology Employment Type: Intern "
+        "Job Code: A123 Requirements Build software."
+    )
+    assert (
+        parse_job_location(bytedance_nav_location, context_text=bytedance_context)
+        == "San Jose"
     )
 
 
