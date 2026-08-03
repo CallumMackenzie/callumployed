@@ -350,6 +350,92 @@ def test_scan_company_records_ai_classification_errors_on_scan_run(
     assert scan_runs[0].error == "AI classification failed: OpenAI API key is invalid"
 
 
+def test_scan_company_uses_bytedance_api_scanner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+
+    def fake_fetch_page(
+        self: object,
+        career_page: CompanyCareerPage,
+        *,
+        offset: int,
+    ) -> dict[str, object]:
+        _ = self, career_page
+        assert offset == 0
+        return {
+            "data": {
+                "count": 2,
+                "job_post_list": [
+                    {
+                        "id": "7639884334834862341",
+                        "code": "A123",
+                        "title": "Software Engineer Project Intern - 2026 Start (BS/MS)",
+                        "description": "Build distributed systems.",
+                        "requirement": "Currently pursuing a Bachelor's or Master's degree.",
+                        "city_info": {
+                            "en_name": "San Jose",
+                            "parent": {
+                                "en_name": "California",
+                                "parent": {"en_name": "United States of America"},
+                            },
+                        },
+                    },
+                    {
+                        "id": "7639881929596586245",
+                        "code": "A456",
+                        "title": "Student Researcher - 2026 Start (PhD)",
+                        "description": "Build AI systems.",
+                        "requirement": "Currently pursuing a PhD.",
+                        "city_info": {
+                            "en_name": "San Jose",
+                            "parent": {
+                                "en_name": "California",
+                                "parent": {"en_name": "United States of America"},
+                            },
+                        },
+                    },
+                ],
+            }
+        }
+
+    monkeypatch.setattr(
+        "callumployed.services.company_scanners.ByteDanceApiScanner._fetch_page",
+        fake_fetch_page,
+    )
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="ByteDance"))
+        assert company.id is not None
+        add_company_career_page(
+            connection,
+            CompanyCareerPage(
+                company_id=company.id,
+                url="https://joinbytedance.com/search?recruitment_id_list=202%2C301",
+            ),
+        )
+        set_location_filter(connection, "usa")
+
+    scan = asyncio.run(scan_workflow.scan_company(company))
+
+    assert scan is not None
+    assert scan["results"][0].candidates_scanned == 2
+    assert {link.url for link in scan["results"][0].links} == {
+        "https://joinbytedance.com/search/7639884334834862341"
+    }
+    with db.connect() as connection:
+        roles = list_roles(connection)
+        attempts = list_role_discovery_attempts(connection)
+
+    assert len(roles) == 1
+    assert roles[0].title == "Software Engineer Project Intern - 2026 Start (BS/MS)"
+    assert roles[0].location == "San Jose, California, United States of America"
+    assert len(attempts) == 1
+    assert attempts[0].role_id == roles[0].id
+    assert attempts[0].assessment_extraction_method == "html_heuristic"
+
+
 def test_graph_calls_llm_only_with_ambiguous_candidates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
