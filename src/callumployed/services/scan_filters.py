@@ -5,6 +5,17 @@ GRADUATE_DEGREE_ROLE_PATTERN = re.compile(
     re.I,
 )
 MASTER_DEGREE_PATTERN = re.compile(r"\b(?:master'?s|masters)\b", re.I)
+PHD_OR_MASTER_PATTERN = re.compile(
+    r"\b(?:ph\.?\s*d\.?|phd|doctorate|doctoral)\b"
+    r"(?:\s*\(|\s+|\s*/\s*)"
+    r"(?:or\s+|/\s*)"
+    r"(?:master'?s|masters|ms|m\.?\s*s\.?|m\.?\s*sc\.?)\b|"
+    r"\b(?:master'?s|masters|ms|m\.?\s*s\.?|m\.?\s*sc\.?)\b"
+    r"(?:\s*\(|\s+|\s*/\s*)"
+    r"(?:or\s+|/\s*)"
+    r"(?:ph\.?\s*d\.?|phd|doctorate|doctoral)\b",
+    re.I,
+)
 BACHELOR_OR_MASTER_PATTERN = re.compile(
     r"\b(?:bachelor'?s|bachelors|bs|b\.?\s*s\.?|ba|b\.?\s*a\.?)"
     r"(?:\s*/\s*|\s+or\s+|\s+and\s+)"
@@ -90,6 +101,8 @@ def location_categories(location: str | None) -> set[str]:
 
 def is_graduate_degree_role(title: str | None, description: str | None) -> bool:
     text = " ".join(part for part in (title, description) if part)
+    if PHD_OR_MASTER_PATTERN.search(text):
+        return False
     if GRADUATE_DEGREE_ROLE_PATTERN.search(text):
         return True
     if not MASTER_DEGREE_PATTERN.search(text):

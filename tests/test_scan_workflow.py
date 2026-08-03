@@ -436,6 +436,127 @@ def test_scan_company_uses_bytedance_api_scanner(
     assert attempts[0].assessment_extraction_method == "html_heuristic"
 
 
+def test_scan_company_uses_ashby_embedded_job_board(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+    posting_id = "91e0686e-272a-4780-b33d-d7860b94a7b4"
+    posting_description = (
+        "<p>Build physical AI software systems.</p><p>Current PhD or MSc studies.</p>"
+    )
+
+    def fake_fetch_html(self: object, url: str) -> str:
+        _ = self
+        if url == "https://www.appliedintuition.com/careers#jobs-list":
+            return f"""
+            <html>
+              <script>
+                self.__next_f.push([
+                  "jobs",
+                  {{"jobUrl":"https://jobs.ashbyhq.com/applied/{posting_id}"}}
+                ]);
+              </script>
+            </html>
+            """
+        if url == "https://jobs.ashbyhq.com/applied":
+            return f"""
+            <html>
+              <script>
+                window.__appData = {{
+                  "organization": {{"name": "Applied Intuition"}},
+                  "posting": null,
+                  "jobBoard": {{
+                    "jobPostings": [
+                      {{
+                        "id": "{posting_id}",
+                        "title": "Research Intern - 3D Vision and Generation, Self-Driving",
+                        "locationName": "Sunnyvale",
+                        "employmentType": "Intern"
+                      }},
+                      {{
+                        "id": "ffd8635d-43d5-4298-a29c-67eaa45c5a4a",
+                        "title": "Android Software Engineer - Applications",
+                        "locationName": "Sunnyvale",
+                        "employmentType": "FullTime"
+                      }}
+                    ]
+                  }}
+                }};
+              </script>
+            </html>
+            """
+        if url == f"https://jobs.ashbyhq.com/applied/{posting_id}":
+            return f"""
+            <html>
+              <head>
+                <title>Research Intern - 3D Vision and Generation, Self-Driving</title>
+                <script type="application/ld+json">
+                  {{
+                    "@context": "https://schema.org/",
+                    "@type": "JobPosting",
+                    "title": "Research Intern - 3D Vision and Generation, Self-Driving",
+                    "description": "{posting_description}",
+                    "identifier": {{
+                      "@type": "PropertyValue",
+                      "name": "Applied Intuition",
+                      "value": "{posting_id}"
+                    }},
+                    "jobLocation": {{
+                      "@type": "Place",
+                      "address": {{
+                        "@type": "PostalAddress",
+                        "addressLocality": "Sunnyvale",
+                        "addressRegion": "California",
+                        "addressCountry": "United States"
+                      }}
+                    }},
+                    "employmentType": "INTERN"
+                  }}
+                </script>
+              </head>
+              <body>Research Intern - 3D Vision and Generation, Self-Driving</body>
+            </html>
+            """
+        raise AssertionError(f"unexpected Ashby URL: {url}")
+
+    monkeypatch.setattr(
+        "callumployed.services.company_scanners.AshbyJobBoardScanner._fetch_html",
+        fake_fetch_html,
+    )
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Applied Intuition"))
+        assert company.id is not None
+        add_company_career_page(
+            connection,
+            CompanyCareerPage(
+                company_id=company.id,
+                url="https://www.appliedintuition.com/careers#jobs-list",
+            ),
+        )
+        set_location_filter(connection, "usa")
+        set_include_graduate_degree_roles(connection, True)
+
+    scan = asyncio.run(scan_workflow.scan_company(company))
+
+    assert scan is not None
+    assert scan["results"][0].candidates_scanned == 2
+    assert {link.url for link in scan["results"][0].links} == {
+        f"https://jobs.ashbyhq.com/applied/{posting_id}"
+    }
+    with db.connect() as connection:
+        roles = list_roles(connection)
+        attempts = list_role_discovery_attempts(connection)
+
+    assert len(roles) == 1
+    assert roles[0].title == "Research Intern - 3D Vision and Generation, Self-Driving"
+    assert roles[0].location == "Sunnyvale, CA, United States"
+    assert roles[0].posting_id == posting_id
+    assert len(attempts) == 1
+    assert attempts[0].assessment_extraction_method == "jobposting_structured_data"
+
+
 def test_graph_calls_llm_only_with_ambiguous_candidates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1096,7 +1217,7 @@ def test_scan_company_filters_graduate_degree_roles_by_default(
             }
             </script>
             """,
-            visible_text="PhD Research Intern. Must be pursuing a PhD or Master's degree.",
+            visible_text="PhD Research Intern. Must be pursuing a PhD.",
         )
 
     monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
@@ -1158,7 +1279,7 @@ def test_scan_company_can_include_graduate_degree_roles_when_configured(
               "@context": "https://schema.org",
               "@type": "JobPosting",
               "title": "PhD Research Intern",
-              "description": "PhD Research Intern. Must be pursuing a PhD or Master's degree."
+              "description": "PhD Research Intern. Must be pursuing a PhD."
             }
             </script>
             """,
@@ -1554,9 +1675,13 @@ def test_graduate_degree_filter_allows_bachelors_or_masters_roles() -> None:
         "Payment Partnership Project Intern (Global Payment) - 2026 Start (MBA)",
         None,
     )
+    assert not scan_workflow._is_graduate_degree_role(
+        "Research Intern - 3D Vision and Generation, Self-Driving",
+        "Must be pursuing a PhD (or MSc) in machine learning.",
+    )
     assert scan_workflow._is_graduate_degree_role(
         "Student Researcher - 2026 Start (PhD)",
-        "Must be pursuing a PhD or Master's degree.",
+        "Must be pursuing a PhD.",
     )
 
 
