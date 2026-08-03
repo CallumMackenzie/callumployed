@@ -557,6 +557,250 @@ def test_scan_company_uses_ashby_embedded_job_board(
     assert attempts[0].assessment_extraction_method == "jobposting_structured_data"
 
 
+def test_scan_company_uses_ashby_graphql_when_app_data_has_no_board(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+    posting_id = "bff67718-1dbf-4d66-bcef-8b68d93d716f"
+
+    def fake_fetch_html(self: object, url: str) -> str:
+        _ = self
+        if url == "https://cursor.com/careers":
+            return f'<a href="https://jobs.ashbyhq.com/cursor/{posting_id}">Role</a>'
+        if url == "https://jobs.ashbyhq.com/cursor":
+            return """
+            <script>
+              window.__appData = {
+                "organization": null,
+                "posting": null,
+                "jobBoard": null
+              };
+            </script>
+            """
+        if url == f"https://jobs.ashbyhq.com/cursor/{posting_id}":
+            return f"""
+            <script type="application/ld+json">
+              {{
+                "@context": "https://schema.org/",
+                "@type": "JobPosting",
+                "title": "Software Engineer Intern",
+                "description": "Build model infrastructure.",
+                "identifier": {{"value": "{posting_id}"}},
+                "jobLocation": {{
+                  "@type": "Place",
+                  "address": {{
+                    "@type": "PostalAddress",
+                    "addressLocality": "San Francisco",
+                    "addressRegion": "California",
+                    "addressCountry": "United States"
+                  }}
+                }}
+              }}
+            </script>
+            """
+        raise AssertionError(f"unexpected Ashby URL: {url}")
+
+    def fake_fetch_json(
+        self: object,
+        url: str,
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        _ = self
+        assert url == "https://jobs.ashbyhq.com/api/non-user-graphql?op=ApiJobBoardWithTeams"
+        assert payload["variables"] == {"organizationHostedJobsPageName": "cursor"}
+        return {
+            "data": {
+                "jobBoardWithTeams": {
+                    "jobPostings": [
+                        {
+                            "id": posting_id,
+                            "title": "Software Engineer Intern",
+                            "employmentType": "Intern",
+                            "locationName": "San Francisco",
+                        }
+                    ]
+                }
+            }
+        }
+
+    monkeypatch.setattr(
+        "callumployed.services.company_scanners.AshbyJobBoardScanner._fetch_html",
+        fake_fetch_html,
+    )
+    monkeypatch.setattr(
+        "callumployed.services.company_scanners.AshbyJobBoardScanner._fetch_json",
+        fake_fetch_json,
+    )
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Cursor"))
+        assert company.id is not None
+        add_company_career_page(
+            connection,
+            CompanyCareerPage(company_id=company.id, url="https://cursor.com/careers"),
+        )
+        set_location_filter(connection, "usa")
+
+    scan = asyncio.run(scan_workflow.scan_company(company))
+
+    assert scan is not None
+    assert {link.url for link in scan["results"][0].links} == {
+        f"https://jobs.ashbyhq.com/cursor/{posting_id}"
+    }
+    with db.connect() as connection:
+        roles = list_roles(connection)
+
+    assert len(roles) == 1
+    assert roles[0].title == "Software Engineer Intern"
+
+
+def test_scan_company_uses_direct_greenhouse_job_board(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+
+    def fake_fetch_json(self: object, url: str) -> dict[str, object]:
+        _ = self
+        assert url == (
+            "https://boards-api.greenhouse.io/v1/boards/"
+            "aquaticcapitalmanagement/jobs?content=true"
+        )
+        return {
+            "jobs": [
+                {
+                    "id": 8489233002,
+                    "title": "Software Engineer, Intern (Summer 2027)",
+                    "absolute_url": (
+                        "https://job-boards.greenhouse.io/"
+                        "aquaticcapitalmanagement/jobs/8489233002"
+                    ),
+                    "location": {"name": "Chicago"},
+                    "content": "<p>Build Python systems.</p>",
+                },
+                {
+                    "id": 8489186002,
+                    "title": "Quantitative Researcher, Intern (Summer 2027)",
+                    "absolute_url": (
+                        "https://job-boards.greenhouse.io/"
+                        "aquaticcapitalmanagement/jobs/8489186002"
+                    ),
+                    "location": {"name": "London"},
+                    "content": "<p>Research markets.</p>",
+                },
+                {
+                    "id": 8489226002,
+                    "title": "Software Engineer, Early Career",
+                    "absolute_url": (
+                        "https://job-boards.greenhouse.io/"
+                        "aquaticcapitalmanagement/jobs/8489226002"
+                    ),
+                    "location": {"name": "Chicago"},
+                    "content": "<p>Build Python systems.</p>",
+                },
+            ]
+        }
+
+    monkeypatch.setattr(
+        "callumployed.services.company_scanners.GreenhouseJobBoardScanner._fetch_json",
+        fake_fetch_json,
+    )
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Aquatic Capital Management"))
+        assert company.id is not None
+        add_company_career_page(
+            connection,
+            CompanyCareerPage(
+                company_id=company.id,
+                url=(
+                    "https://job-boards.greenhouse.io/"
+                    "aquaticcapitalmanagement?field_4227559002%5B%5D=34246011002"
+                ),
+            ),
+        )
+        set_location_filter(connection, "usa")
+
+    scan = asyncio.run(scan_workflow.scan_company(company))
+
+    assert scan is not None
+    assert scan["results"][0].candidates_scanned == 3
+    assert {link.url for link in scan["results"][0].links} == {
+        "https://job-boards.greenhouse.io/aquaticcapitalmanagement/jobs/8489233002"
+    }
+    with db.connect() as connection:
+        roles = list_roles(connection)
+        attempts = list_role_discovery_attempts(connection)
+
+    assert len(roles) == 1
+    assert roles[0].title == "Software Engineer, Intern (Summer 2027)"
+    assert roles[0].posting_id == "8489233002"
+    assert len(attempts) == 1
+    assert attempts[0].assessment_extraction_method == "ats_heuristic"
+
+
+def test_scan_company_detects_embedded_greenhouse_api(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+
+    def fake_fetch_html(self: object, url: str) -> str:
+        _ = self
+        assert url == "https://careers.example.com/jobs"
+        return """
+        <script>
+          fetch('https://api.greenhouse.io/v1/boards/robinhood/jobs')
+        </script>
+        """
+
+    def fake_fetch_json(self: object, url: str) -> dict[str, object]:
+        _ = self
+        assert url == "https://api.greenhouse.io/v1/boards/robinhood/jobs?content=true"
+        return {
+            "jobs": [
+                {
+                    "id": 1001,
+                    "title": "Software Engineer Intern, Backend",
+                    "absolute_url": "https://boards.greenhouse.io/robinhood/jobs/1001",
+                    "location": {"name": "Menlo Park, CA"},
+                    "content": "<p>Build backend services.</p>",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        "callumployed.services.company_scanners.GreenhouseJobBoardScanner._fetch_html",
+        fake_fetch_html,
+    )
+    monkeypatch.setattr(
+        "callumployed.services.company_scanners.GreenhouseJobBoardScanner._fetch_json",
+        fake_fetch_json,
+    )
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Robinhood"))
+        assert company.id is not None
+        add_company_career_page(
+            connection,
+            CompanyCareerPage(company_id=company.id, url="https://careers.example.com/jobs"),
+        )
+        set_location_filter(connection, "usa")
+
+    scan = asyncio.run(scan_workflow.scan_company(company))
+
+    assert scan is not None
+    assert {link.url for link in scan["results"][0].links} == {
+        "https://boards.greenhouse.io/robinhood/jobs/1001"
+    }
+    with db.connect() as connection:
+        roles = list_roles(connection)
+
+    assert len(roles) == 1
+    assert roles[0].title == "Software Engineer Intern, Backend"
+
+
 def test_graph_calls_llm_only_with_ambiguous_candidates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1666,6 +1910,17 @@ def test_software_keyword_filter_allows_foundation_model_roles() -> None:
     )
 
 
+def test_software_keyword_filter_rejects_obvious_non_software_titles() -> None:
+    assert not scan_workflow._has_software_keyword(
+        "Customer Experience Associate (New Grad)",
+        "Help customers use our financial platform and products.",
+    )
+    assert not scan_workflow._has_software_keyword(
+        "Accounting Intern (Fall 2026)",
+        "Use automation tools to support accounting workflows.",
+    )
+
+
 def test_graduate_degree_filter_allows_bachelors_or_masters_roles() -> None:
     assert not scan_workflow._is_graduate_degree_role(
         "Student Researcher (LLM - Seed) - 2027 Start (BS/MS)",
@@ -1678,6 +1933,10 @@ def test_graduate_degree_filter_allows_bachelors_or_masters_roles() -> None:
     assert not scan_workflow._is_graduate_degree_role(
         "Research Intern - 3D Vision and Generation, Self-Driving",
         "Must be pursuing a PhD (or MSc) in machine learning.",
+    )
+    assert not scan_workflow._is_graduate_degree_role(
+        "Software Engineer, Intern (Summer 2027)",
+        "Active student pursuing a BS, MS, or PhD in computer science.",
     )
     assert scan_workflow._is_graduate_degree_role(
         "Student Researcher - 2026 Start (PhD)",

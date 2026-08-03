@@ -25,6 +25,14 @@ BACHELOR_OR_MASTER_PATTERN = re.compile(
     r"(?:bachelor'?s|bachelors|bs|b\.?\s*s\.?|ba|b\.?\s*a\.?)\b",
     re.I,
 )
+UNDERGRAD_INCLUDED_DEGREE_PATTERN = re.compile(
+    r"\b(?:bachelor'?s|bachelors|bs|b\.?\s*s\.?|ba|b\.?\s*a\.?)"
+    r"(?:\s*,\s*|\s*/\s*|\s+or\s+|\s+and\s+)"
+    r"(?:master'?s|masters|ms|m\.?\s*s\.?|m\.?\s*sc\.?)"
+    r"(?:\s*,?\s*(?:or\s+|and\s+)|\s*,\s*)"
+    r"(?:ph\.?\s*d\.?|phd|doctorate|doctoral)\b",
+    re.I,
+)
 HARDWARE_ROLE_PATTERN = re.compile(r"\bhardware\b", re.I)
 HARDWARE_SOFTWARE_ESCAPE_PATTERN = re.compile(
     r"\b(?:software|firmware|sde|swe|developer)\b",
@@ -38,6 +46,13 @@ SOFTWARE_KEYWORD_PATTERN = re.compile(
     r"llm|foundation model|multimodal|speech model|vision model|"
     r"security|devops|site reliability|sre|distributed systems|compiler|"
     r"programming|coding|automation|qa|quality assurance|test engineering"
+    r")\b",
+    re.I,
+)
+NON_SOFTWARE_TITLE_PATTERN = re.compile(
+    r"\b(?:"
+    r"accounting|account executive|customer experience|customer support|"
+    r"finance|legal|marketing|recruit(?:er|ing)?|sales|talent acquisition"
     r")\b",
     re.I,
 )
@@ -101,6 +116,8 @@ def location_categories(location: str | None) -> set[str]:
 
 def is_graduate_degree_role(title: str | None, description: str | None) -> bool:
     text = " ".join(part for part in (title, description) if part)
+    if UNDERGRAD_INCLUDED_DEGREE_PATTERN.search(text):
+        return False
     if PHD_OR_MASTER_PATTERN.search(text):
         return False
     if GRADUATE_DEGREE_ROLE_PATTERN.search(text):
@@ -119,6 +136,10 @@ def is_hardware_only_role(title: str | None) -> bool:
 
 
 def has_software_keyword(title: str | None, description: str | None) -> bool:
+    if title and NON_SOFTWARE_TITLE_PATTERN.search(title) and not SOFTWARE_KEYWORD_PATTERN.search(
+        title
+    ):
+        return False
     text = " ".join(part for part in (title, description) if part)
     return bool(SOFTWARE_KEYWORD_PATTERN.search(text))
 
