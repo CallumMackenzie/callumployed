@@ -428,6 +428,9 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             if parsed_url.path == "/api/config":
                 self._send_json(build_config_payload())
                 return
+            if parsed_url.path == "/api/metrics":
+                self._send_json(build_metrics_payload())
+                return
             if parsed_url.path == "/api/companies":
                 self._send_json(build_companies_payload())
                 return
@@ -1744,6 +1747,230 @@ def build_config_payload() -> dict[str, Any]:
     }
 
 
+def build_metrics_payload() -> dict[str, Any]:
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        tracking_stats = get_tracking_stats(connection)
+        company_counts = _query_count_by_value(
+            connection,
+            "SELECT is_active AS value, COUNT(*) AS count FROM companies GROUP BY is_active",
+        )
+        scan_status_counts = _query_count_by_value(
+            connection,
+            "SELECT scan_status AS value, COUNT(*) AS count FROM scan_runs GROUP BY scan_status",
+        )
+        candidate_selected_counts = _query_count_by_value(
+            connection,
+            "SELECT selected AS value, COUNT(*) AS count FROM scan_candidates GROUP BY selected",
+        )
+        candidate_method_counts = _query_count_by_value(
+            connection,
+            """
+            SELECT COALESCE(discovery_method, 'rejected') AS value, COUNT(*) AS count
+            FROM scan_candidates
+            GROUP BY COALESCE(discovery_method, 'rejected')
+            """,
+        )
+        attempt_status_counts = _query_count_by_value(
+            connection,
+            """
+            SELECT status AS value, COUNT(*) AS count
+            FROM role_discovery_attempts
+            GROUP BY status
+            """,
+        )
+        extraction_method_counts = _query_count_by_value(
+            connection,
+            """
+            SELECT COALESCE(assessment_extraction_method, 'unknown') AS value, COUNT(*) AS count
+            FROM role_discovery_attempts
+            GROUP BY COALESCE(assessment_extraction_method, 'unknown')
+            """,
+        )
+        latest_scan_runs = list_scan_runs(connection, limit=8)
+
+        scan_pages_total = _query_count(connection, "SELECT COUNT(*) AS count FROM scan_pages")
+        candidates_total = _query_count(
+            connection,
+            "SELECT COUNT(*) AS count FROM scan_candidates",
+        )
+        candidates_scanned_total = _query_count(
+            connection,
+            "SELECT COALESCE(SUM(candidates_scanned), 0) AS count FROM scan_pages",
+        )
+        role_attempts_total = _query_count(
+            connection,
+            "SELECT COUNT(*) AS count FROM role_discovery_attempts",
+        )
+        role_attempts_accepted = _query_count(
+            connection,
+            """
+            SELECT COUNT(*) AS count
+            FROM role_discovery_attempts
+            WHERE assessment_is_role = 1 AND COALESCE(assessment_is_closed, 0) = 0
+            """,
+        )
+        role_attempts_rejected = _query_count(
+            connection,
+            """
+            SELECT COUNT(*) AS count
+            FROM role_discovery_attempts
+            WHERE assessment_is_role = 0 OR assessment_is_closed = 1
+            """,
+        )
+        visit_failures = _query_count(
+            connection,
+            "SELECT COUNT(*) AS count FROM role_discovery_attempts WHERE status = 'failed'",
+        )
+        llm_link_classifications = _query_count(
+            connection,
+            """
+            SELECT COUNT(*) AS count
+            FROM scan_candidates
+            WHERE discovery_method IN ('agent', 'heuristic+agent')
+            """,
+        )
+        llm_role_assessments = _query_count(
+            connection,
+            """
+            SELECT COUNT(*) AS count
+            FROM role_discovery_attempts
+            WHERE assessment_extraction_method = 'llm'
+            """,
+        )
+        scan_runs_with_agent_trace = _query_count(
+            connection,
+            """
+            SELECT COUNT(*) AS count
+            FROM scan_runs
+            WHERE agent_trace IS NOT NULL AND TRIM(agent_trace) != ''
+            """,
+        )
+        resume_feedback_decisions = count_resume_feedback_history(connection)
+        average_candidate_confidence = _query_float(
+            connection,
+            "SELECT AVG(confidence) AS value FROM scan_candidates",
+        )
+        average_assessment_confidence = _query_float(
+            connection,
+            "SELECT AVG(assessment_confidence) AS value FROM role_discovery_attempts",
+        )
+
+    accepted_links = candidate_selected_counts.get("1", 0)
+    rejected_links = candidate_selected_counts.get("0", 0)
+    total_scan_runs = sum(scan_status_counts.values())
+    failed_scan_runs = scan_status_counts.get(ScanStatus.FAILED.value, 0)
+    succeeded_scan_runs = scan_status_counts.get(ScanStatus.SUCCEEDED.value, 0)
+    running_scan_runs = scan_status_counts.get(ScanStatus.RUNNING.value, 0)
+    ai_total = llm_link_classifications + llm_role_assessments + scan_runs_with_agent_trace
+
+    return {
+        "updated_at": _datetime_or_none(datetime.now(UTC)),
+        "overview": [
+            _metric("active companies", tracking_stats["companies_total"]),
+            _metric("inactive companies", company_counts.get("0", 0)),
+            _metric("tracked roles", tracking_stats["jobs_total"]),
+            _metric("applications", tracking_stats["applications_total"]),
+            _metric("scan runs", total_scan_runs),
+            _metric("accepted links", accepted_links),
+            _metric("rejected links", rejected_links),
+            _metric("ai-assisted items", ai_total),
+        ],
+        "sections": [
+            {
+                "title": "scan runs",
+                "metrics": [
+                    _metric("total", total_scan_runs),
+                    _metric("succeeded", succeeded_scan_runs),
+                    _metric("failed", failed_scan_runs),
+                    _metric("running", running_scan_runs),
+                    _metric("pages scanned", scan_pages_total),
+                    _metric("candidate observations", candidates_scanned_total),
+                ],
+            },
+            {
+                "title": "candidate links",
+                "metrics": [
+                    _metric("stored candidates", candidates_total),
+                    _metric("accepted", accepted_links),
+                    _metric("rejected", rejected_links),
+                    _metric("avg confidence", average_candidate_confidence, kind="ratio"),
+                ],
+            },
+            {
+                "title": "role visits",
+                "metrics": [
+                    _metric("attempts", role_attempts_total),
+                    _metric("accepted roles", role_attempts_accepted),
+                    _metric("rejected after visit", role_attempts_rejected),
+                    _metric("visit failures", visit_failures),
+                    _metric(
+                        "avg assessment confidence",
+                        average_assessment_confidence,
+                        kind="ratio",
+                    ),
+                ],
+            },
+            {
+                "title": "ai usage",
+                "metrics": [
+                    _metric("agent-selected links", llm_link_classifications),
+                    _metric("llm role assessments", llm_role_assessments),
+                    _metric("scan runs with agent trace", scan_runs_with_agent_trace),
+                    _metric("feedback decisions saved", resume_feedback_decisions),
+                ],
+            },
+            {
+                "title": "role statuses",
+                "metrics": [
+                    _metric(STATUS_LABELS.get(status, status), count)
+                    for status, count in dict(tracking_stats["jobs_by_status"]).items()
+                ],
+            },
+            {
+                "title": "application statuses",
+                "metrics": [
+                    _metric(STATUS_LABELS.get(status, status), count)
+                    for status, count in dict(tracking_stats["applications_by_status"]).items()
+                ],
+            },
+            {
+                "title": "candidate methods",
+                "metrics": [
+                    _metric(method, count)
+                    for method, count in sorted(candidate_method_counts.items())
+                ],
+            },
+            {
+                "title": "assessment methods",
+                "metrics": [
+                    _metric(method, count)
+                    for method, count in sorted(extraction_method_counts.items())
+                ],
+            },
+            {
+                "title": "attempt statuses",
+                "metrics": [
+                    _metric(status, count)
+                    for status, count in sorted(attempt_status_counts.items())
+                ],
+            },
+        ],
+        "recent_scans": [
+            {
+                "id": scan.id,
+                "company_id": scan.company_id,
+                "company_name": scan.company_name,
+                "scan_status": scan.scan_status.value,
+                "started_at": _datetime_or_none(scan.started_at),
+                "finished_at": _datetime_or_none(scan.finished_at),
+                "error": scan.error,
+            }
+            for scan in latest_scan_runs
+        ],
+    }
+
+
 def build_master_resume_payload() -> dict[str, Any]:
     with db.connect() as connection:
         resume = get_master_resume(connection)
@@ -2966,6 +3193,31 @@ def _datetime_or_none(value: datetime | None) -> str | None:
         return None
     value = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
     return value.isoformat().replace("+00:00", "Z")
+
+
+def _metric(label: str, value: object, *, kind: str = "count") -> dict[str, object]:
+    return {
+        "label": label,
+        "value": value,
+        "kind": kind,
+    }
+
+
+def _query_count(connection: Any, sql: str) -> int:
+    row = connection.execute(sql).fetchone()
+    return int(row["count"]) if row is not None and row["count"] is not None else 0
+
+
+def _query_float(connection: Any, sql: str) -> float | None:
+    row = connection.execute(sql).fetchone()
+    if row is None or row["value"] is None:
+        return None
+    return float(row["value"])
+
+
+def _query_count_by_value(connection: Any, sql: str) -> dict[str, int]:
+    rows = connection.execute(sql).fetchall()
+    return {str(row["value"]): int(row["count"]) for row in rows}
 
 
 def _role_payload(role: Role | RoleListItem) -> dict[str, Any]:

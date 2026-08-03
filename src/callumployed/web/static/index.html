@@ -6,7 +6,7 @@
     <title>callumployed</title>
     <link rel="icon" href="/assets/camackenzie-logo.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/assets/camackenzie-logo.svg" />
-    <link rel="stylesheet" href="/assets/app.css?v=20260801-4" />
+    <link rel="stylesheet" href="/assets/app.css?v=20260803-1" />
   </head>
   <body>
     <div class="page-background" aria-hidden="true"></div>
@@ -224,59 +224,103 @@
         </header>
         <div class="settings-status" id="settings-status" role="status" aria-live="polite"></div>
         <form class="settings-form" id="settings-form">
-          <div class="settings-options" id="settings-options"></div>
-          <section class="settings-maintenance central-settings" aria-label="central role store">
-            <div class="setting-copy">
-              <span class="setting-label">central role store</span>
-              <span class="setting-description" id="central-store-summary">
-                central store not configured
-              </span>
-              <span class="setting-default" id="central-store-sync-summary">
-                remote company sync available after api url is saved
-              </span>
+          <section class="settings-group" aria-label="filters">
+            <div class="settings-group-heading">
+              <h3>filters</h3>
             </div>
-            <div class="central-settings-controls">
-              <label>
-                <span>api url</span>
-                <input
-                  id="central-api-url-input"
-                  name="central_api_url"
-                  type="url"
-                  value="https://us-central1-callumployed-central.cloudfunctions.net/centralApi"
-                  placeholder="https://us-central1-callumployed-central.cloudfunctions.net/centralApi"
-                />
-              </label>
-              <label>
-                <span>passkey</span>
-                <input id="central-passkey-input" name="central_passkey" type="password" autocomplete="new-password" placeholder="leave blank to keep current" />
-              </label>
-              <div class="central-settings-actions">
-                <button type="submit" id="central-save-button">save central</button>
-                <button type="button" id="central-sync-button">sync companies</button>
+            <div class="settings-options" id="settings-options"></div>
+          </section>
+          <section class="settings-group" aria-label="config">
+            <div class="settings-group-heading">
+              <h3>config</h3>
+            </div>
+            <section class="settings-maintenance central-settings" aria-label="central role store">
+              <div class="setting-copy">
+                <span class="setting-label">central role store</span>
+                <span class="setting-description" id="central-store-summary">
+                  central store not configured
+                </span>
+                <span class="setting-default" id="central-store-sync-summary">
+                  remote company sync available after api url is saved
+                </span>
               </div>
-            </div>
+              <div class="central-settings-controls">
+                <label>
+                  <span>api url</span>
+                  <input
+                    id="central-api-url-input"
+                    name="central_api_url"
+                    type="url"
+                    value="https://us-central1-callumployed-central.cloudfunctions.net/centralApi"
+                    placeholder="https://us-central1-callumployed-central.cloudfunctions.net/centralApi"
+                  />
+                </label>
+                <label>
+                  <span>passkey</span>
+                  <input id="central-passkey-input" name="central_passkey" type="password" autocomplete="new-password" placeholder="leave blank to keep current" />
+                </label>
+                <div class="central-settings-actions">
+                  <button type="submit" id="central-save-button">save central</button>
+                  <button type="button" id="central-sync-button">sync companies</button>
+                </div>
+              </div>
+            </section>
           </section>
-          <section class="settings-maintenance" aria-label="recommendation history">
-            <div class="setting-copy">
-              <span class="setting-label">recommendation history</span>
-              <span class="setting-description" id="recommendation-history-summary">
-                no saved resume feedback decisions
-              </span>
-              <span class="setting-default">used as feedback-agent knowledge base</span>
+          <section class="settings-group" aria-label="app controls">
+            <div class="settings-group-heading">
+              <h3>app controls</h3>
             </div>
-            <button type="button" id="clear-recommendation-history">
-              clear recommendation history
-            </button>
-          </section>
-          <section class="settings-maintenance" aria-label="app update">
-            <div class="setting-copy">
-              <span class="setting-label">app update</span>
-              <span class="setting-description">run the installer update and restart the tracker</span>
-              <span class="setting-default">the page will disconnect while callumployed restarts</span>
-            </div>
-            <button type="button" id="app-update-button">update</button>
+            <section class="settings-maintenance" aria-label="metrics dashboard">
+              <div class="setting-copy">
+                <span class="setting-label">metrics dashboard</span>
+                <span class="setting-description">scan, candidate, role visit, and ai usage totals</span>
+                <span class="setting-default">read-only operational metrics</span>
+              </div>
+              <button type="button" id="metrics-open-button">view metrics</button>
+            </section>
+            <section class="settings-maintenance" aria-label="recommendation history">
+              <div class="setting-copy">
+                <span class="setting-label">recommendation history</span>
+                <span class="setting-description" id="recommendation-history-summary">
+                  no saved resume feedback decisions
+                </span>
+                <span class="setting-default">used as feedback-agent knowledge base</span>
+              </div>
+              <button type="button" id="clear-recommendation-history">
+                clear recommendation history
+              </button>
+            </section>
+            <section class="settings-maintenance" aria-label="app update">
+              <div class="setting-copy">
+                <span class="setting-label">app update</span>
+                <span class="setting-description">run the installer update and restart the tracker</span>
+                <span class="setting-default">the page will disconnect while callumployed restarts</span>
+              </div>
+              <button type="button" id="app-update-button">update</button>
+            </section>
           </section>
         </form>
+      </div>
+    </section>
+
+    <section class="metrics-view" id="metrics-view" aria-label="metrics dashboard" hidden>
+      <div class="metrics-shell">
+        <header class="metrics-header">
+          <div>
+            <p class="eyebrow">callumployed</p>
+            <h2 id="metrics-heading">metrics</h2>
+          </div>
+          <button type="button" id="metrics-close">close</button>
+        </header>
+        <div class="metrics-status" id="metrics-status" role="status" aria-live="polite"></div>
+        <section class="metrics-overview" id="metrics-overview" aria-label="metrics overview"></section>
+        <section class="metrics-sections" id="metrics-sections" aria-label="tracked metrics"></section>
+        <section class="metrics-recent" aria-label="recent scan runs">
+          <div class="metrics-section-heading">
+            <h3>recent scans</h3>
+          </div>
+          <div class="metrics-scan-list" id="metrics-scan-list"></div>
+        </section>
       </div>
     </section>
 
@@ -311,6 +355,6 @@
       </div>
     </section>
 
-    <script src="/assets/app.js?v=20260801-4" type="module"></script>
+    <script src="/assets/app.js?v=20260803-1" type="module"></script>
   </body>
 </html>

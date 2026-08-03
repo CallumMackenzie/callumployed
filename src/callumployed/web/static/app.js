@@ -61,6 +61,13 @@ const centralSaveButton = document.querySelector("#central-save-button");
 const centralSyncButton = document.querySelector("#central-sync-button");
 const recommendationHistorySummary = document.querySelector("#recommendation-history-summary");
 const clearRecommendationHistoryButton = document.querySelector("#clear-recommendation-history");
+const metricsOpenButton = document.querySelector("#metrics-open-button");
+const metricsView = document.querySelector("#metrics-view");
+const metricsCloseButton = document.querySelector("#metrics-close");
+const metricsStatus = document.querySelector("#metrics-status");
+const metricsOverview = document.querySelector("#metrics-overview");
+const metricsSections = document.querySelector("#metrics-sections");
+const metricsScanList = document.querySelector("#metrics-scan-list");
 const appUpdateButton = document.querySelector("#app-update-button");
 const companiesView = document.querySelector("#companies-view");
 const companiesCloseButton = document.querySelector("#companies-close");
@@ -95,6 +102,7 @@ let scanStatusPoll = null;
 let wasScanning = false;
 let scanStatusData = null;
 let settingsData = null;
+let metricsData = null;
 let companiesData = null;
 let roleCompanyData = [];
 const companySaveTimers = new Map();
@@ -838,6 +846,105 @@ async function loadSettings() {
   const response = await fetch("/api/config");
   if (!response.ok) throw new Error("Config request failed");
   renderSettings(await response.json());
+}
+
+function formatMetricValue(metric) {
+  const value = metric?.value;
+  if (value === null || value === undefined) return "n/a";
+  if (metric?.kind === "ratio") {
+    return Number(value).toLocaleString(undefined, {
+      maximumFractionDigits: 2,
+      minimumFractionDigits: 0,
+    });
+  }
+  if (typeof value === "number") return value.toLocaleString();
+  return formatUiText(value);
+}
+
+function renderMetricCard(metric, className = "metric-card") {
+  return `
+    <article class="${className}">
+      <span>${escapeUiText(metric?.label)}</span>
+      <strong>${escapeHtml(formatMetricValue(metric))}</strong>
+    </article>
+  `;
+}
+
+function renderMetrics(payload, message = "") {
+  metricsData = payload;
+  metricsStatus.textContent = message || (payload?.updated_at ? `updated ${formatCompactDate(payload.updated_at)}` : "");
+  metricsStatus.classList.toggle("is-empty", !metricsStatus.textContent);
+  const overview = Array.isArray(payload?.overview) ? payload.overview : [];
+  const sections = Array.isArray(payload?.sections) ? payload.sections : [];
+  const recentScans = Array.isArray(payload?.recent_scans) ? payload.recent_scans : [];
+  metricsOverview.innerHTML = overview.map((metric) => renderMetricCard(metric)).join("");
+  metricsSections.innerHTML = sections.map(renderMetricsSection).join("");
+  metricsScanList.innerHTML = recentScans.length
+    ? recentScans.map(renderMetricsScan).join("")
+    : '<p class="empty-copy">no scan runs recorded.</p>';
+}
+
+function renderMetricsSection(section) {
+  const metrics = Array.isArray(section?.metrics) ? section.metrics : [];
+  return `
+    <section class="metrics-section">
+      <div class="metrics-section-heading">
+        <h3>${escapeUiText(section?.title)}</h3>
+      </div>
+      <div class="metrics-section-grid">
+        ${metrics.map((metric) => renderMetricCard(metric, "metric-card metric-card-compact")).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderMetricsScan(scan) {
+  const status = scan?.scan_status ?? "unknown";
+  const started = scan?.started_at ? formatCompactDate(scan.started_at) : "not started";
+  const finished = scan?.finished_at ? formatCompactDate(scan.finished_at) : "not finished";
+  const error = scan?.error ? `<span>${escapeUiText(scan.error)}</span>` : "";
+  return `
+    <article class="metrics-scan-row">
+      <div>
+        <strong>${escapeUiText(scan?.company_name ?? "unknown company")}</strong>
+        <span>${escapeUiText(started)} -> ${escapeUiText(finished)}</span>
+        ${error}
+      </div>
+      <span class="metrics-status-pill">${escapeUiText(status)}</span>
+    </article>
+  `;
+}
+
+async function openMetricsView() {
+  metricsView.hidden = false;
+  document.body.classList.add("metrics-open");
+  metricsCloseButton.focus();
+  if (metricsData) {
+    renderMetrics(metricsData);
+  } else {
+    metricsStatus.textContent = "loading metrics...";
+    metricsStatus.classList.remove("is-empty");
+    metricsOverview.innerHTML = "";
+    metricsSections.innerHTML = "";
+    metricsScanList.innerHTML = "";
+  }
+  try {
+    await loadMetrics();
+  } catch {
+    metricsStatus.textContent = "could not load metrics.";
+  }
+}
+
+function closeMetricsView() {
+  metricsView.hidden = true;
+  document.body.classList.remove("metrics-open");
+  metricsOpenButton.focus();
+}
+
+async function loadMetrics() {
+  const response = await fetch("/api/metrics");
+  if (!response.ok) throw new Error("Metrics request failed");
+  renderMetrics(await response.json());
 }
 
 async function saveSetting(control) {
@@ -2757,6 +2864,7 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !reviewView.hidden) closeReviewView();
   if (event.key === "Escape" && !prepView.hidden) closePrepView();
   if (event.key === "Escape" && !settingsView.hidden) closeSettingsView();
+  if (event.key === "Escape" && !metricsView.hidden) closeMetricsView();
   if (event.key === "Escape" && !companiesView.hidden) closeCompaniesView();
 });
 
@@ -2809,6 +2917,10 @@ collapseEmptyButton.addEventListener("click", () => {
 settingsOpenButton.addEventListener("click", openSettingsView);
 
 settingsCloseButton.addEventListener("click", closeSettingsView);
+
+metricsOpenButton.addEventListener("click", openMetricsView);
+
+metricsCloseButton.addEventListener("click", closeMetricsView);
 
 manageCompaniesButton.addEventListener("click", openCompaniesView);
 

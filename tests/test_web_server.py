@@ -37,6 +37,7 @@ from callumployed.web.server import (
     LocalThreadingHTTPServer,
     ScanCoordinator,
     build_config_payload,
+    build_metrics_payload,
     build_scan_status_payload,
     build_tracker_payload,
     create_handler,
@@ -157,6 +158,15 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'aria-label="open settings"' in markup
         assert 'id="settings-view"' in markup
         assert 'id="settings-options"' in markup
+        assert 'aria-label="filters"' in markup
+        assert 'aria-label="config"' in markup
+        assert 'aria-label="app controls"' in markup
+        assert 'id="metrics-open-button"' in markup
+        assert "view metrics" in markup
+        assert 'id="metrics-view"' in markup
+        assert 'id="metrics-overview"' in markup
+        assert 'id="metrics-sections"' in markup
+        assert 'id="metrics-scan-list"' in markup
         assert 'id="central-api-url-input"' in markup
         assert DEFAULT_CENTRAL_API_URL in markup
         assert 'id="central-passkey-input"' in markup
@@ -173,12 +183,81 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=20260801-4" in markup
-        assert "/assets/app.js?v=20260801-4" in markup
+        assert "/assets/app.css?v=20260803-1" in markup
+        assert "/assets/app.js?v=20260803-1" in markup
     finally:
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+def test_metrics_payload_reports_scan_candidate_and_ai_counts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "web-metrics.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Acme"))
+        assert company.id is not None
+        scan_run = create_scan_run(connection, company.id)
+        assert scan_run.id is not None
+        scan_page_cursor = connection.execute(
+            """
+            INSERT INTO scan_pages (
+                scan_run_id,
+                source_url,
+                final_url,
+                candidates_scanned,
+                confidence
+            )
+            VALUES (?, 'https://example.com/careers', 'https://example.com/careers', 2, 'high')
+            """,
+            (scan_run.id,),
+        )
+        scan_page_id = int(scan_page_cursor.lastrowid)
+        connection.execute(
+            """
+            INSERT INTO scan_candidates (
+                scan_page_id,
+                url,
+                source_url,
+                text,
+                tag,
+                confidence,
+                selected,
+                discovery_method
+            )
+            VALUES
+                (?, 'https://example.com/jobs/accepted', 'https://example.com/careers',
+                    'Backend Intern', 'a', 0.95, 1, 'heuristic+agent'),
+                (?, 'https://example.com/about', 'https://example.com/careers',
+                    'About', 'a', 0.10, 0, NULL)
+            """,
+            (scan_page_id, scan_page_id),
+        )
+        finish_scan_run(connection, scan_run.id, ScanStatus.SUCCEEDED, agent_trace="agent")
+        connection.commit()
+
+    payload = build_metrics_payload()
+    overview = {metric["label"]: metric["value"] for metric in payload["overview"]}
+    sections = {
+        section["title"]: {metric["label"]: metric["value"] for metric in section["metrics"]}
+        for section in payload["sections"]
+    }
+
+    assert overview["scan runs"] == 1
+    assert overview["accepted links"] == 1
+    assert overview["rejected links"] == 1
+    assert overview["ai-assisted items"] == 2
+    assert sections["scan runs"]["succeeded"] == 1
+    assert sections["scan runs"]["candidate observations"] == 2
+    assert sections["candidate links"]["stored candidates"] == 2
+    assert sections["ai usage"]["agent-selected links"] == 1
+    assert sections["ai usage"]["scan runs with agent trace"] == 1
+    assert payload["recent_scans"][0]["company_name"] == "Acme"
 
 
 def test_prep_analysis_endpoint_reports_resume_fit(
