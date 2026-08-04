@@ -543,6 +543,7 @@ function renderJob(job, statusKey) {
         <span class="job-identity">
           <span class="job-company">[${escapeUiText(job.company_name)}]</span>
           ${renderRoleTitle(job.title, job.role_url, "job-title")}
+          ${statusKey === "interested" && job.prep_started ? renderPrepStartedDot() : ""}
           ${statusKey === "closed" && job.updated_in_latest_scan ? renderLatestScanDot() : ""}
           ${["discovered", "interested"].includes(statusKey) && job.missing_from_latest_scan ? renderMissingLatestScanDot() : ""}
         </span>
@@ -579,6 +580,10 @@ function renderLatestScanDot() {
 
 function renderMissingLatestScanDot() {
   return '<span class="missing-latest-scan-dot" title="not seen in latest scan" aria-label="not seen in latest scan"></span>';
+}
+
+function renderPrepStartedDot() {
+  return '<span class="prep-started-dot" title="application materials started" aria-label="application materials started"></span>';
 }
 
 function renderDiscoveredActions(job) {
@@ -1882,7 +1887,9 @@ function closeReviewView() {
 }
 
 function openPrepView(focusedRoleId = null) {
-  const interestedJobs = [...getInterestedJobs()];
+  const interestedJobs = [...getInterestedJobs()].sort(
+    (left, right) => Number(Boolean(right.prep_started)) - Number(Boolean(left.prep_started)),
+  );
   const focusedId = focusedRoleId == null ? null : String(focusedRoleId);
   if (focusedId) {
     const focusedIndex = interestedJobs.findIndex((role) => String(role.id) === focusedId);

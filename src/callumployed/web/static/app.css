@@ -1233,24 +1233,29 @@ a:hover .role-link-icon {
   transform: translate(1px, -1px);
 }
 
-.latest-scan-dot {
+.latest-scan-dot,
+.missing-latest-scan-dot,
+.prep-started-dot {
   width: 0.58rem;
   height: 0.58rem;
   flex: 0 0 auto;
   border-radius: 999px;
-  background: #f28c18;
-  box-shadow: 0 0 0 2px #fff4e3;
   transform: translateY(-0.02rem);
 }
 
+.latest-scan-dot {
+  background: #f28c18;
+  box-shadow: 0 0 0 2px #fff4e3;
+}
+
 .missing-latest-scan-dot {
-  width: 0.58rem;
-  height: 0.58rem;
-  flex: 0 0 auto;
-  border-radius: 999px;
   background: #d92d20;
   box-shadow: 0 0 0 2px #ffe7e4;
-  transform: translateY(-0.02rem);
+}
+
+.prep-started-dot {
+  background: #f6c945;
+  box-shadow: 0 0 0 2px #fff6cc;
 }
 
 .job-company {

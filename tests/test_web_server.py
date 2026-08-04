@@ -183,8 +183,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=20260803-1" in markup
-        assert "/assets/app.js?v=20260803-1" in markup
+        assert "/assets/app.css?v=20260804-1" in markup
+        assert "/assets/app.js?v=20260804-1" in markup
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -2163,6 +2163,58 @@ def test_tracker_payload_marks_closed_roles_updated_in_latest_scan_only(
     jobs_by_title = {job["title"]: job for job in closed["jobs"]}
     assert jobs_by_title["Older Closed"]["updated_in_latest_scan"] is False
     assert jobs_by_title["Latest Closed"]["updated_in_latest_scan"] is True
+
+
+def test_tracker_payload_marks_and_sorts_roles_with_prep_started(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-prep-started.sqlite3"
+    resume_root = tmp_path / "prepared-resumes"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "No Prep", "https://example.com/jobs/no-prep"],
+        env=env,
+    )
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Cover Letter Prep", "https://example.com/jobs/cl"],
+        env=env,
+    )
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Resume Prep", "https://example.com/jobs/resume"],
+        env=env,
+    )
+    for role_id in (1, 2, 3):
+        runner.invoke(app, ["roles", "set-status", str(role_id), "interested"], env=env)
+
+    cover_letter_dir = resume_root / "role-2"
+    cover_letter_dir.mkdir(parents=True)
+    (cover_letter_dir / "cover-letter.tex").write_text("\\documentclass{letter}")
+    resume_dir = resume_root / "role-3"
+    resume_dir.mkdir(parents=True)
+    (resume_dir / "resume.tex").write_text("\\documentclass{article}")
+
+    payload = build_tracker_payload()
+
+    interested = next(status for status in payload["statuses"] if status["key"] == "interested")
+    assert {job["title"] for job in interested["jobs"][:2]} == {
+        "Cover Letter Prep",
+        "Resume Prep",
+    }
+    assert interested["jobs"][2]["title"] == "No Prep"
+    prep_by_title = {job["title"]: job["prep_started"] for job in interested["jobs"]}
+    assert prep_by_title == {
+        "Cover Letter Prep": True,
+        "Resume Prep": True,
+        "No Prep": False,
+    }
 
 
 def test_tracker_payload_marks_discovered_and_interested_roles_missing_from_latest_scan(

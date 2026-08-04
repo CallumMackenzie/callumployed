@@ -363,7 +363,14 @@ def build_tracker_payload(query: str | None = None) -> dict[str, Any]:
             and role.company_id in latest_scan_ids_by_company
             and not seen_in_latest_scan
         )
+        payload["prep_started"] = (
+            _role_has_prep_started(role.id) if isinstance(role.id, int) else False
+        )
         grouped_roles[role.role_status.value].append(payload)
+    grouped_roles[RoleStatus.INTERESTED.value].sort(
+        key=lambda role: bool(role.get("prep_started")),
+        reverse=True,
+    )
     grouped_roles[RoleStatus.CLOSED.value].sort(
         key=lambda role: bool(role["updated_in_latest_scan"]),
         reverse=True,
@@ -2529,6 +2536,19 @@ def _saved_role_resume(
             else None
         ),
     }
+
+
+def _role_has_prep_started(role_id: int) -> bool:
+    return _role_prep_file_has_content(_role_resume_tex_path(role_id)) or (
+        _role_prep_file_has_content(_role_cover_letter_tex_path(role_id))
+    )
+
+
+def _role_prep_file_has_content(path: Path) -> bool:
+    try:
+        return path.exists() and bool(path.read_text().strip())
+    except OSError:
+        return False
 
 
 def _current_role_resume_pdf_path(resume_path: Path) -> Path | None:
