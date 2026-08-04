@@ -801,6 +801,65 @@ def test_scan_company_detects_embedded_greenhouse_api(
     assert roles[0].title == "Software Engineer Intern, Backend"
 
 
+def test_scan_company_infers_greenhouse_board_from_company_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+
+    def fake_fetch_html(self: object, url: str) -> str:
+        _ = self
+        assert url == "https://www.nuro.ai/careers"
+        return '<html><a href="https://nuro.ai/careersitem?gh_jid=7351066">Role</a></html>'
+
+    def fake_fetch_json(self: object, url: str) -> dict[str, object]:
+        _ = self
+        assert url == "https://boards-api.greenhouse.io/v1/boards/nuro/jobs?content=true"
+        return {
+            "jobs": [
+                {
+                    "id": 7351066,
+                    "title": "Software Engineer, AI Platform - New Grad",
+                    "absolute_url": "https://nuro.ai/careersitem?gh_jid=7351066",
+                    "location": {"name": "Mountain View, California (HQ)"},
+                    "content": "<p>Build AI platform systems.</p>",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        "callumployed.services.company_scanners.GreenhouseJobBoardScanner._fetch_html",
+        fake_fetch_html,
+    )
+    monkeypatch.setattr(
+        "callumployed.services.company_scanners.GreenhouseJobBoardScanner._fetch_json",
+        fake_fetch_json,
+    )
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Nuro"))
+        assert company.id is not None
+        add_company_career_page(
+            connection,
+            CompanyCareerPage(company_id=company.id, url="https://www.nuro.ai/careers"),
+        )
+        set_location_filter(connection, "usa")
+
+    scan = asyncio.run(scan_workflow.scan_company(company))
+
+    assert scan is not None
+    assert {link.url for link in scan["results"][0].links} == {
+        "https://nuro.ai/careersitem?gh_jid=7351066"
+    }
+    with db.connect() as connection:
+        roles = list_roles(connection)
+
+    assert len(roles) == 1
+    assert roles[0].title == "Software Engineer, AI Platform - New Grad"
+    assert roles[0].location == "Mountain View, California (HQ)"
+    assert roles[0].posting_id == "7351066"
+
+
 def test_graph_calls_llm_only_with_ambiguous_candidates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

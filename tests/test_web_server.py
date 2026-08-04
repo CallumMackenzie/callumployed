@@ -183,8 +183,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=20260804-2" in markup
-        assert "/assets/app.js?v=20260804-3" in markup
+        assert "/assets/app.css?v=20260804-5" in markup
+        assert "/assets/app.js?v=20260804-5" in markup
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -444,6 +444,8 @@ def test_prep_feedback_acceptance_returns_tweak_prompt_without_updating_resume(
             """,
             ("\\documentclass{article}\\begin{document}Python systems\\end{document}",),
         )
+        web_server.set_config_value(connection, "applicant_first_name", "Callum")
+        web_server.set_config_value(connection, "applicant_last_name", "Mackenzie")
         connection.commit()
     db.ensure_initialized()
 
@@ -724,6 +726,9 @@ def test_cover_letter_endpoint_loads_saved_role_cover_letter(
         env=env,
     )
     db.ensure_initialized()
+    with db.connect() as connection:
+        web_server.set_config_value(connection, "applicant_first_name", "Callum")
+        web_server.set_config_value(connection, "applicant_last_name", "Mackenzie")
 
     role_dir = resume_root / "role-1"
     role_dir.mkdir(parents=True)
@@ -772,6 +777,9 @@ def test_cover_letter_endpoint_recompiles_stale_saved_pdf(
         env=env,
     )
     db.ensure_initialized()
+    with db.connect() as connection:
+        web_server.set_config_value(connection, "applicant_first_name", "Callum")
+        web_server.set_config_value(connection, "applicant_last_name", "Mackenzie")
 
     role_dir = resume_root / "role-1"
     role_dir.mkdir(parents=True)
@@ -820,6 +828,9 @@ def test_cover_letter_pdf_endpoint_serves_saved_role_pdf(
         env=env,
     )
     db.ensure_initialized()
+    with db.connect() as connection:
+        web_server.set_config_value(connection, "applicant_first_name", "Callum")
+        web_server.set_config_value(connection, "applicant_last_name", "Mackenzie")
 
     role_dir = resume_root / "role-1"
     role_dir.mkdir(parents=True)
@@ -840,6 +851,9 @@ def test_cover_letter_pdf_endpoint_serves_saved_role_pdf(
         assert response.status == 200
         assert response.headers["Content-Type"] == "application/pdf"
         assert response.headers["Content-Disposition"].startswith("inline;")
+        assert 'filename="CallumMackenzieCL1.pdf"' in response.headers[
+            "Content-Disposition"
+        ]
         assert body == b"%PDF saved cover letter"
     finally:
         server.shutdown()
@@ -1133,6 +1147,8 @@ def test_role_resume_endpoint_loads_and_saves_editable_latex(
             """,
             ("\\documentclass{article}\\begin{document}Python systems\\end{document}",),
         )
+        web_server.set_config_value(connection, "applicant_first_name", "Callum")
+        web_server.set_config_value(connection, "applicant_last_name", "Mackenzie")
         connection.commit()
     db.ensure_initialized()
 
@@ -1173,6 +1189,16 @@ def test_role_resume_endpoint_loads_and_saves_editable_latex(
         assert response.status == 200
         assert "Edited role resume" in saved_resume["latex"]
         assert (resume_root / "role-1" / "resume.tex").read_text() == saved_resume["latex"]
+
+        with urlopen(f"http://127.0.0.1:{port}/api/roles/1/resume.pdf", timeout=5) as response:
+            body = response.read()
+
+        assert response.status == 200
+        assert response.headers["Content-Disposition"].startswith("inline;")
+        assert 'filename="CallumMackenzieResume1.pdf"' in response.headers[
+            "Content-Disposition"
+        ]
+        assert body == b"role resume pdf"
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -1282,6 +1308,98 @@ def test_role_resume_endpoint_regenerates_with_tweaks(
             }
         ]
         assert (resume_root / "role-1" / "resume.tex").read_text() == resume["latex"]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_role_chat_endpoint_uses_role_material_contexts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-role-chat.sqlite3"
+    resume_root = tmp_path / "prepared-resumes"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    captured: dict[str, object] = {}
+
+    async def fake_generate_role_chat(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return SimpleNamespace(answer="Emphasize Python backend systems.")
+
+    monkeypatch.setattr(web_server, "generate_role_chat", fake_generate_role_chat)
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Backend Intern", "https://example.com/jobs/backend"],
+        env=env,
+    )
+    role_dir = resume_root / "role-1"
+    role_dir.mkdir(parents=True)
+    (role_dir / "resume.tex").write_text("Role resume latex")
+    (role_dir / "cover-letter.tex").write_text("Cover letter latex")
+    with db.connect() as connection:
+        connection.execute(
+            """
+            UPDATE roles
+            SET description = 'Python distributed systems internship'
+            WHERE id = 1
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO master_resumes (id, filename, content, content_sha256)
+            VALUES (1, 'resume.tex', 'Master resume latex', 'abc')
+            """
+        )
+        add_experience_note(
+            connection,
+            filename="projects.md",
+            content="Built a Kubernetes scheduler.",
+        )
+        connection.commit()
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        request = Request(
+            f"http://127.0.0.1:{port}/api/roles/1/chat",
+            data=json.dumps(
+                {
+                    "messages": [
+                        {"role": "user", "content": "What should I emphasize?"}
+                    ]
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode())
+
+        assert response.status == 200
+        assert payload["message"] == {
+            "role": "assistant",
+            "content": "Emphasize Python backend systems.",
+        }
+        assert captured["role"]["company_name"] == "Acme"
+        assert captured["role"]["title"] == "Backend Intern"
+        assert captured["resume_content"] == "Role resume latex"
+        assert captured["cover_letter_content"] == "Cover letter latex"
+        assert captured["messages"][0].content == "What should I emphasize?"
+        assert captured["employment_history_context"] == [
+            {
+                "filename": "projects.md",
+                "content": "Built a Kubernetes scheduler.",
+                "updated_at": captured["employment_history_context"][0]["updated_at"],
+            }
+        ]
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -1440,6 +1558,7 @@ def test_resume_pdf_uses_temporary_resume_when_role_has_no_custom_copy(
     resume_root = tmp_path / "prepared-resumes"
     downloads = tmp_path / "Downloads"
     downloads.mkdir()
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(tmp_path / "resume-pdf.sqlite3"))
     monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
     monkeypatch.setattr(web_server, "_resume_resources_root", lambda: tmp_path / "resources")
     monkeypatch.setattr(web_server.shutil, "which", lambda _name: "/usr/bin/pdflatex")
@@ -1455,6 +1574,10 @@ def test_resume_pdf_uses_temporary_resume_when_role_has_no_custom_copy(
         return Completed()
 
     monkeypatch.setattr(web_server.subprocess, "run", fake_run)
+    db.ensure_initialized()
+    with db.connect() as connection:
+        web_server.set_config_value(connection, "applicant_first_name", "Callum")
+        web_server.set_config_value(connection, "applicant_last_name", "Mackenzie")
 
     pdf_path = web_server._generate_role_resume_pdf(
         {"id": 1, "title": "Backend Intern"},
@@ -1465,7 +1588,7 @@ def test_resume_pdf_uses_temporary_resume_when_role_has_no_custom_copy(
         ),
     )
 
-    assert pdf_path == downloads / "callumployed-1-backend-intern-resume.pdf"
+    assert pdf_path == downloads / "CallumMackenzieResume1.pdf"
     assert pdf_path.read_bytes() == b"pdf"
     assert not (resume_root / "role-1" / "resume.tex").exists()
 
@@ -1508,6 +1631,24 @@ def test_config_payload_returns_current_settings(
         "companies_failed": 0,
     }
     assert defaults["settings"] == [
+        {
+            "key": "applicant_first_name",
+            "label": "first name",
+            "description": "used for saved resume and cover letter PDF filenames",
+            "control": "text",
+            "value": "",
+            "default": "",
+            "editable": True,
+        },
+        {
+            "key": "applicant_last_name",
+            "label": "last name",
+            "description": "used for saved resume and cover letter PDF filenames",
+            "control": "text",
+            "value": "",
+            "default": "",
+            "editable": True,
+        },
         {
             "key": "include_graduate_degree_roles",
             "label": "graduate-degree roles",
@@ -1588,6 +1729,8 @@ def test_config_endpoint_updates_settings(
             data=json.dumps(
                 {
                     "include_graduate_degree_roles": True,
+                    "applicant_first_name": "Callum",
+                    "applicant_last_name": "Mackenzie",
                     "require_software_keywords": False,
                     "internship_mode": False,
                     "location_filter": "north_america",
@@ -1600,8 +1743,11 @@ def test_config_endpoint_updates_settings(
             updated = json.loads(response.read().decode())
 
         assert response.status == 200
-        assert defaults["settings"][0]["value"] is False
+        default_values = {setting["key"]: setting["value"] for setting in defaults["settings"]}
+        assert default_values["include_graduate_degree_roles"] is False
         assert updated["values"] == {
+            "applicant_first_name": "Callum",
+            "applicant_last_name": "Mackenzie",
             "include_graduate_degree_roles": "true",
             "internship_mode": "false",
             "location_filter": "north_america",
@@ -1609,6 +1755,8 @@ def test_config_endpoint_updates_settings(
         }
         setting_values = {setting["key"]: setting["value"] for setting in updated["settings"]}
         assert setting_values == {
+            "applicant_first_name": "Callum",
+            "applicant_last_name": "Mackenzie",
             "include_graduate_degree_roles": True,
             "include_hardware_roles": False,
             "require_software_keywords": False,

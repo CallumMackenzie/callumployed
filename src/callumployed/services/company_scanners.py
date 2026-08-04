@@ -393,11 +393,10 @@ class GreenhouseJobBoardScanner:
         company: Company,
         career_page: CompanyCareerPage,
     ) -> GreenhouseJobBoardScanner | None:
-        _ = company
         direct_board = _direct_greenhouse_board(career_page.url)
         if direct_board is not None:
             return cls(**direct_board)
-        detected_board = cls()._detect_board(career_page.url)
+        detected_board = cls()._detect_board(career_page.url, company=company)
         if detected_board is not None:
             return cls(**detected_board)
         return None
@@ -418,7 +417,8 @@ class GreenhouseJobBoardScanner:
                 "public_host": self.public_host,
             }
             if self.board_token
-            else _direct_greenhouse_board(career_page.url) or self._detect_board(career_page.url)
+            else _direct_greenhouse_board(career_page.url)
+            or self._detect_board(career_page.url, company=company)
         )
         if board is None or not board.get("board_token"):
             raise RuntimeError(f"No Greenhouse board detected for {career_page.url}")
@@ -506,11 +506,11 @@ class GreenhouseJobBoardScanner:
             return [job for job in jobs if isinstance(job, dict)]
         return []
 
-    def _detect_board(self, url: str) -> dict[str, str] | None:
+    def _detect_board(self, url: str, *, company: Company | None = None) -> dict[str, str] | None:
         try:
             html = self._fetch_html(url)
         except Exception:
-            return None
+            html = ""
         api_match = GREENHOUSE_API_PATTERN.search(html)
         if api_match is not None:
             return {
@@ -525,6 +525,17 @@ class GreenhouseJobBoardScanner:
                 "api_host": "boards-api.greenhouse.io",
                 "public_host": "job-boards.greenhouse.io",
             }
+        for token in _greenhouse_board_token_candidates(company, url):
+            try:
+                jobs = self._fetch_jobs(token, "boards-api.greenhouse.io")
+                if _greenhouse_jobs_match_career_domain(jobs, url):
+                    return {
+                        "board_token": token,
+                        "api_host": "boards-api.greenhouse.io",
+                        "public_host": "job-boards.greenhouse.io",
+                    }
+            except Exception:
+                continue
         return None
 
 
@@ -780,12 +791,67 @@ def _greenhouse_token(path: str) -> str | None:
     return token or None
 
 
+def _greenhouse_board_token_candidates(company: Company | None, url: str) -> list[str]:
+    parsed = urlparse(url)
+    hostname = parsed.netloc.lower().removeprefix("www.")
+    first_label = hostname.split(".", 1)[0]
+    raw_values: list[str] = [first_label]
+    if company is not None:
+        company_name_token = _greenhouse_board_token(company.name)
+        if company_name_token == first_label:
+            raw_values.append(company_name_token)
+        if company.canonical_domain:
+            raw_values.append(company.canonical_domain)
+    raw_values.append(hostname)
+
+    candidates: list[str] = []
+    for value in raw_values:
+        hostname = value.lower().removeprefix("www.")
+        name_parts = re.split(r"[^a-z0-9]+", hostname)
+        compact = "".join(name_parts)
+        first_label = hostname.split(".", 1)[0]
+        for candidate in (compact, first_label):
+            candidate = candidate.strip()
+            if candidate and candidate not in {"careers", "jobs"}:
+                candidates.append(candidate)
+    return _dedupe_strings(candidates)
+
+
+def _greenhouse_board_token(value: str) -> str:
+    return "".join(re.split(r"[^a-z0-9]+", value.lower()))
+
+
+def _greenhouse_jobs_match_career_domain(jobs: list[dict[str, object]], career_url: str) -> bool:
+    career_hostname = urlparse(career_url).netloc.lower().removeprefix("www.")
+    if not career_hostname:
+        return False
+    for job in jobs:
+        absolute_url = _optional_string(job.get("absolute_url"))
+        if not absolute_url:
+            continue
+        job_hostname = urlparse(absolute_url).netloc.lower().removeprefix("www.")
+        if job_hostname == career_hostname:
+            return True
+    return False
+
+
 def _greenhouse_job_url(job: dict[str, object], board_token: str, public_host: str) -> str:
     absolute_url = _optional_string(job.get("absolute_url"))
     if absolute_url:
         return absolute_url
     job_id = str(job.get("id") or "")
     return f"https://{public_host}/{board_token}/jobs/{job_id}"
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+    return deduped
 
 
 def _greenhouse_location(job: dict[str, object]) -> str | None:

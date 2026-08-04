@@ -34,6 +34,7 @@ from callumployed.agents.cover_letter import (
 )
 from callumployed.agents.resume_feedback import evaluate_resume_feedback
 from callumployed.agents.resume_tweaker import generate_resume_tweak
+from callumployed.agents.role_chat import generate_role_chat, parse_role_chat_messages
 from callumployed.central.client import CentralStoreClient, CentralStoreError
 from callumployed.central.config import (
     get_central_api_url,
@@ -69,6 +70,7 @@ from callumployed.data.repositories import (
     delete_company_career_page,
     finish_scan_run,
     get_company,
+    get_config_value,
     get_location_filter,
     get_master_resume,
     get_role,
@@ -89,6 +91,7 @@ from callumployed.data.repositories import (
     record_role_review_later,
     set_company_central_link,
     set_company_central_sync_status,
+    set_config_value,
     set_include_graduate_degree_roles,
     set_include_hardware_roles,
     set_internship_mode,
@@ -112,6 +115,8 @@ INSTALLER_SCRIPT_URL = (
 )
 LOGGER = logging.getLogger(__name__)
 SCAN_ALL_COMPANY_TIMEOUT_SECONDS = 5 * 60
+APPLICANT_FIRST_NAME_CONFIG_KEY = "applicant_first_name"
+APPLICANT_LAST_NAME_CONFIG_KEY = "applicant_last_name"
 STATUS_LABELS: dict[str, str] = {
     RoleStatus.DISCOVERED.value: "discovered",
     RoleStatus.INTERESTED.value: "interested",
@@ -534,6 +539,14 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 and path_parts[3] == "resume"
             ):
                 self._generate_resume(path_parts[2])
+                return
+            if (
+                len(path_parts) == 4
+                and path_parts[0] == "api"
+                and path_parts[1] == "roles"
+                and path_parts[3] == "chat"
+            ):
+                self._chat_about_role(path_parts[2])
                 return
             if (
                 len(path_parts) == 4
@@ -1191,6 +1204,44 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
             self._send_json({"resume": generated_resume})
 
+        def _chat_about_role(self, role_id_text: str) -> None:
+            try:
+                role_id = int(role_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
+                return
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            try:
+                messages = parse_role_chat_messages(payload.get("messages"))
+            except ValueError as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            try:
+                chat_context = build_role_chat_context(role_id)
+                response = asyncio.run(
+                    generate_role_chat(
+                        role=chat_context["role"],
+                        resume_content=chat_context["resume_content"],
+                        cover_letter_content=chat_context["cover_letter_content"],
+                        employment_history_context=chat_context[
+                            "employment_history_context"
+                        ],
+                        messages=messages,
+                    )
+                )
+            except LookupError:
+                self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
+                return
+            except Exception as error:  # noqa: BLE001 - chat should fail cleanly.
+                self._send_json_with_status(
+                    {"error": str(error) or "Role chat unavailable"},
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+                return
+            self._send_json({"message": {"role": "assistant", "content": response.answer}})
+
         def _send_resume_pdf(self, role_id_text: str) -> None:
             try:
                 role_id = int(role_id_text)
@@ -1218,7 +1269,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
             self._send_pdf_file(
                 Path(pdf_path_text),
-                filename=f"callumployed-role-{role_id}-resume.pdf",
+                filename=_role_material_pdf_filename(role_id, kind="resume"),
             )
 
         def _generate_cover_letter(self, role_id_text: str) -> None:
@@ -1340,7 +1391,10 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             if not pdf_path.exists():
                 self.send_error(HTTPStatus.NOT_FOUND, "Cover letter PDF not found")
                 return
-            self._send_pdf_file(pdf_path, filename=f"callumployed-role-{role_id}-cover-letter.pdf")
+            self._send_pdf_file(
+                pdf_path,
+                filename=_role_material_pdf_filename(role_id, kind="cover_letter"),
+            )
 
         def _upload_resume_resource(self, role_id_text: str | None = None) -> None:
             role_id: int | None = None
@@ -1500,6 +1554,8 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
 
             allowed_keys = {
+                APPLICANT_FIRST_NAME_CONFIG_KEY,
+                APPLICANT_LAST_NAME_CONFIG_KEY,
                 "central_api_url",
                 "central_passkey",
                 "include_graduate_degree_roles",
@@ -1558,6 +1614,22 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                         set_location_filter(
                             connection,
                             payload["location_filter"],
+                        )
+                    if APPLICANT_FIRST_NAME_CONFIG_KEY in payload:
+                        set_config_value(
+                            connection,
+                            APPLICANT_FIRST_NAME_CONFIG_KEY,
+                            _clean_applicant_name_part(
+                                payload[APPLICANT_FIRST_NAME_CONFIG_KEY]
+                            ),
+                        )
+                    if APPLICANT_LAST_NAME_CONFIG_KEY in payload:
+                        set_config_value(
+                            connection,
+                            APPLICANT_LAST_NAME_CONFIG_KEY,
+                            _clean_applicant_name_part(
+                                payload[APPLICANT_LAST_NAME_CONFIG_KEY]
+                            ),
                         )
                     if "central_api_url" in payload:
                         set_central_api_url(connection, payload["central_api_url"])
@@ -1731,6 +1803,14 @@ def build_config_payload() -> dict[str, Any]:
         require_software_keywords = should_require_software_keywords(connection)
         internship_mode = should_use_internship_mode(connection)
         location_filter = get_location_filter(connection)
+        applicant_first_name = get_config_value(
+            connection,
+            APPLICANT_FIRST_NAME_CONFIG_KEY,
+        ) or ""
+        applicant_last_name = get_config_value(
+            connection,
+            APPLICANT_LAST_NAME_CONFIG_KEY,
+        ) or ""
         recommendation_history_count = count_resume_feedback_history(connection)
         central_api_url = get_central_api_url(connection)
         companies = list_companies(connection, include_inactive=True)
@@ -1753,6 +1833,24 @@ def build_config_payload() -> dict[str, Any]:
             "companies_failed": central_failed_count,
         },
         "settings": [
+            {
+                "key": APPLICANT_FIRST_NAME_CONFIG_KEY,
+                "label": "first name",
+                "description": "used for saved resume and cover letter PDF filenames",
+                "control": "text",
+                "value": applicant_first_name,
+                "default": "",
+                "editable": True,
+            },
+            {
+                "key": APPLICANT_LAST_NAME_CONFIG_KEY,
+                "label": "last name",
+                "description": "used for saved resume and cover letter PDF filenames",
+                "control": "text",
+                "value": applicant_last_name,
+                "default": "",
+                "editable": True,
+            },
             {
                 "key": "include_graduate_degree_roles",
                 "label": "graduate-degree roles",
@@ -2321,6 +2419,33 @@ def build_role_resume(
     }
 
 
+def build_role_chat_context(role_id: int) -> dict[str, Any]:
+    with db.connect() as connection:
+        role = get_role(connection, role_id)
+        company = get_company(connection, role.company_id)
+        resume = get_master_resume(connection)
+        experience_notes = list_experience_notes(connection)
+
+    role_payload = role.model_dump(mode="json")
+    role_payload["company_name"] = company.name
+    resume_content = ""
+    if resume is not None:
+        role_resume_path = _role_resume_tex_path(role_id)
+        resume_content = (
+            role_resume_path.read_text() if role_resume_path.exists() else resume.content
+        )
+    cover_letter_path = _role_cover_letter_tex_path(role_id)
+    cover_letter_content = cover_letter_path.read_text() if cover_letter_path.exists() else ""
+    return {
+        "role": role_payload,
+        "resume_content": resume_content,
+        "cover_letter_content": cover_letter_content,
+        "employment_history_context": [
+            _experience_note_context(note) for note in experience_notes
+        ],
+    }
+
+
 def _write_role_cover_letter(
     role: dict[str, Any],
     latex: str,
@@ -2791,6 +2916,15 @@ def _optional_text(value: object) -> str | None:
     return cleaned or None
 
 
+def _clean_applicant_name_part(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Applicant name values must be text")
+    cleaned = re.sub(r"[^A-Za-z]", "", value)
+    if len(cleaned) > 80:
+        raise ValueError("Applicant name values are too long")
+    return cleaned
+
+
 def _is_valid_company_tier(value: str | None) -> bool:
     return value is None or value in {"0", "1", "2", "3", "4"}
 
@@ -3092,8 +3226,7 @@ def _compile_role_resume_pdf(
         return generated_pdf
 
     downloads_dir = Path.home() / "Downloads"
-    safe_title = _safe_filename(str(role.get("title") or f"role-{role_id}"))
-    target_path = downloads_dir / f"callumployed-{role_id}-{safe_title}-resume.pdf"
+    target_path = downloads_dir / _role_material_pdf_filename(role_id, kind="resume")
     shutil.copyfile(generated_pdf, target_path)
     return target_path
 
@@ -3128,6 +3261,27 @@ def _safe_filename(value: str) -> str:
     cleaned = "".join(character.lower() if character.isalnum() else "-" for character in value)
     parts = [part for part in cleaned.split("-") if part]
     return "-".join(parts[:10]) or "role"
+
+
+def _role_material_pdf_filename(role_id: int, *, kind: str) -> str:
+    suffix = "Resume" if kind == "resume" else "CL"
+    return f"{_applicant_pdf_filename_prefix()}{suffix}{role_id}.pdf"
+
+
+def _applicant_pdf_filename_prefix() -> str:
+    try:
+        with db.connect() as connection:
+            db.run_migrations(connection)
+            first_name = get_config_value(connection, APPLICANT_FIRST_NAME_CONFIG_KEY) or ""
+            last_name = get_config_value(connection, APPLICANT_LAST_NAME_CONFIG_KEY) or ""
+    except Exception:  # noqa: BLE001 - filename generation should not block PDF serving.
+        first_name = ""
+        last_name = ""
+    prefix = (
+        _clean_applicant_name_part(first_name)
+        + _clean_applicant_name_part(last_name)
+    )
+    return prefix or "Applicant"
 
 
 def _application_materials_payload(

@@ -97,6 +97,7 @@ let prepFeedbackIndexByRoleId = new Map();
 let prepResumeByRoleId = new Map();
 let prepResumeTweaksByRoleId = new Map();
 let prepCoverLetterByRoleId = new Map();
+let prepRoleChatByRoleId = new Map();
 let prepResumeSaveStateByRoleId = new Map();
 let prepCoverLetterSaveStateByRoleId = new Map();
 let materialsInitialized = false;
@@ -757,6 +758,9 @@ function renderCentralSettings(central) {
 }
 
 function renderSettingOption(setting) {
+  if (setting.control === "text" && setting.editable !== false) {
+    return renderTextSettingOption(setting);
+  }
   if (setting.control === "select" && setting.editable !== false) {
     return renderSelectSettingOption(setting);
   }
@@ -776,6 +780,27 @@ function renderSettingOption(setting) {
         <input type="checkbox" name="${escapeHtml(setting.key)}" ${checked} />
         <span aria-hidden="true"></span>
       </span>
+    </label>
+  `;
+}
+
+function renderTextSettingOption(setting) {
+  const defaultText = setting.default ? `default: ${formatUiText(setting.default)}` : "optional";
+  return `
+    <label class="setting-option">
+      <span class="setting-copy">
+        <span class="setting-label">${escapeUiText(setting.label)}</span>
+        <span class="setting-description">${escapeUiText(setting.description)}</span>
+        <span class="setting-default">${escapeUiText(defaultText)}</span>
+      </span>
+      <input
+        class="setting-text-input"
+        data-setting-text
+        name="${escapeHtml(setting.key)}"
+        type="text"
+        value="${escapeHtml(setting.value ?? "")}"
+        autocomplete="name"
+      />
     </label>
   `;
 }
@@ -2310,6 +2335,7 @@ async function renderPrepRole(message = "") {
     ${renderPrepResume(current)}
     ${renderPrepCoverLetter(current)}
     ${renderPrepDescription(current.description)}
+    ${renderPrepRoleChat(current)}
   `;
   enhancePrepLatexEditors();
 
@@ -2431,6 +2457,50 @@ function renderPrepDescription(description) {
       </summary>
       ${renderReviewDescription(description)}
     </details>
+  `;
+}
+
+function renderPrepRoleChat(role, state = {}) {
+  const messages = state.messages ?? prepRoleChatByRoleId.get(role.id) ?? [];
+  const loading = Boolean(state.loading);
+  return `
+    <details class="prep-panel prep-role-chat">
+      <summary class="prep-analysis-header">
+        <span class="prep-accordion-icon" aria-hidden="true"></span>
+        <h3>chat about this role</h3>
+        <span>${messages.length ? `${messages.length} messages` : "ready"}</span>
+      </summary>
+      <div class="prep-role-chat-log" aria-live="polite">
+        ${
+          messages.length
+            ? messages.map(renderPrepRoleChatMessage).join("")
+            : '<p class="prep-role-chat-empty">ask about fit, risks, resume emphasis, or cover letter angle.</p>'
+        }
+        ${
+          loading
+            ? '<p class="prep-role-chat-loading">thinking...</p>'
+            : ""
+        }
+      </div>
+      <form class="prep-role-chat-form" data-prep-role-chat-form="${role.id}">
+        <textarea
+          data-prep-role-chat-input="${role.id}"
+          rows="3"
+          placeholder="ask about this role..."
+        ></textarea>
+        <button type="submit" ${loading ? "disabled" : ""}>send</button>
+      </form>
+    </details>
+  `;
+}
+
+function renderPrepRoleChatMessage(message) {
+  const role = message?.role === "assistant" ? "assistant" : "user";
+  return `
+    <article class="prep-role-chat-message prep-role-chat-message-${role}">
+      <span>${role}</span>
+      <p>${escapeUiText(message?.content ?? "")}</p>
+    </article>
   `;
 }
 
@@ -2736,6 +2806,16 @@ async function generatePrepResume(roleId, tweaks, previousLatex) {
   return response.json();
 }
 
+async function sendPrepRoleChat(roleId, messages) {
+  const response = await fetch(`/api/roles/${encodeURIComponent(roleId)}/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages }),
+  });
+  if (!response.ok) throw new Error("Role chat failed");
+  return response.json();
+}
+
 function queuePrepResumeAutosave(roleId, latex, delay = COVER_LETTER_AUTOSAVE_DELAY_MS) {
   const state = prepResumeSaveStateByRoleId.get(roleId) ?? {
     timer: null,
@@ -2971,6 +3051,43 @@ prepView.addEventListener("focusout", (event) => {
   const tweaks =
     coverSection?.querySelector(`[data-prep-cover-letter-tweaks="${roleId}"]`)?.value ?? "";
   queuePrepCoverLetterAutosave(roleId, latexEditor.value, tweaks, 0);
+});
+
+prepView.addEventListener("submit", async (event) => {
+  const form = event.target.closest("[data-prep-role-chat-form]");
+  if (!form || !prepQueue[0]) return;
+  event.preventDefault();
+  const roleId = Number(form.dataset.prepRoleChatForm);
+  if (!Number.isFinite(roleId)) return;
+  const input = form.querySelector(`[data-prep-role-chat-input="${roleId}"]`);
+  const content = input?.value?.trim() ?? "";
+  if (!content) {
+    input?.focus();
+    return;
+  }
+  const currentMessages = prepRoleChatByRoleId.get(roleId) ?? [];
+  const nextMessages = [...currentMessages, { role: "user", content }];
+  prepRoleChatByRoleId.set(roleId, nextMessages);
+  prepCard.querySelector(".prep-role-chat")?.replaceWith(
+    htmlToElement(renderPrepRoleChat(prepQueue[0], { messages: nextMessages, loading: true })),
+  );
+  try {
+    const payload = await sendPrepRoleChat(roleId, nextMessages);
+    const updatedMessages = [...nextMessages, payload.message];
+    prepRoleChatByRoleId.set(roleId, updatedMessages);
+    prepCard.querySelector(".prep-role-chat")?.replaceWith(
+      htmlToElement(renderPrepRoleChat(prepQueue[0], { messages: updatedMessages })),
+    );
+  } catch {
+    const failedMessages = [
+      ...nextMessages,
+      { role: "assistant", content: "could not answer right now." },
+    ];
+    prepRoleChatByRoleId.set(roleId, failedMessages);
+    prepCard.querySelector(".prep-role-chat")?.replaceWith(
+      htmlToElement(renderPrepRoleChat(prepQueue[0], { messages: failedMessages })),
+    );
+  }
 });
 
 prepView.addEventListener("click", async (event) => {
@@ -3282,19 +3399,20 @@ companiesList.addEventListener("click", (event) => {
 });
 
 settingsForm.addEventListener("change", (event) => {
-  const control = event.target.closest('input[type="checkbox"], select');
+  const control = event.target.closest('input[type="checkbox"], select, input[data-setting-text]');
   if (!control) return;
   saveSetting(control);
 });
 
 settingsForm.addEventListener("submit", (event) => {
   event.preventDefault();
-  saveCentralSettings();
 });
 
 centralApiUrlInput.addEventListener("input", () => {
   centralSyncButton.disabled = !centralApiUrlInput.value.trim();
 });
+
+centralSaveButton.addEventListener("click", saveCentralSettings);
 
 centralSyncButton.addEventListener("click", syncCentralCompanies);
 

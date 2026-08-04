@@ -23,6 +23,7 @@ from callumployed.agents.resume_feedback import (
     build_resume_feedback_prompt,
 )
 from callumployed.agents.resume_tweaker import build_resume_tweak_prompt
+from callumployed.agents.role_chat import RoleChatMessage, build_role_chat_prompt
 from callumployed.config import LlmSettings
 from callumployed.data.models import Company, CompanyCareerPage, ScanCandidate, ScanPage
 from callumployed.webscraping.models import (
@@ -226,6 +227,44 @@ def test_resume_tweak_prompt_includes_existing_resume_and_tweaks() -> None:
     assert "Built a Kubernetes scheduler" in prompt
     assert "full," in prompt
     assert "compilable replacement LaTeX document" in prompt
+
+
+def test_role_chat_prompt_includes_role_material_contexts() -> None:
+    prompt = build_role_chat_prompt(
+        role={
+            "id": 1,
+            "company_id": 2,
+            "company_name": "Acme",
+            "title": "Backend Intern",
+            "role_url": "https://example.com/jobs/backend",
+            "location": "Vancouver",
+            "description": "Python distributed systems internship",
+            "role_status": "interested",
+        },
+        resume_content="Python systems resume",
+        cover_letter_content="Dear Acme, I build systems.",
+        employment_history_context=[
+            {
+                "filename": "projects.md",
+                "content": "Built a Kubernetes scheduler.",
+                "updated_at": "2026-01-01T00:00:00",
+            }
+        ],
+        messages=[
+            RoleChatMessage(role="user", content="What should I emphasize?"),
+        ],
+    )
+
+    assert "role_context" in prompt
+    assert "resume_context" in prompt
+    assert "cover_letter_context" in prompt
+    assert "employment_history_context" in prompt
+    assert "chat_history" in prompt
+    assert "Backend Intern" in prompt
+    assert "Python systems resume" in prompt
+    assert "Dear Acme" in prompt
+    assert "Built a Kubernetes scheduler" in prompt
+    assert "What should I emphasize?" in prompt
 
 
 def test_cover_letter_agent_queries_example_tool_and_passes_documents() -> None:

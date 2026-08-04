@@ -1708,6 +1708,95 @@ a:hover .role-link-icon {
   background: transparent;
 }
 
+.prep-role-chat {
+  gap: 12px;
+}
+
+.prep-role-chat-log,
+.prep-role-chat-form {
+  display: grid;
+  gap: 8px;
+}
+
+.prep-role-chat-log {
+  max-height: 320px;
+  overflow: auto;
+}
+
+.prep-role-chat-empty,
+.prep-role-chat-loading {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.prep-role-chat-message {
+  display: grid;
+  gap: 4px;
+  width: min(88%, 680px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  background: rgb(255 255 255 / 0.82);
+}
+
+.prep-role-chat-message-user {
+  justify-self: end;
+  background: rgb(226 255 240 / 0.64);
+}
+
+.prep-role-chat-message span {
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 950;
+  text-transform: lowercase;
+}
+
+.prep-role-chat-message p {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.86rem;
+  line-height: 1.36;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.prep-role-chat-form {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+}
+
+.prep-role-chat-form textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 9px 10px;
+  background: rgb(255 255 255 / 0.9);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.84rem;
+  line-height: 1.35;
+  text-transform: none;
+}
+
+.prep-role-chat-form textarea:focus {
+  outline: 2px solid rgb(45 224 111 / 0.28);
+  outline-offset: 1px;
+}
+
+.prep-role-chat-form button {
+  min-height: 38px;
+  border: 1px solid rgb(45 224 111 / 0.32);
+  border-radius: var(--radius);
+  padding: 0 14px;
+  background: rgb(255 255 255 / 0.86);
+  color: var(--green);
+  font-size: 0.78rem;
+  font-weight: 950;
+}
+
 .prep-analysis-header {
   display: flex;
   align-items: center;
@@ -2526,6 +2615,29 @@ a:hover .role-link-icon {
   opacity: 0.72;
 }
 
+.setting-text-input {
+  width: min(220px, 100%);
+  min-height: 40px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  background: var(--surface-solid);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 900;
+}
+
+.setting-text-input:focus-visible {
+  outline: 3px solid rgb(45 224 111 / 0.38);
+  outline-offset: 2px;
+}
+
+.setting-text-input:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
 .setting-option-readonly {
   grid-template-columns: minmax(0, 1fr) minmax(88px, auto);
 }
@@ -3319,7 +3431,8 @@ a:hover .role-link-icon {
     justify-self: start;
   }
 
-  .setting-select {
+  .setting-select,
+  .setting-text-input {
     justify-self: start;
     width: min(100%, 240px);
   }
