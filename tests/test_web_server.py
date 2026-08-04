@@ -183,8 +183,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=20260804-1" in markup
-        assert "/assets/app.js?v=20260804-1" in markup
+        assert "/assets/app.css?v=20260804-2" in markup
+        assert "/assets/app.js?v=20260804-2" in markup
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -403,7 +403,7 @@ def test_prep_analysis_passes_recommendation_history_to_agent(
     ]
 
 
-def test_prep_feedback_acceptance_updates_role_resume_copy(
+def test_prep_feedback_acceptance_returns_tweak_prompt_without_updating_resume(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -461,7 +461,10 @@ def test_prep_feedback_acceptance_updates_role_resume_copy(
                         "label": "gap",
                         "title": "add distributed systems signal",
                         "detail": "mention distributed systems experience",
-                        "latex_addition": "\\noindent Distributed systems experience.",
+                        "tweak_prompt": (
+                            "Revise the resume to emphasize existing distributed systems "
+                            "experience for this backend internship."
+                        ),
                     },
                     "comment": "good targeted edit",
                 }
@@ -473,17 +476,14 @@ def test_prep_feedback_acceptance_updates_role_resume_copy(
         with urlopen(request, timeout=5) as response:
             payload = json.loads(response.read().decode())
 
-        resume_path = Path(payload["resume_path"])
         assert response.status == 200
         assert payload["accepted"] is True
+        assert payload["tweak_prompt"] == (
+            "Revise the resume to emphasize existing distributed systems "
+            "experience for this backend internship."
+        )
         assert payload["role"]["role_status"] == "discovered"
-        assert resume_path == resume_root / "role-1" / "resume.tex"
-        resume_content = resume_path.read_text()
-        assert "% callumployed accepted prep feedback" in resume_content
-        assert "\\noindent Distributed systems experience." in resume_content
-        addition_index = resume_content.index("\\noindent Distributed systems experience.")
-        end_document_index = resume_content.index("\\end{document}")
-        assert addition_index < end_document_index
+        assert not (resume_root / "role-1" / "resume.tex").exists()
         with db.connect() as connection:
             rows = connection.execute(
                 """
@@ -2415,7 +2415,9 @@ def test_tracker_review_later_endpoint_records_postponement(
         request = Request(url, data=b"", method="POST")
 
         with urlopen(request, timeout=5) as response:
+            response_payload = json.loads(response.read().decode())
             assert response.status == 200
+            assert response_payload["role"]["review_later_count"] == 1
     finally:
         server.shutdown()
         thread.join(timeout=5)

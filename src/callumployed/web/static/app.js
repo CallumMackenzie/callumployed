@@ -83,6 +83,7 @@ const roleAddStatus = document.querySelector("#role-add-status");
 const REVIEW_LATER_RECOMMENDATION_THRESHOLD = 3;
 const COVER_LETTER_AUTOSAVE_DELAY_MS = 1200;
 const APPLICATION_STATUSES = new Set(["applied", "OA", "interview", "rejected", "offer"]);
+const DESCRIPTION_SECTION_HEADING_PATTERN = /^(?:about (?:the )?(?:role|team|job)|about this role|job description|job responsibilities|minimum qualifications|preferred qualifications|qualifications|requirements|responsibilities|what to expect|what (?:you'll|you’ll|you will) (?:bring|do)|what'?s in it for you|who you are|your objectives|your skills & talents):?$/i;
 let hideEmpty = true;
 let trackerData = null;
 let masterResume = null;
@@ -94,6 +95,7 @@ let prepQueue = [];
 let prepAnalysisByRoleId = new Map();
 let prepFeedbackIndexByRoleId = new Map();
 let prepResumeByRoleId = new Map();
+let prepResumeTweaksByRoleId = new Map();
 let prepCoverLetterByRoleId = new Map();
 let prepResumeSaveStateByRoleId = new Map();
 let prepCoverLetterSaveStateByRoleId = new Map();
@@ -589,6 +591,7 @@ function renderPrepStartedDot() {
 function renderDiscoveredActions(job) {
   return `
     <div class="job-actions job-actions-nowrap" aria-label="discovered role actions">
+      <button class="job-action success" type="button" data-review-role-id="${job.id}">view</button>
       <button class="job-action" type="button" data-role-id="${job.id}" data-status="interested">interested</button>
       <button class="job-action" type="button" data-role-id="${job.id}" data-status="disinterested">disinterested</button>
       <button class="job-action danger" type="button" data-role-id="${job.id}" data-status="closed">closed</button>
@@ -1694,6 +1697,12 @@ scanAllButton.addEventListener("click", () => {
 });
 
 statusListEl.addEventListener("click", (event) => {
+  const reviewAction = event.target.closest("[data-review-role-id]");
+  if (reviewAction) {
+    openReviewView(reviewAction.dataset.reviewRoleId);
+    return;
+  }
+
   const prepAction = event.target.closest("[data-prep-role-id]");
   if (prepAction) {
     openPrepView(prepAction.dataset.prepRoleId);
@@ -1759,6 +1768,20 @@ function applyRoleStatusUpdate(updatedRole, currentJobEl) {
   updatePrepButton(trackerData.statuses);
   moveRoleElement(currentJobEl, movedRole, previousStatus, nextStatus);
   updateToggleAllButton();
+}
+
+function mergeRoleIntoTrackerData(updatedRole) {
+  if (!updatedRole || !trackerData) return null;
+  let mergedRole = null;
+  trackerData.statuses.forEach((status) => {
+    const index = status.jobs.findIndex((job) => String(job.id) === String(updatedRole.id));
+    if (index === -1) return;
+    mergedRole = { ...status.jobs[index], ...updatedRole };
+    status.jobs[index] = mergedRole;
+  });
+  updateReviewButton(trackerData.statuses);
+  updatePrepButton(trackerData.statuses);
+  return mergedRole;
 }
 
 function moveRoleInTrackerData(updatedRole, previousStatus, nextStatus) {
@@ -1873,8 +1896,17 @@ function getInterestedJobs(statuses = trackerData?.statuses ?? []) {
   return statuses.find((status) => status.key === "interested")?.jobs ?? [];
 }
 
-function openReviewView() {
-  reviewQueue = [...getDiscoveredJobs()];
+function openReviewView(focusedRoleId = null) {
+  const discoveredJobs = [...getDiscoveredJobs()];
+  const focusedId = focusedRoleId == null ? null : String(focusedRoleId);
+  if (focusedId) {
+    const focusedIndex = discoveredJobs.findIndex((role) => String(role.id) === focusedId);
+    if (focusedIndex > 0) {
+      const [focusedRole] = discoveredJobs.splice(focusedIndex, 1);
+      discoveredJobs.unshift(focusedRole);
+    }
+  }
+  reviewQueue = discoveredJobs;
   reviewView.hidden = false;
   document.body.classList.add("review-open");
   renderReviewRole();
@@ -1988,7 +2020,12 @@ function renderReviewDescription(value) {
 }
 
 function renderDescriptionMarkdown(value) {
-  const lines = String(value)
+  const decodedValue = decodeHtmlEntities(String(value)).replace(/\u00a0/g, " ");
+  if (looksLikeHtmlDescription(decodedValue)) {
+    return renderHtmlDescription(decodedValue);
+  }
+
+  const lines = decodedValue
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
@@ -2009,6 +2046,12 @@ function renderDescriptionMarkdown(value) {
       return;
     }
 
+    if (isKnownDescriptionHeading(line)) {
+      flushList();
+      blocks.push(`<h3>${escapeUiText(line.replace(/:$/, ""))}</h3>`);
+      return;
+    }
+
     const bullet = line.match(/^[-*]\s+(.+)$/);
     if (bullet) {
       listItems.push(escapeUiText(bullet[1]));
@@ -2022,6 +2065,170 @@ function renderDescriptionMarkdown(value) {
   return blocks.join("");
 }
 
+function decodeHtmlEntities(value) {
+  const textarea = document.createElement("textarea");
+  textarea.innerHTML = value;
+  return textarea.value;
+}
+
+function looksLikeHtmlDescription(value) {
+  return /<\/?(?:a|br|div|em|h[1-6]|li|ol|p|span|strong|ul)\b/i.test(value);
+}
+
+function renderHtmlDescription(value) {
+  const template = document.createElement("template");
+  template.innerHTML = value;
+  const blocks = [];
+  renderDescriptionNodes(template.content.childNodes, blocks);
+  return blocks.join("");
+}
+
+function renderDescriptionNodes(nodes, blocks) {
+  nodes.forEach((node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = normalizeDescriptionText(node.textContent);
+      if (text) blocks.push(`<p>${escapeUiText(text)}</p>`);
+      return;
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const element = node;
+    const tagName = element.tagName.toLowerCase();
+    if (tagName === "script" || tagName === "style") return;
+    if (tagName === "br") return;
+
+    if (/^h[1-6]$/.test(tagName)) {
+      appendDescriptionHeading(blocks, element.textContent);
+      return;
+    }
+
+    if (tagName === "ul" || tagName === "ol") {
+      const list = renderDescriptionList(element);
+      if (list) blocks.push(list);
+      return;
+    }
+
+    if (tagName === "p") {
+      renderDescriptionParagraph(element, blocks);
+      return;
+    }
+
+    const hasBlockChildren = Array.from(element.children).some((child) =>
+      ["DIV", "H1", "H2", "H3", "H4", "H5", "H6", "OL", "P", "UL"].includes(child.tagName),
+    );
+    if (["article", "div", "section"].includes(tagName) && hasBlockChildren) {
+      renderDescriptionNodes(element.childNodes, blocks);
+      return;
+    }
+
+    const childLists = Array.from(element.children).filter((child) =>
+      ["UL", "OL"].includes(child.tagName),
+    );
+    const text = normalizeDescriptionText(textWithoutChildLists(element));
+    if (text) {
+      if (isDescriptionHeading(text, element)) {
+        appendDescriptionHeading(blocks, text);
+      } else {
+        blocks.push(`<p>${escapeUiText(text)}</p>`);
+      }
+    }
+
+    if (childLists.length > 0) {
+      childLists.forEach((listElement) => {
+        const list = renderDescriptionList(listElement);
+        if (list) blocks.push(list);
+      });
+      return;
+    }
+
+    if (!text && hasBlockChildren) {
+      renderDescriptionNodes(element.childNodes, blocks);
+    }
+  });
+}
+
+function renderDescriptionParagraph(element, blocks) {
+  if (!element.querySelector("br")) {
+    const text = normalizeDescriptionText(textWithoutChildLists(element));
+    if (!text) return;
+    if (isDescriptionHeading(text, element)) {
+      appendDescriptionHeading(blocks, text);
+    } else {
+      blocks.push(`<p>${escapeUiText(text)}</p>`);
+    }
+    return;
+  }
+
+  let segment = "";
+  const flushSegment = () => {
+    const text = normalizeDescriptionText(segment);
+    segment = "";
+    if (!text) return;
+    if (isDescriptionHeading(text, element)) {
+      appendDescriptionHeading(blocks, text);
+    } else {
+      blocks.push(`<p>${escapeUiText(text)}</p>`);
+    }
+  };
+
+  element.childNodes.forEach((child) => {
+    if (child.nodeType === Node.ELEMENT_NODE && child.tagName.toLowerCase() === "br") {
+      flushSegment();
+      return;
+    }
+    segment += ` ${child.textContent ?? ""}`;
+  });
+  flushSegment();
+}
+
+function appendDescriptionHeading(blocks, value) {
+  const text = normalizeDescriptionText(value).replace(/:$/, "");
+  if (text) blocks.push(`<h3>${escapeUiText(text)}</h3>`);
+}
+
+function renderDescriptionList(listElement) {
+  const items = Array.from(listElement.children)
+    .filter((child) => child.tagName === "LI")
+    .map((item) => {
+      const text = normalizeDescriptionText(textWithoutChildLists(item));
+      const nestedLists = Array.from(item.children)
+        .filter((child) => ["UL", "OL"].includes(child.tagName))
+        .map((childList) => renderDescriptionList(childList))
+        .filter(Boolean)
+        .join("");
+      return text || nestedLists ? `<li>${escapeUiText(text)}${nestedLists}</li>` : "";
+    })
+    .filter(Boolean);
+  return items.length > 0 ? `<ul>${items.join("")}</ul>` : "";
+}
+
+function textWithoutChildLists(element) {
+  const clone = element.cloneNode(true);
+  clone.querySelectorAll("ul, ol").forEach((list) => {
+    list.remove();
+  });
+  return clone.textContent;
+}
+
+function normalizeDescriptionText(value) {
+  return String(value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function isDescriptionHeading(text, element) {
+  const normalized = text.replace(/:$/, "").trim();
+  if (!normalized || normalized.length > 90) return false;
+  if (isKnownDescriptionHeading(normalized)) return true;
+  if (/:$/.test(text)) return true;
+  if (/[.!?]$/.test(normalized)) return false;
+  if (normalized.split(/\s+/).length > 10) return false;
+  if (element.querySelector("strong, b, u")) return true;
+  return isKnownDescriptionHeading(normalized);
+}
+
+function isKnownDescriptionHeading(value) {
+  return DESCRIPTION_SECTION_HEADING_PATTERN.test(String(value).trim());
+}
+
 async function handleReviewAction(action) {
   const current = reviewQueue[0];
   if (!current) return;
@@ -2033,14 +2240,10 @@ async function handleReviewAction(action) {
     });
 
     try {
-      await recordRoleReviewLater(current.id);
-      current.review_later_count = Number(current.review_later_count ?? 0) + 1;
-      if (reviewQueue.length > 1) {
-        reviewQueue.push(reviewQueue.shift());
-        renderReviewRole("moved to the back of the queue.");
-      } else {
-        renderReviewRole("only one role is in the queue.");
-      }
+      const updatedRole = await recordRoleReviewLater(current.id);
+      reviewQueue.shift();
+      mergeRoleIntoTrackerData(updatedRole);
+      renderReviewRole("moved out of this review pass.");
     } catch {
       renderReviewRole("could not postpone that role. try again.");
     } finally {
@@ -2136,6 +2339,7 @@ async function renderPrepRole(message = "") {
 function renderPrepResume(role, state = {}) {
   const savedResume = prepResumeByRoleId.get(role.id);
   const resume = state.resume ?? savedResume;
+  const tweaks = state.tweaks ?? prepResumeTweaksByRoleId.get(role.id) ?? "";
   const pdfUrl = `/api/roles/${encodeURIComponent(role.id)}/resume.pdf`;
   if (!resume) {
     return `
@@ -2170,6 +2374,14 @@ function renderPrepResume(role, state = {}) {
       </summary>
       <p class="prep-overview">${escapeUiText(resume.summary ?? "Saved resume for this role.")}</p>
       ${renderPrepAnalysis(role)}
+      <label class="prep-cover-tweaks prep-resume-tweaks">
+        <span>tweaks</span>
+        <textarea
+          data-prep-resume-tweaks="${role.id}"
+          rows="4"
+          placeholder="paste or write a resume tweak prompt..."
+        >${escapeHtml(tweaks)}</textarea>
+      </label>
       <label class="prep-cover-latex">
         <span>latex</span>
         <textarea
@@ -2345,7 +2557,7 @@ function renderPrepAnalysis(role, state = {}) {
               <p class="prep-feedback-label">${escapeUiText(item.label)}</p>
               <h4>${escapeUiText(item.title)}</h4>
               <p>${escapeUiText(item.detail)}</p>
-              ${renderPrepProposedEdit(item)}
+              ${renderPrepTweakPrompt(item)}
               <label class="prep-feedback-comment">
                 <span>response comment</span>
                 <textarea
@@ -2363,7 +2575,9 @@ function renderPrepAnalysis(role, state = {}) {
               </div>
               <div class="prep-feedback-decisions">
                 <button type="button" data-prep-feedback="ignore">ignore</button>
-                <button type="button" data-prep-feedback="accept">accept</button>
+                <button type="button" data-prep-feedback="accept" ${item.tweak_prompt ? "" : "disabled"}>
+                  add tweak
+                </button>
               </div>
             </div>
           `
@@ -2373,36 +2587,19 @@ function renderPrepAnalysis(role, state = {}) {
   `;
 }
 
-function renderPrepProposedEdit(item) {
-  if (item?.target_text && item?.replacement_text) {
+function renderPrepTweakPrompt(item) {
+  if (!item?.tweak_prompt) {
     return `
       <div class="prep-proposed-edit">
-        <p class="prep-proposed-label">proposed edit</p>
-        <div class="prep-edit-pair">
-          <div>
-            <span>replace</span>
-            <pre>${escapeUiText(item.target_text)}</pre>
-          </div>
-          <div>
-            <span>with</span>
-            <pre>${escapeUiText(item.replacement_text)}</pre>
-          </div>
-        </div>
-      </div>
-    `;
-  }
-  if (item?.latex_addition) {
-    return `
-      <div class="prep-proposed-edit">
-        <p class="prep-proposed-label">proposed edit</p>
-        <pre>${escapeUiText(item.latex_addition)}</pre>
+        <p class="prep-proposed-label">feedback only</p>
+        <p>not enough information to turn this into a safe resume tweak.</p>
       </div>
     `;
   }
   return `
     <div class="prep-proposed-edit">
-      <p class="prep-proposed-label">proposed edit</p>
-      <p>${escapeUiText(item?.detail ?? "no exact edit proposed")}</p>
+      <p class="prep-proposed-label">tweak prompt</p>
+      <p>${escapeUiText(item.tweak_prompt)}</p>
     </div>
   `;
 }
@@ -2649,6 +2846,8 @@ async function recordRoleReviewLater(roleId) {
     method: "POST",
   });
   if (!response.ok) throw new Error("Review later update failed");
+  const payload = await response.json();
+  return payload.role;
 }
 
 async function updateRoleStatusById(roleId, status) {
@@ -2683,6 +2882,15 @@ prepView.addEventListener("click", (event) => {
 });
 
 prepView.addEventListener("input", (event) => {
+  const resumeTweaks = event.target.closest("[data-prep-resume-tweaks]");
+  if (resumeTweaks) {
+    const roleId = Number(resumeTweaks.dataset.prepResumeTweaks);
+    if (Number.isFinite(roleId)) {
+      prepResumeTweaksByRoleId.set(roleId, resumeTweaks.value);
+    }
+    return;
+  }
+
   const resumeEditor = event.target.closest("[data-prep-resume-latex]");
   if (resumeEditor) {
     syncLatexEditorHighlight(resumeEditor);
@@ -2808,7 +3016,7 @@ prepView.addEventListener("click", async (event) => {
     const responseAction = feedbackButton.dataset.prepFeedback;
     const originalLabel = responseAction;
     feedbackButton.disabled = true;
-    feedbackButton.textContent = responseAction === "accept" ? "accepting..." : "ignoring...";
+    feedbackButton.textContent = responseAction === "accept" ? "adding..." : "ignoring...";
     try {
       if (responseAction === "accept") {
         const payload = await acceptPrepFeedback(roleId, currentIndex, feedbackItem, comment);
@@ -2817,16 +3025,7 @@ prepView.addEventListener("click", async (event) => {
           prepQueue[0] = payload.role;
           applyRoleStatusUpdate(payload.role, currentJobEl);
         }
-        prepResumeByRoleId.delete(roleId);
-        loadPrepResume(roleId, { force: true })
-          .then((resume) => {
-            if (!resume || prepQueue[0]?.id !== roleId) return;
-            prepCard.querySelector(".prep-resume")?.replaceWith(
-              htmlToElement(renderPrepResume(prepQueue[0], { resume })),
-            );
-            enhancePrepLatexEditors();
-          })
-          .catch(() => {});
+        appendPrepResumeTweak(roleId, payload.tweak_prompt ?? feedbackItem.tweak_prompt ?? "");
         removePrepFeedbackItem(roleId, currentIndex, analysis);
       } else {
         await ignorePrepFeedback(roleId, currentIndex, feedbackItem, comment);
@@ -2864,6 +3063,19 @@ function removePrepFeedbackItem(roleId, feedbackIndex, analysis) {
   prepCard.querySelector(".prep-analysis")?.replaceWith(
     htmlToElement(renderPrepAnalysis(prepQueue[0], { analysis: nextAnalysis })),
   );
+}
+
+function appendPrepResumeTweak(roleId, tweakPrompt) {
+  const prompt = String(tweakPrompt || "").trim();
+  if (!prompt) return;
+  const existing = prepResumeTweaksByRoleId.get(roleId)?.trim() ?? "";
+  const next = existing ? `${existing}\n\n${prompt}` : prompt;
+  prepResumeTweaksByRoleId.set(roleId, next);
+  const tweaksBox = prepCard.querySelector(`[data-prep-resume-tweaks="${roleId}"]`);
+  if (tweaksBox) {
+    tweaksBox.value = next;
+    tweaksBox.focus();
+  }
 }
 
 document.addEventListener("keydown", (event) => {

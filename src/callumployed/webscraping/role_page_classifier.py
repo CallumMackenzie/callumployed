@@ -237,6 +237,19 @@ def assess_role_page(
     visible_text = _clean_text(" ".join(part for part in (raw_page_text, description) if part))
     is_closed = _is_closed_page(page, visible_text)
 
+    if description is None and _is_transient_error_shell(visible_text):
+        return RolePageAssessment(
+            is_role=False,
+            is_closed=False,
+            confidence=0.82,
+            title=title,
+            description=None,
+            posting_id=_extract_posting_id({}, page),
+            extraction_method="html_heuristic",
+            rejection_reason="page rendered a transient error shell",
+            reasons=["transient page error", f"title: {title_source}"],
+        )
+
     if _is_ats_role_page(domain, path, visible_text):
         return RolePageAssessment(
             is_role=True,
@@ -311,6 +324,19 @@ def _extract_structured_job_posting(page: RenderedPageState) -> dict[str, Any] |
         if any(str(value).lower().endswith("jobposting") for value in type_values if value):
             return item
     return None
+
+
+def _is_transient_error_shell(text: str | None) -> bool:
+    if not text:
+        return False
+    return bool(
+        re.search(
+            r"\b(?:an error has occurred|website encountered an unexpected error|"
+            r"please try again later)\b",
+            text,
+            re.I,
+        )
+    )
 
 
 def _walk_structured_items(value: Any) -> list[dict[str, Any]]:

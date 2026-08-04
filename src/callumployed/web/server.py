@@ -56,6 +56,7 @@ from callumployed.data.models import (
     ScanStatus,
 )
 from callumployed.data.repositories import (
+    REVIEW_LATER_EVENT_TYPE,
     add_company,
     add_company_career_page,
     add_cover_letter_example,
@@ -741,11 +742,14 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             try:
                 with db.connect() as connection:
                     role = record_role_review_later(connection, role_id)
+                    review_later_count = _role_review_later_count(connection, role_id)
             except LookupError:
                 self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
                 return
 
-            self._send_json({"role": _role_payload(role)})
+            role_payload = _role_payload(role)
+            role_payload["review_later_count"] = review_later_count
+            self._send_json({"role": role_payload})
 
         def _add_role(self) -> None:
             payload = self._read_json_body()
@@ -978,11 +982,11 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             except LookupError:
                 self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
                 return
-            if resume is None:
-                self.send_error(HTTPStatus.BAD_REQUEST, "No master resume stored")
-                return
             feedback = payload.get("feedback_item")
             if not isinstance(feedback, dict):
+                if resume is None:
+                    self.send_error(HTTPStatus.BAD_REQUEST, "No master resume stored")
+                    return
                 analysis = build_prep_analysis(role.model_dump(mode="json"), resume)
                 feedback_items = analysis.get("feedback_items")
                 if (
@@ -995,7 +999,10 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             if not isinstance(feedback, dict):
                 self.send_error(HTTPStatus.BAD_REQUEST, "Invalid feedback item")
                 return
-            resume_path = _apply_feedback_to_role_resume(role.id or role_id, resume, feedback)
+            tweak_prompt = _feedback_tweak_prompt(feedback)
+            if not tweak_prompt:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Feedback has no actionable tweak prompt")
+                return
             with db.connect() as connection:
                 record_resume_feedback_history(
                     connection,
@@ -1009,7 +1016,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 {
                     "accepted": True,
                     "feedback_index": feedback_index,
-                    "resume_path": str(resume_path),
+                    "tweak_prompt": tweak_prompt,
                     "role": _role_payload(role),
                 }
             )
@@ -2080,6 +2087,7 @@ def build_prep_analysis(
                 "label": "setup",
                 "title": "upload master resume",
                 "detail": "add the current .tex resume before tailoring materials for this role.",
+                "tweak_prompt": None,
             }
         )
     if not description.strip():
@@ -2088,6 +2096,7 @@ def build_prep_analysis(
                 "label": "refresh_context",
                 "title": "refresh job context: saved description is missing",
                 "detail": "rescan or open the role page so the prep view has full job context.",
+                "tweak_prompt": None,
             }
         )
     if matched_terms:
@@ -2098,6 +2107,11 @@ def build_prep_analysis(
                 "detail": (
                     f"rewrite an existing project or experience bullet to foreground "
                     f"{', '.join(matched_terms[:5])} using language from the posting."
+                ),
+                "tweak_prompt": (
+                    "Revise the resume to foreground the existing experience that supports "
+                    f"{', '.join(matched_terms[:5])} for this role. Keep the current LaTeX "
+                    "structure and do not add unsupported claims."
                 ),
             }
         )
@@ -2110,6 +2124,7 @@ def build_prep_analysis(
                     f"add {', '.join(missing_terms[:5])} only where they are honestly "
                     "supported by existing resume projects or experience."
                 ),
+                "tweak_prompt": None,
             }
         )
     feedback_items.append(
@@ -2117,6 +2132,13 @@ def build_prep_analysis(
             "label": "move_emphasis",
             "title": "move emphasis earlier: strongest company-relevant project",
             "detail": "move the most relevant project or skill cluster higher in the resume.",
+            "tweak_prompt": (
+                "If a project or experience already in the resume is clearly the strongest "
+                "match for this role, move that emphasis earlier while preserving the current "
+                "section style."
+            )
+            if resume is not None and description.strip()
+            else None,
         }
     )
 
@@ -2825,6 +2847,14 @@ def _safe_resource_filename(filename: str) -> str:
     return safe_filename
 
 
+def _feedback_tweak_prompt(feedback: dict[str, Any]) -> str | None:
+    tweak_prompt = feedback.get("tweak_prompt")
+    if not isinstance(tweak_prompt, str):
+        return None
+    stripped = tweak_prompt.strip()
+    return stripped or None
+
+
 def _apply_feedback_to_role_resume(
     role_id: int,
     resume: MasterResume,
@@ -3238,6 +3268,18 @@ def _query_float(connection: Any, sql: str) -> float | None:
 def _query_count_by_value(connection: Any, sql: str) -> dict[str, int]:
     rows = connection.execute(sql).fetchall()
     return {str(row["value"]): int(row["count"]) for row in rows}
+
+
+def _role_review_later_count(connection: Any, role_id: int) -> int:
+    row = connection.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM events
+        WHERE role_id = ? AND event_type = ?
+        """,
+        (role_id, REVIEW_LATER_EVENT_TYPE),
+    ).fetchone()
+    return int(row["count"]) if row is not None and row["count"] is not None else 0
 
 
 def _role_payload(role: Role | RoleListItem) -> dict[str, Any]:

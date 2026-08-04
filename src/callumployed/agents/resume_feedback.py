@@ -1,5 +1,4 @@
 import json
-import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -23,9 +22,7 @@ class ResumeFeedbackItem(ResumeFeedbackModel):
     ]
     title: str
     detail: str
-    target_text: str | None = None
-    replacement_text: str | None = None
-    latex_addition: str | None = None
+    tweak_prompt: str | None = None
 
 
 class ResumeFeedbackResponse(ResumeFeedbackModel):
@@ -63,8 +60,8 @@ Use the resume context and job context directly. Evaluate:
 - prior recommendation history from the knowledge base, if provided
 
 When the verdict is "tweak", return concise feedback items one by one. Each item must
-be a concrete resume-edit operation, not generic application advice. Use one of these
-operation styles:
+identify a concrete application-readiness issue, not generic application advice. Use one
+of these operation styles:
 - title: "add skills matching the posting: ..." when supported skills/projects are
   present in the resume or explicitly supplied notes but missing the posting's wording
 - title: "change wording to align with posting: ..." when an existing bullet should
@@ -73,30 +70,29 @@ operation styles:
 - title: "remove or avoid unsupported claim: ..." when a tempting keyword is not
   supported by the resume context
 
-Every add_skills or change_wording item must include either:
-- target_text copied exactly from resume_context.content plus replacement_text, or
-- latex_addition for a small standalone LaTeX line or bullet whose source is named in
-  detail.
-Do not return broad keyword advice such as "mention distributed systems" unless the
-exact supported resume text to edit or the exact supported LaTeX addition is provided.
-Do not invent experience.
-When proposing LaTeX additions or replacements, match the existing resume structure
-and layout when that makes sense: reuse the resume's current section style, bullet
-macros, indentation, tone, density, and ordering conventions instead of introducing
-a new visual pattern.
+Do not return exact LaTeX additions, replacement text, or before/after edits. Instead,
+when an item is immediately actionable with the information currently present, include
+tweak_prompt: a concise instruction that can be pasted into the resume tweak box to
+guide a future resume revision. The tweak_prompt should state the desired outcome,
+the resume evidence or supplied note that supports it, and any constraints such as
+"do not add unsupported claims." It should not prescribe exact final wording.
+
+If an issue is useful feedback but not immediately actionable with the current resume,
+job description, and supplied notes, still surface the feedback item but set
+tweak_prompt to null. Examples include missing context, unsupported requirements, or
+skills that might be relevant but are not clearly backed by present evidence.
 
 For move_emphasis items, first verify the current resume ordering from
 resume_context.content. Only suggest moving a role/project earlier when the exact
 target role/project currently appears after less-relevant experience. If the
 strongest matching role is already at the top of the relevant resume section,
-do not suggest moving it earlier; suggest a wording or bullet-content edit
-instead. Never use placeholders such as "[current ordering]" or replacement text
-that only says to move a role.
+do not suggest moving it earlier; suggest a wording or bullet-content issue instead.
+Never use placeholders such as "[current ordering]".
 
 Use other_experience_context only as secondary evidence. These notes may or may not
 already be on the resume. Never assume they are visible in resume_context.content.
 Suggest adding note-derived material only when the note is clearly relevant to the
-job and supports an exact, truthful latex_addition. If the note-derived edit would be
+job and supports a truthful tweak prompt. If the note-derived edit would be
 nice-to-have, speculative, or less important than the current resume fit, keep the
 verdict ready_to_apply and mention the note briefly in the overview at most.
 
@@ -114,7 +110,7 @@ Use the recommendation knowledge base as preference memory:
 
 Return only JSON matching:
 {"verdict":"tweak","overview":"...","feedback_items":[{"label":"add_skills","title":"...",
-"detail":"...","target_text":null,"replacement_text":null,"latex_addition":"..."}]}
+"detail":"...","tweak_prompt":"..."}]}
 """.strip()
 
 
@@ -200,20 +196,10 @@ class ResumeFeedbackAgent:
         response = ResumeFeedbackResponse.model_validate(result)
         if response.verdict == "ready_to_apply":
             return response.model_copy(update={"feedback_items": []})
-        feedback_items = [
-            item
-            for item in response.feedback_items
-            if _is_actionable_feedback_item(item, resume_content)
-        ]
+        feedback_items = [_normalize_feedback_item(item) for item in response.feedback_items]
         if not feedback_items:
             return response.model_copy(update={"verdict": "ready_to_apply", "feedback_items": []})
-        return response.model_copy(
-            update={
-                "feedback_items": [
-                    _normalize_feedback_title(item) for item in feedback_items
-                ]
-            }
-        )
+        return response.model_copy(update={"feedback_items": feedback_items})
 
 
 async def evaluate_resume_feedback(
@@ -248,28 +234,7 @@ def _normalize_feedback_title(item: ResumeFeedbackItem) -> ResumeFeedbackItem:
     return item.model_copy(update={"title": f"{prefix}: {normalized_title}"})
 
 
-def _is_actionable_feedback_item(item: ResumeFeedbackItem, resume_content: str) -> bool:
-    target_text = (item.target_text or "").strip()
-    replacement_text = (item.replacement_text or "").strip()
-    latex_addition = (item.latex_addition or "").strip()
-    if item.label in {"add_skills", "change_wording"}:
-        if target_text:
-            return bool(replacement_text) and _contains_normalized_text(
-                resume_content, target_text
-            )
-        return bool(latex_addition)
-    if item.label != "move_emphasis":
-        return True
-    if not target_text:
-        return False
-    if "[" in target_text or "]" in target_text:
-        return False
-    if re.search(r"\bmove\s+this\s+role\b|\bappear\s+before\b", replacement_text, re.I):
-        return False
-    return _contains_normalized_text(resume_content, target_text)
-
-
-def _contains_normalized_text(haystack: str, needle: str) -> bool:
-    normalized_haystack = " ".join(haystack.casefold().split())
-    normalized_needle = " ".join(needle.casefold().split())
-    return normalized_needle in normalized_haystack
+def _normalize_feedback_item(item: ResumeFeedbackItem) -> ResumeFeedbackItem:
+    normalized = _normalize_feedback_title(item)
+    tweak_prompt = normalized.tweak_prompt.strip() if normalized.tweak_prompt else None
+    return normalized.model_copy(update={"tweak_prompt": tweak_prompt or None})

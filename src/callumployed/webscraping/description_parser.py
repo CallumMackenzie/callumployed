@@ -9,7 +9,11 @@ CORE_SECTION_HEADINGS = (
     "about the role",
     "about this role",
     "about the team",
+    "about citadel securities",
     "about the job",
+    "about susquehanna",
+    "job description",
+    "job responsibilities",
     "what to expect",
     "what you'll do",
     "what you’ll do",
@@ -22,7 +26,10 @@ CORE_SECTION_HEADINGS = (
     "what you'll bring",
     "what you’ll bring",
     "what you will bring",
+    "what's in it for you",
     "who you are",
+    "your objectives",
+    "your skills & talents",
 )
 STOP_SECTION_HEADINGS = (
     "benefits",
@@ -54,8 +61,9 @@ NOISE_PATTERN = re.compile(
     r"company paid|dental|e-verify|employee assistance program|employee discounts|"
     r"equal opportunity|family-building|fertility|flexible spending accounts|"
     r"health savings account|medical plans|pet insurance|privacy notice|"
-    r"reasonable accommodations?|screen reader|surrogacy|tesla ©|"
-    r"vision plans|voluntary benefits"
+    r"owner and data controller|reasonable accommodations?|recruiting agency|"
+    r"screen reader|surrogacy|tesla ©|this website collects|types of data collected|"
+    r"unexpected error|vision plans|voluntary benefits|website encountered an unexpected error"
     r")\b",
     re.I,
 )
@@ -68,6 +76,22 @@ NAV_NOISE_PATTERN = re.compile(
 )
 WHITESPACE_PATTERN = re.compile(r"[ \t\r\f\v]+")
 HEADING_MARKER = "__CALLUMPLOYED_HEADING__ "
+INLINE_SECTION_PATTERN = re.compile(
+    r"\b("
+    r"About Citadel Securities|About Susquehanna|Job Description|"
+    r"What'?s in it for you|Your Objectives|Your Skills & Talents"
+    r")\s*:?",
+    re.I,
+)
+KNOWN_LINE_HEADING_PATTERN = re.compile(
+    r"^(?:"
+    r"about (?:the )?(?:role|team|job)|about this role|job description|job responsibilities|"
+    r"minimum qualifications|preferred qualifications|qualifications|requirements|"
+    r"responsibilities|what to expect|what (?:you'll|you’ll|you will) (?:bring|do)|"
+    r"what'?s in it for you|who you are|your objectives|your skills & talents"
+    r"):?$",
+    re.I,
+)
 
 
 def extract_job_description(
@@ -134,6 +158,9 @@ def _clean_description_text(text: str | None) -> str | None:
     plain_text = plain_text.replace("\xa0", " ")
     lines = [_normalize_line(line) for line in re.split(r"[\n•]+", plain_text)]
     lines = [line for line in lines if line]
+    if _has_transient_error_shell(lines):
+        return None
+    lines = _split_inline_sections(lines)
     lines = _split_oversized_lines(lines)
     lines = _drop_leading_google_job_card_chrome(lines)
     lines = _trim_to_relevant_sections(lines)
@@ -158,6 +185,43 @@ def _normalize_line(line: str) -> str:
     if is_heading and normalized:
         return f"{HEADING_MARKER}{normalized}"
     return normalized
+
+
+def _split_inline_sections(lines: list[str]) -> list[str]:
+    result: list[str] = []
+    for line in lines:
+        result.extend(_split_inline_section_line(line))
+    return result
+
+
+def _split_inline_section_line(line: str) -> list[str]:
+    matches = list(INLINE_SECTION_PATTERN.finditer(line))
+    if not matches:
+        return _split_inline_dash_bullets(line)
+
+    result: list[str] = []
+    first_match = matches[0]
+    prefix = line[: first_match.start()].strip()
+    if prefix and _heading_key(f"{HEADING_MARKER}{first_match.group(1)}") != "job description":
+        result.extend(_split_inline_dash_bullets(prefix))
+
+    for index, match in enumerate(matches):
+        heading = _normalize_inline_heading(match.group(1))
+        next_start = matches[index + 1].start() if index + 1 < len(matches) else len(line)
+        body = line[match.end() : next_start].strip(" :-")
+        result.append(f"{HEADING_MARKER}{heading}")
+        result.extend(_split_inline_dash_bullets(body))
+    return [item for item in result if item]
+
+
+def _split_inline_dash_bullets(line: str) -> list[str]:
+    if " - " not in line:
+        return [line] if line else []
+    return [part.strip() for part in re.split(r"\s+-\s+", line) if part.strip()]
+
+
+def _normalize_inline_heading(value: str) -> str:
+    return WHITESPACE_PATTERN.sub(" ", value).strip(" :")
 
 
 def _split_oversized_lines(lines: list[str]) -> list[str]:
@@ -205,6 +269,8 @@ def _description_start_index(lines: list[str]) -> int:
     for index, line in enumerate(lines):
         if not _is_core_heading(line):
             continue
+        if _heading_key(line) == "job description":
+            return index
         if all(_is_metadata_line(previous) for previous in lines[:index]):
             return index
         return 0
@@ -247,7 +313,11 @@ def _heading_key(line: str) -> str:
 
 
 def _has_heading_structure(line: str) -> bool:
-    return line.startswith(HEADING_MARKER) or line.lstrip().startswith("##")
+    return (
+        line.startswith(HEADING_MARKER)
+        or line.lstrip().startswith("##")
+        or bool(KNOWN_LINE_HEADING_PATTERN.fullmatch(line.strip()))
+    )
 
 
 def _strip_heading_structure(line: str) -> str:
@@ -315,6 +385,18 @@ def _drop_noise_lines(lines: list[str]) -> list[str]:
             continue
         kept.append(line)
     return kept
+
+
+def _has_transient_error_shell(lines: list[str]) -> bool:
+    text = " ".join(lines)
+    return bool(
+        re.search(
+            r"\b(?:an error has occurred|website encountered an unexpected error|"
+            r"please try again later)\b",
+            text,
+            re.I,
+        )
+    )
 
 
 def _dedupe_lines(lines: Iterable[str]) -> list[str]:

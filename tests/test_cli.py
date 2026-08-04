@@ -392,7 +392,7 @@ def test_companies_show_command_prints_saved_company_info(tmp_path: Path) -> Non
 
     assert result.exit_code == 0
     assert "Company #1: Acme" in result.output
-    assert "Prestige tier: A" in result.output
+    assert "Prestige tier: 1" in result.output
     assert "Notes: High-priority target." in result.output
     assert "Created:" in result.output
     assert "Updated:" in result.output

@@ -90,8 +90,8 @@ def test_resume_feedback_prompt_includes_verdict_rules_and_context() -> None:
     assert '"tweak"' in prompt
     assert "add skills matching the posting" in prompt
     assert "change wording to align with posting" in prompt
-    assert "match the existing resume structure" in prompt
-    assert "macros" in prompt
+    assert "tweak_prompt" in prompt
+    assert "Do not return exact LaTeX additions" in prompt
     assert "resume_context" in prompt
     assert "job_context" in prompt
     assert "Python distributed systems internship" in prompt
@@ -122,7 +122,7 @@ def test_resume_feedback_prompt_includes_other_experience_context() -> None:
     assert "secondary evidence" in prompt
     assert "may or" in prompt
     assert "Never assume they are visible" in prompt
-    assert "exact, truthful latex_addition" in prompt
+    assert "truthful tweak prompt" in prompt
     assert "ready_to_apply" in prompt
     assert "Built an internal scheduler with Kubernetes and Redis." in prompt
 
@@ -343,16 +343,18 @@ def test_resume_feedback_agent_normalizes_operation_titles() -> None:
                         "label": "add_skills",
                         "title": "Add specific tech keywords from job posting",
                         "detail": "mention supported skills from the posting",
-                        "latex_addition": (
-                            "\\resumeItem{Built Python systems for backend services.}"
+                        "tweak_prompt": (
+                            "Revise the resume to emphasize existing Python backend "
+                            "systems work for this posting."
                         ),
                     },
                     {
                         "label": "change_wording",
                         "title": "Change wording to align with posting: distributed systems",
                         "detail": "rewrite one bullet around distributed systems",
-                        "target_text": "Python systems",
-                        "replacement_text": "Python distributed systems",
+                        "tweak_prompt": (
+                            "Tune the existing Python systems bullet toward distributed systems."
+                        ),
                     },
                 ],
             }
@@ -372,9 +374,12 @@ def test_resume_feedback_agent_normalizes_operation_titles() -> None:
     assert response.feedback_items[1].title == (
         "change wording to align with posting: distributed systems"
     )
+    assert response.feedback_items[1].tweak_prompt == (
+        "Tune the existing Python systems bullet toward distributed systems."
+    )
 
 
-def test_resume_feedback_agent_drops_vague_keyword_feedback() -> None:
+def test_resume_feedback_agent_surfaces_feedback_without_tweak_prompt() -> None:
     class FakeResumeFeedbackModel:
         async def ainvoke(self, _input: object) -> dict[str, object]:
             return {
@@ -384,14 +389,19 @@ def test_resume_feedback_agent_drops_vague_keyword_feedback() -> None:
                     {
                         "label": "add_skills",
                         "title": "add skills matching the posting: distributed systems",
-                        "detail": "mention distributed systems where supported",
+                        "detail": (
+                            "distributed systems appears important but is not backed by "
+                            "the current resume."
+                        ),
+                        "tweak_prompt": None,
                     },
                     {
                         "label": "change_wording",
                         "title": "change wording to align with posting: Linux C++",
-                        "detail": "say the Amazon role used C++ on Linux",
-                        "target_text": "Amazon backend work",
-                        "replacement_text": "Amazon C++ development on Linux",
+                        "detail": (
+                            "Linux C++ may be relevant if there is supporting project context."
+                        ),
+                        "tweak_prompt": "",
                     },
                 ],
             }
@@ -405,11 +415,13 @@ def test_resume_feedback_agent_drops_vague_keyword_feedback() -> None:
         )
     )
 
-    assert response.verdict == "ready_to_apply"
-    assert response.feedback_items == []
+    assert response.verdict == "tweak"
+    assert len(response.feedback_items) == 2
+    assert response.feedback_items[0].tweak_prompt is None
+    assert response.feedback_items[1].tweak_prompt is None
 
 
-def test_resume_feedback_agent_drops_unanchored_move_emphasis_feedback() -> None:
+def test_resume_feedback_agent_keeps_nonactionable_move_emphasis_feedback() -> None:
     class FakeResumeFeedbackModel:
         async def ainvoke(self, _input: object) -> dict[str, object]:
             return {
@@ -423,14 +435,7 @@ def test_resume_feedback_agent_drops_unanchored_move_emphasis_feedback() -> None
                             "position the Amazon AI platform work at the top of the "
                             "experience section."
                         ),
-                        "target_text": (
-                            "software development engineer intern at amazon "
-                            "[current ordering]"
-                        ),
-                        "replacement_text": (
-                            "move this role to appear before general dynamics embedded "
-                            "software role"
-                        ),
+                        "tweak_prompt": None,
                     }
                 ],
             }
@@ -448,8 +453,9 @@ def test_resume_feedback_agent_drops_unanchored_move_emphasis_feedback() -> None
         )
     )
 
-    assert response.verdict == "ready_to_apply"
-    assert response.feedback_items == []
+    assert response.verdict == "tweak"
+    assert len(response.feedback_items) == 1
+    assert response.feedback_items[0].tweak_prompt is None
 
 
 def test_posting_link_classification_batch_payload_uses_database_context_without_timing() -> None:

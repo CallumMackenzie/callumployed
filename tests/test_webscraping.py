@@ -28,7 +28,7 @@ from callumployed.webscraping.classifier import (
     score_candidates,
     select_heuristic_links,
 )
-from callumployed.webscraping.description_parser import extract_job_description
+from callumployed.webscraping.description_parser import clean_job_description, extract_job_description
 from callumployed.webscraping.errors import NavigationError
 from callumployed.webscraping.extraction import extract_link_candidates
 from callumployed.webscraping.location_parser import parse_job_location
@@ -816,6 +816,125 @@ def test_extract_job_description_formats_real_heading_sections_only() -> None:
     )
 
 
+def test_extract_job_description_rejects_tesla_error_shell() -> None:
+    soup = BeautifulSoup(
+        """
+        <main>
+          <h1>Build your Career at Tesla</h1>
+          <p>Tesla homepage Careers Skip to main content Explore Jobs Manufacturing AI
+          Terafab Vehicle Software Internships About Us Profile US Build your Career at
+          Tesla An error has occurred The website encountered an unexpected error.
+          Please try again later.</p>
+          <p>Internship, Charging Data Modeling, Machine Learning Engineer (Fall 2026)
+          Job Category Vehicle Software Location PALO ALTO, California Req.</p>
+          <p>ID 278249 Job Type Intern/Apprentice Apply Tesla © 2026 Privacy & Legal
+          Tesla Connect Help Us Improve Our Website with Cookies We use cookies and
+          process data from your device to analyze website performance.</p>
+        </main>
+        """,
+        "lxml",
+    )
+
+    assert extract_job_description(soup) is None
+
+
+def test_clean_job_description_trims_sig_privacy_policy() -> None:
+    description = clean_job_description(
+        """
+        Toggle navigation
+        What We Do
+        Blog
+        Bala Cynwyd (Philadelphia Area), Pennsylvania Technology - Software Engineering
+        JOB_DESCRIPTION.SHARE.HTML
+        Job Description
+        Susquehanna is looking for highly motivated full-time students for our internship.
+        Enrolled in a bachelor's or master's program in computer science.
+        What's in it for you:
+        Housing provided for duration of internship
+        About Susquehanna
+        Susquehanna is a global quantitative trading firm powered by scientific rigor.
+        If you're a recruiting agency and want to partner with us, please reach out.
+        This Website collects some Personal Data from its Users.
+        Owner and Data Controller
+        Types of Data collected
+        """
+    )
+
+    assert description == "\n".join(
+        [
+            "## Job Description",
+            "Susquehanna is looking for highly motivated full-time students for our internship.",
+            "Enrolled in a bachelor's or master's program in computer science.",
+            "## What's in it for you",
+            "Housing provided for duration of internship",
+            "## About Susquehanna",
+            "Susquehanna is a global quantitative trading firm powered by scientific rigor.",
+        ]
+    )
+
+
+def test_clean_job_description_splits_inline_section_headings_and_dash_bullets() -> None:
+    description = clean_job_description(
+        "Software Engineer – Intern (US) New York, Miami Job Description At Citadel "
+        "Securities, engineers work in small teams. Your Objectives: - Create tools "
+        "that bring trading strategies to life - Develop high-performance research "
+        "platforms - Work in small teams to build the future of finance Your Skills "
+        "& Talents: - Exceptional programming and design skills - Strong analytical "
+        "skills About Citadel Securities Citadel Securities is a technology-driven "
+        "market maker."
+    )
+
+    assert description == "\n".join(
+        [
+            "## Job Description",
+            "At Citadel Securities, engineers work in small teams.",
+            "## Your Objectives",
+            "Create tools that bring trading strategies to life",
+            "Develop high-performance research platforms",
+            "Work in small teams to build the future of finance",
+            "## Your Skills & Talents",
+            "Exceptional programming and design skills",
+            "Strong analytical skills",
+            "## About Citadel Securities",
+            "Citadel Securities is a technology-driven market maker.",
+        ]
+    )
+
+
+def test_clean_job_description_formats_known_line_start_section_labels() -> None:
+    description = clean_job_description(
+        "\n".join(
+            [
+                "Consider before submitting an application:",
+                "Read timing details before applying.",
+                "About the Team:",
+                "Build charging infrastructure models.",
+                "Job Responsibilities:",
+                "Translate internal documents.",
+                "Minimum Qualifications:",
+                "Strong programming skills.",
+                "Preferred Qualifications:",
+                "Experience with time-series datasets.",
+            ]
+        )
+    )
+
+    assert description == "\n".join(
+        [
+            "Consider before submitting an application:",
+            "Read timing details before applying.",
+            "## About the Team",
+            "Build charging infrastructure models.",
+            "## Job Responsibilities",
+            "Translate internal documents.",
+            "## Minimum Qualifications",
+            "Strong programming skills.",
+            "## Preferred Qualifications",
+            "Experience with time-series datasets.",
+        ]
+    )
+
+
 def test_assess_role_page_cleans_tesla_style_description() -> None:
     page = RenderedPageState(
         url="https://www.tesla.com/careers/search/job/internship-software-engineer-it-apps",
@@ -918,6 +1037,41 @@ def test_assess_role_page_uses_url_slug_when_dom_title_is_noisy() -> None:
     assert assessment.title == "Internship Software Engineer Vehicle UI Development Fall 2026"
     assert assessment.posting_id == "270063"
     assert "title: URL slug" in assessment.reasons
+
+
+def test_assess_role_page_rejects_tesla_error_shell() -> None:
+    page = RenderedPageState(
+        url=(
+            "https://www.tesla.com/careers/search/job/"
+            "internship-charging-data-modeling-machine-learning-engineer-fall-2026-278249"
+        ),
+        final_url=(
+            "https://www.tesla.com/careers/search/job/"
+            "internship-charging-data-modeling-machine-learning-engineer-fall-2026-278249"
+        ),
+        title="Tesla homepage Careers Skip to main content",
+        html="""
+        <main>
+          <h1>Tesla homepage Careers Skip to main content</h1>
+          <p>Build your Career at Tesla An error has occurred The website encountered
+          an unexpected error. Please try again later.</p>
+          <p>Internship, Charging Data Modeling, Machine Learning Engineer (Fall 2026)
+          Job Category Vehicle Software Location PALO ALTO, California Req.</p>
+          <p>ID 278249 Job Type Intern/Apprentice Apply Tesla © 2026 Privacy & Legal
+          Help Us Improve Our Website with Cookies.</p>
+        </main>
+        """,
+    )
+
+    assessment = assess_role_page(
+        page,
+        title_hints=("Internship, Charging Data Modeling, Machine Learning Engineer (Fall 2026)",),
+    )
+
+    assert assessment.is_role is False
+    assert assessment.description is None
+    assert assessment.rejection_reason == "page rendered a transient error shell"
+    assert assessment.posting_id == "278249"
 
 
 def test_assess_role_page_prefers_selected_link_title_hint_over_generic_h1() -> None:
