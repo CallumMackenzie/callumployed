@@ -1129,6 +1129,56 @@ def test_assess_role_page_prefers_selected_link_title_hint_over_generic_h1() -> 
     assert "title: selected link text" in assessment.reasons
 
 
+def test_assess_role_page_ignores_amazon_search_location_chrome() -> None:
+    page = RenderedPageState(
+        url="https://www.amazon.jobs/jobs/3116030",
+        final_url=(
+            "https://www.amazon.jobs/en/jobs/3116030/"
+            "software-development-engineer-internship-fall-2026-us"
+        ),
+        title="Software Development Engineer Internship - Amazon Jobs",
+        html="""
+        <header>
+          <div class="location-search">Search for jobs by title; keyword search job by location</div>
+        </header>
+        <main>
+          <h1>Software Development Engineer Internship</h1>
+          <p>Fall 2026 (US)</p>
+          <p>Job ID: 3116030 | Amazon.com Services LLC</p>
+          <p>Apply now</p>
+          <section>Description</section>
+          <p>Build software systems for production services.</p>
+          <section>Basic Qualifications</section>
+        </main>
+        """,
+        visible_text=(
+            "Search for jobs by title; keyword search job by location "
+            "Software Development Engineer Internship Fall 2026 (US) "
+            "Job ID: 3116030 | Amazon.com Services LLC Apply now "
+            "Description Build software systems for production services."
+        ),
+    )
+
+    assessment = assess_role_page(
+        page,
+        title_hints=("Software Development Engineer Internship - Fall 2026 (US)",),
+    )
+
+    assert assessment.is_role is True
+    assert assessment.location == "United States"
+    assert assessment.posting_id == "3116030"
+
+
+def test_parse_job_location_trims_amazon_posted_metadata() -> None:
+    assert (
+        parse_job_location(
+            "United States, WA, Seattle Posted: August 1, 2026 "
+            "(Updated about 1 hour ago) Software Development Engineer II, SKG"
+        )
+        == "United States, WA, Seattle"
+    )
+
+
 def test_assess_role_page_cleans_job_card_title_hint_suffixes() -> None:
     page = RenderedPageState(
         url="https://www.jumptrading.com/hr/job?gh_jid=8002989",

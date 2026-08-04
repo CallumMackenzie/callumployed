@@ -23,7 +23,7 @@ SEPARATOR_PATTERN = re.compile(r"\s*(?:;|\||/|\bor\b|\band\b)\s*", re.I)
 TRAILING_NOISE_PATTERN = re.compile(
     r"\s+(?:"
     r"apply|compensation|department|employment\s+type|job\s+description|job\s+type|"
-    r"qualifications|req\.?\s*id|requirements|responsibilities|team|"
+    r"posted|qualifications|req\.?\s*id|requirements|responsibilities|team|updated|"
     r"what\s+to\s+expect|what\s+you(?:'|’)ll\s+do"
     r")\b.*$",
     re.I,
@@ -33,7 +33,12 @@ SEARCH_FILTER_NOISE_PATTERN = re.compile(
     r"privacy\s*&\s*legal|skip\s+navigation|street\s+view\s+puzzles|"
     r"departments\s+open\s+roles\s+programs|who\s+we\s+are\s+trade\s+with\s+us|"
     r"diversity\s*&\s+inclusion\s+contact|early\s+careers\s+blog\s+jobs|"
-    r"north\s+america\s+new\s+york\s+city)\b",
+    r"north\s+america\s+new\s+york\s+city|search\s+for\s+jobs\s+by\s+title|"
+    r"keyword\s+search\s+job\s+by\s+location|search\s+job\s+by\s+location)\b",
+    re.I,
+)
+PARENTHETICAL_COUNTRY_PATTERN = re.compile(
+    r"\((u\.?\s*s\.?a?|united\s+states|canada)\)",
     re.I,
 )
 LOCATION_CONTEXT_PATTERNS = (
@@ -125,6 +130,10 @@ def parse_job_location(
     if normalized_candidate:
         return normalized_candidate
 
+    parenthetical_country = _parenthetical_country_location(context_text)
+    if parenthetical_country:
+        return parenthetical_country
+
     geograpy_location = _location_from_geograpy(context_text)
     if geograpy_location:
         return geograpy_location
@@ -203,6 +212,7 @@ def _clean_location_text(text: str | None) -> str | None:
 
 
 def _location_phrase_from_context(text: str) -> str | None:
+    text = SEARCH_FILTER_NOISE_PATTERN.sub(" ", text)
     for pattern in LOCATION_CONTEXT_PATTERNS:
         match = pattern.search(text)
         if match:
@@ -221,6 +231,15 @@ def _location_phrase_from_context(text: str) -> str | None:
         flags=re.I,
     )[0]
     return _clean_location_text(candidate)
+
+
+def _parenthetical_country_location(text: str | None) -> str | None:
+    if not text:
+        return None
+    match = PARENTHETICAL_COUNTRY_PATTERN.search(text)
+    if not match:
+        return None
+    return _normalize_place_name(match.group(1))
 
 
 def _work_modes(text: str) -> list[str]:
