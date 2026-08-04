@@ -70,6 +70,15 @@ GENERIC_CAREERS_TEXT = {
     "careers at apple",
     "jobs at apple",
 }
+GENERIC_ACTION_TEXT = {
+    "apply",
+    "apply now",
+    "details",
+    "learn more",
+    "more details",
+    "view",
+    "view role",
+}
 GENERIC_NAV_PATH_PATTERNS = (
     "/careers/choose-country-region",
     "/careers/ca",
@@ -185,7 +194,7 @@ def merge_discovered_links(
 
 
 def candidate_quality(candidate: LinkCandidate) -> int:
-    return sum(
+    quality = sum(
         bool(value)
         for value in (
             candidate.text,
@@ -196,6 +205,12 @@ def candidate_quality(candidate: LinkCandidate) -> int:
             candidate.surrounding_text,
         )
     )
+    text = (candidate.text or candidate.aria_label or candidate.title or "").strip().lower()
+    if text in GENERIC_ACTION_TEXT:
+        quality -= 4
+    elif text:
+        quality += min(len(text) // 16, 4)
+    return quality
 
 
 def _score_candidate(

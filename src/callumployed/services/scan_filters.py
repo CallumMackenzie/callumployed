@@ -45,7 +45,8 @@ SOFTWARE_KEYWORD_PATTERN = re.compile(
     r"mobile|ios|android|web|platform|infrastructure|infra|data|cloud|systems|"
     r"llm|foundation model|multimodal|speech model|vision model|"
     r"security|devops|site reliability|sre|distributed systems|compiler|"
-    r"programming|coding|automation|qa|quality assurance|test engineering"
+    r"programming|coding|automation|qa|quality assurance|test engineering|"
+    r"quant|quantitative|trading|trader"
     r")\b",
     re.I,
 )

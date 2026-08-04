@@ -6,6 +6,7 @@ import pytest
 from bs4 import BeautifulSoup
 
 from callumployed.config import BrowserSettings
+from callumployed.services.scan_filters import has_software_keyword
 from callumployed.webscraping.browser import (
     CONTENT_SETTLE_MIN_WAIT_MS,
     CONTENT_SETTLE_TIMEOUT_MS,
@@ -28,7 +29,10 @@ from callumployed.webscraping.classifier import (
     score_candidates,
     select_heuristic_links,
 )
-from callumployed.webscraping.description_parser import clean_job_description, extract_job_description
+from callumployed.webscraping.description_parser import (
+    clean_job_description,
+    extract_job_description,
+)
 from callumployed.webscraping.errors import NavigationError
 from callumployed.webscraping.extraction import extract_link_candidates
 from callumployed.webscraping.location_parser import parse_job_location
@@ -346,6 +350,38 @@ def test_prepare_candidates_dedupes_by_best_extraction_quality() -> None:
     urls = [candidate.url for candidate in prepared_candidates]
 
     assert len([url for url in urls if url.endswith("/jobs/software-engineer-product")]) == 1
+
+
+def test_prepare_candidates_prefers_role_title_over_generic_apply_link() -> None:
+    page = RenderedPageState(
+        url="https://fiverings.com/careers/",
+        final_url="https://fiverings.com/careers/",
+        title="Job Search - Five Rings",
+        html="""
+        <div class="gh-item">
+          <div class="gh-item_buttons">
+            <a href="https://job-boards.greenhouse.io/fiveringsllc/jobs/5349707008">
+              Apply
+            </a>
+          </div>
+          <div class="gh-item_heading">
+            <a href="https://job-boards.greenhouse.io/fiveringsllc/jobs/5349707008">
+              Summer Intern 2027 - Software Developer
+            </a>
+          </div>
+        </div>
+        """,
+    )
+
+    prepared_candidates = prepare_candidates(extract_link_candidates(page))
+
+    assert len(prepared_candidates) == 1
+    assert prepared_candidates[0].text == "Summer Intern 2027 - Software Developer"
+
+
+def test_quant_trading_titles_count_as_relevant_role_keywords() -> None:
+    assert has_software_keyword("Summer Intern 2027 - Quantitative Trader", None)
+    assert has_software_keyword("Campus Full Time 2027 - Trading Operations Engineer", None)
 
 
 def test_classify_candidates_scores_jobs_and_rejects_nav_links() -> None:
