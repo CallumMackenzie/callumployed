@@ -184,7 +184,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
         assert "/assets/app.css?v=20260804-2" in markup
-        assert "/assets/app.js?v=20260804-2" in markup
+        assert "/assets/app.js?v=20260804-3" in markup
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -1173,6 +1173,115 @@ def test_role_resume_endpoint_loads_and_saves_editable_latex(
         assert response.status == 200
         assert "Edited role resume" in saved_resume["latex"]
         assert (resume_root / "role-1" / "resume.tex").read_text() == saved_resume["latex"]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_role_resume_endpoint_regenerates_with_tweaks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-role-resume-regenerate.sqlite3"
+    resume_root = tmp_path / "prepared-resumes"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    monkeypatch.setattr(web_server, "_resume_resources_root", lambda: tmp_path / "resources")
+    monkeypatch.setattr(web_server.shutil, "which", lambda _name: "/usr/bin/pdflatex")
+
+    def fake_run(command: object, **kwargs: object) -> object:
+        cwd = Path(kwargs["cwd"])
+        (cwd / "resume.pdf").write_bytes(b"regenerated resume pdf")
+
+        class Completed:
+            returncode = 0
+
+        return Completed()
+
+    monkeypatch.setattr(web_server.subprocess, "run", fake_run)
+    captured: dict[str, object] = {}
+
+    async def fake_generate_resume_tweak(**kwargs: object) -> object:
+        captured["resume_content"] = kwargs.get("resume_content")
+        captured["tweaks"] = kwargs.get("tweaks")
+        captured["other_experience_context"] = kwargs.get("other_experience_context")
+
+        class Draft:
+            latex = (
+                "\\documentclass{article}\\begin{document}"
+                "Python distributed systems\\end{document}"
+            )
+            summary = "emphasized distributed systems"
+
+        return Draft()
+
+    monkeypatch.setattr(web_server, "generate_resume_tweak", fake_generate_resume_tweak)
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Backend Intern", "https://example.com/jobs/backend"],
+        env=env,
+    )
+    with db.connect() as connection:
+        connection.execute(
+            """
+            UPDATE roles
+            SET description = 'Python distributed systems internship'
+            WHERE id = 1
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO master_resumes (id, filename, content, content_sha256)
+            VALUES (1, 'resume.tex', 'Master resume', 'abc')
+            """
+        )
+        add_experience_note(
+            connection,
+            filename="projects.md",
+            content="Built a Kubernetes scheduler.",
+        )
+        connection.commit()
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        request = Request(
+            f"http://127.0.0.1:{port}/api/roles/1/resume",
+            data=json.dumps(
+                {
+                    "tweaks": "Emphasize distributed systems.",
+                    "previous_latex": "Current editor latex",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode())
+
+        resume = payload["resume"]
+        assert response.status == 200
+        assert resume["summary"] == "emphasized distributed systems"
+        assert resume["tweaks"] == "Emphasize distributed systems."
+        assert "Python distributed systems" in resume["latex"]
+        assert base64.b64decode(resume["pdf_base64"]) == b"regenerated resume pdf"
+        assert captured["resume_content"] == "Current editor latex"
+        assert captured["tweaks"] == "Emphasize distributed systems."
+        assert captured["other_experience_context"] == [
+            {
+                "filename": "projects.md",
+                "content": "Built a Kubernetes scheduler.",
+                "updated_at": captured["other_experience_context"][0]["updated_at"],
+            }
+        ]
+        assert (resume_root / "role-1" / "resume.tex").read_text() == resume["latex"]
     finally:
         server.shutdown()
         thread.join(timeout=5)

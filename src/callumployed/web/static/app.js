@@ -2341,6 +2341,23 @@ function renderPrepResume(role, state = {}) {
   const resume = state.resume ?? savedResume;
   const tweaks = state.tweaks ?? prepResumeTweaksByRoleId.get(role.id) ?? "";
   const pdfUrl = `/api/roles/${encodeURIComponent(role.id)}/resume.pdf`;
+  if (state.loading) {
+    return `
+      <details class="prep-panel prep-resume" open>
+        <summary class="prep-analysis-header">
+          <span class="prep-accordion-icon" aria-hidden="true"></span>
+          <h3>resume</h3>
+          <span>regenerating</span>
+        </summary>
+        <div class="prep-fit-loading" aria-label="regenerating resume">
+          <span aria-hidden="true"></span>
+          <span aria-hidden="true"></span>
+          <span aria-hidden="true"></span>
+          <p>regenerating resume with tweaks...</p>
+        </div>
+      </details>
+    `;
+  }
   if (!resume) {
     return `
       <details class="prep-panel prep-resume" open>
@@ -2382,6 +2399,11 @@ function renderPrepResume(role, state = {}) {
           placeholder="paste or write a resume tweak prompt..."
         >${escapeHtml(tweaks)}</textarea>
       </label>
+      <div class="prep-cover-actions">
+        <button type="button" data-prep-resume-regenerate="${role.id}">
+          regenerate with tweaks
+        </button>
+      </div>
       <label class="prep-cover-latex">
         <span>latex</span>
         <textarea
@@ -2704,6 +2726,16 @@ async function savePrepResume(roleId, latex) {
   return response.json();
 }
 
+async function generatePrepResume(roleId, tweaks, previousLatex) {
+  const response = await fetch(`/api/roles/${encodeURIComponent(roleId)}/resume`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tweaks, previous_latex: previousLatex }),
+  });
+  if (!response.ok) throw new Error("Resume generation failed");
+  return response.json();
+}
+
 function queuePrepResumeAutosave(roleId, latex, delay = COVER_LETTER_AUTOSAVE_DELAY_MS) {
   const state = prepResumeSaveStateByRoleId.get(roleId) ?? {
     timer: null,
@@ -2958,6 +2990,41 @@ prepView.addEventListener("click", async (event) => {
       prepCard.querySelector(".prep-analysis")?.replaceWith(
         htmlToElement(renderPrepAnalysis(prepQueue[0], { error: true })),
       );
+    }
+    return;
+  }
+
+  const resumeRegenerateButton = event.target.closest("[data-prep-resume-regenerate]");
+  if (resumeRegenerateButton && prepQueue[0]) {
+    const roleId = prepQueue[0].id;
+    const resumeSection = prepCard.querySelector(".prep-resume");
+    const tweaks =
+      resumeSection?.querySelector(`[data-prep-resume-tweaks="${roleId}"]`)?.value ?? "";
+    const previousLatex =
+      resumeSection?.querySelector(`[data-prep-resume-latex="${roleId}"]`)?.value ?? "";
+    if (!tweaks.trim()) {
+      resumeSection?.querySelector(`[data-prep-resume-tweaks="${roleId}"]`)?.focus();
+      return;
+    }
+    prepResumeTweaksByRoleId.set(roleId, tweaks);
+    resumeSection?.replaceWith(htmlToElement(renderPrepResume(prepQueue[0], { loading: true })));
+    try {
+      const payload = await generatePrepResume(roleId, tweaks, previousLatex);
+      prepResumeByRoleId.set(roleId, payload.resume);
+      prepCard.querySelector(".prep-resume")?.replaceWith(
+        htmlToElement(renderPrepResume(prepQueue[0], { resume: payload.resume })),
+      );
+      enhancePrepLatexEditors();
+    } catch {
+      prepCard.querySelector(".prep-resume")?.replaceWith(
+        htmlToElement(
+          renderPrepResume(prepQueue[0], {
+            resume: prepResumeByRoleId.get(roleId),
+            tweaks,
+          }),
+        ),
+      );
+      enhancePrepLatexEditors();
     }
     return;
   }

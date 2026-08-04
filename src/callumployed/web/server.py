@@ -33,6 +33,7 @@ from callumployed.agents.cover_letter import (
     strip_cover_letter_dash_punctuation,
 )
 from callumployed.agents.resume_feedback import evaluate_resume_feedback
+from callumployed.agents.resume_tweaker import generate_resume_tweak
 from callumployed.central.client import CentralStoreClient, CentralStoreError
 from callumployed.central.config import (
     get_central_api_url,
@@ -525,6 +526,14 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 and path_parts[3] == "prep-feedback-ignore"
             ):
                 self._ignore_prep_feedback(path_parts[2])
+                return
+            if (
+                len(path_parts) == 4
+                and path_parts[0] == "api"
+                and path_parts[1] == "roles"
+                and path_parts[3] == "resume"
+            ):
+                self._generate_resume(path_parts[2])
                 return
             if (
                 len(path_parts) == 4
@@ -1139,6 +1148,48 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             self._send_json(
                 {"resume": save_role_resume(role.model_dump(mode="json"), resume, latex)}
             )
+
+        def _generate_resume(self, role_id_text: str) -> None:
+            try:
+                role_id = int(role_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
+                return
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            tweaks = _optional_resume_tweaks(payload.get("tweaks"))
+            if tweaks is None:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Resume tweaks are required")
+                return
+            previous_latex = _optional_resume_latex(payload.get("previous_latex"))
+            try:
+                with db.connect() as connection:
+                    role = get_role(connection, role_id)
+                    company = get_company(connection, role.company_id)
+                    resume = get_master_resume(connection)
+            except LookupError:
+                self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
+                return
+            if resume is None:
+                self.send_error(HTTPStatus.BAD_REQUEST, "No master resume stored")
+                return
+            role_payload = role.model_dump(mode="json")
+            role_payload["company_name"] = company.name
+            try:
+                generated_resume = build_role_resume(
+                    role_payload,
+                    resume,
+                    tweaks=tweaks,
+                    previous_latex=previous_latex,
+                )
+            except RuntimeError as error:
+                self._send_json_with_status(
+                    {"error": str(error)},
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+                return
+            self._send_json({"resume": generated_resume})
 
         def _send_resume_pdf(self, role_id_text: str) -> None:
             try:
@@ -2235,6 +2286,41 @@ def save_role_resume(role: dict[str, Any], resume: MasterResume, latex: str) -> 
     return _saved_role_resume(role, resume)
 
 
+def build_role_resume(
+    role: dict[str, Any],
+    resume: MasterResume,
+    *,
+    tweaks: str,
+    previous_latex: str | None = None,
+) -> dict[str, Any]:
+    role_id = role.get("id")
+    if not isinstance(role_id, int):
+        raise RuntimeError("Role did not include an ID")
+    source_latex = previous_latex or _ensure_role_resume_copy(role_id, resume).read_text()
+    try:
+        with db.connect() as connection:
+            db.run_migrations(connection)
+            experience_notes = list_experience_notes(connection)
+        draft = asyncio.run(
+            generate_resume_tweak(
+                role=role,
+                resume_content=source_latex,
+                tweaks=tweaks,
+                other_experience_context=[
+                    _experience_note_context(note) for note in experience_notes
+                ],
+            )
+        )
+    except Exception as error:  # noqa: BLE001 - surface a concise UI failure.
+        raise RuntimeError("AI resume regeneration was unavailable.") from error
+    generated = save_role_resume(role, resume, draft.latex)
+    return {
+        **generated,
+        "summary": draft.summary or "Regenerated resume with tweaks.",
+        "tweaks": tweaks,
+    }
+
+
 def _write_role_cover_letter(
     role: dict[str, Any],
     latex: str,
@@ -2717,6 +2803,20 @@ def _optional_cover_letter_tweaks(value: object) -> str | None:
 
 
 def _optional_cover_letter_latex(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _optional_resume_tweaks(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _optional_resume_latex(value: object) -> str | None:
     if not isinstance(value, str):
         return None
     cleaned = value.strip()

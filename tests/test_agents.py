@@ -22,6 +22,7 @@ from callumployed.agents.resume_feedback import (
     ResumeFeedbackResponse,
     build_resume_feedback_prompt,
 )
+from callumployed.agents.resume_tweaker import build_resume_tweak_prompt
 from callumployed.config import LlmSettings
 from callumployed.data.models import Company, CompanyCareerPage, ScanCandidate, ScanPage
 from callumployed.webscraping.models import (
@@ -195,6 +196,36 @@ def test_cover_letter_prompt_includes_resume_job_and_tool_results() -> None:
     assert "previous_cover_letter_context" in prompt
     assert "revise this prior draft according to regeneration_tweaks" in prompt
     assert "Old draft" in prompt
+
+
+def test_resume_tweak_prompt_includes_existing_resume_and_tweaks() -> None:
+    prompt = build_resume_tweak_prompt(
+        role={
+            "id": 1,
+            "company_id": 2,
+            "company_name": "Acme",
+            "title": "Backend Intern",
+            "role_url": "https://example.com/jobs/backend",
+            "location": "Vancouver",
+            "description": "Python distributed systems internship",
+        },
+        resume_content="\\documentclass{article}\\begin{document}Python systems\\end{document}",
+        tweaks="Emphasize distributed systems without inventing metrics.",
+        other_experience_context=[
+            {
+                "filename": "projects.md",
+                "content": "Built a Kubernetes scheduler.",
+                "updated_at": "2026-01-01T00:00:00",
+            }
+        ],
+    )
+
+    assert "regeneration_tweaks" in prompt
+    assert "Emphasize distributed systems" in prompt
+    assert "resume_context" in prompt
+    assert "Built a Kubernetes scheduler" in prompt
+    assert "full," in prompt
+    assert "compilable replacement LaTeX document" in prompt
 
 
 def test_cover_letter_agent_queries_example_tool_and_passes_documents() -> None:
