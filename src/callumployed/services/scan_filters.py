@@ -116,7 +116,14 @@ def location_categories(location: str | None) -> set[str]:
 
 
 def is_graduate_degree_role(title: str | None, description: str | None) -> bool:
-    text = " ".join(part for part in (title, description) if part)
+    if _requires_graduate_degree(title):
+        return True
+    return _requires_graduate_degree(description)
+
+
+def _requires_graduate_degree(text: str | None) -> bool:
+    if not text:
+        return False
     if UNDERGRAD_INCLUDED_DEGREE_PATTERN.search(text):
         return False
     if PHD_OR_MASTER_PATTERN.search(text):

@@ -387,7 +387,7 @@ def test_scan_company_uses_bytedance_api_scanner(
                         "code": "A456",
                         "title": "Student Researcher - 2026 Start (PhD)",
                         "description": "Build AI systems.",
-                        "requirement": "Currently pursuing a PhD.",
+                        "requirement": "Currently pursuing a PhD or Master's degree.",
                         "city_info": {
                             "en_name": "San Jose",
                             "parent": {
@@ -2000,6 +2000,10 @@ def test_graduate_degree_filter_allows_bachelors_or_masters_roles() -> None:
     assert scan_workflow._is_graduate_degree_role(
         "Student Researcher - 2026 Start (PhD)",
         "Must be pursuing a PhD.",
+    )
+    assert scan_workflow._is_graduate_degree_role(
+        "Research Scientist Intern (Seed Responsible AI) - 2026 Start (PhD)",
+        "PhD internships at ByteDance. Must be pursuing a PhD or Master's degree.",
     )
 
 
