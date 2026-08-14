@@ -6,7 +6,7 @@
     <title>callumployed</title>
     <link rel="icon" href="/assets/camackenzie-logo.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/assets/camackenzie-logo.svg" />
-    <link rel="stylesheet" href="/assets/app.css?v=20260804-5" />
+    <link rel="stylesheet" href="/assets/app.css?v=20260813-13" />
   </head>
   <body>
     <div class="page-background" aria-hidden="true"></div>
@@ -278,6 +278,14 @@
               </div>
               <button type="button" id="metrics-open-button">view metrics</button>
             </section>
+            <section class="settings-maintenance" aria-label="role flow sankey">
+              <div class="setting-copy">
+                <span class="setting-label">role flow sankey</span>
+                <span class="setting-description">current role movement from collapsed state histories</span>
+                <span class="setting-default">loops are collapsed per role path</span>
+              </div>
+              <button type="button" id="sankey-open-button">view sankey</button>
+            </section>
             <section class="settings-maintenance" aria-label="recommendation history">
               <div class="setting-copy">
                 <span class="setting-label">recommendation history</span>
@@ -324,6 +332,28 @@
       </div>
     </section>
 
+    <section class="sankey-view" id="sankey-view" aria-label="role flow sankey" hidden>
+      <div class="sankey-shell">
+        <header class="sankey-header">
+          <div>
+            <p class="eyebrow">callumployed</p>
+            <h2 id="sankey-heading">role flow</h2>
+          </div>
+          <button type="button" id="sankey-close">close</button>
+        </header>
+        <div class="sankey-status" id="sankey-status" role="status" aria-live="polite"></div>
+        <section class="sankey-panel" aria-label="collapsed role state flows">
+          <div class="sankey-canvas" id="sankey-canvas"></div>
+        </section>
+        <section class="sankey-paths" aria-label="sample collapsed role paths">
+          <div class="metrics-section-heading">
+            <h3>sample paths</h3>
+          </div>
+          <div class="sankey-path-list" id="sankey-path-list"></div>
+        </section>
+      </div>
+    </section>
+
     <section class="companies-view" id="companies-view" aria-label="manage companies" hidden>
       <div class="companies-shell">
         <header class="companies-header">
@@ -355,6 +385,6 @@
       </div>
     </section>
 
-    <script src="/assets/app.js?v=20260804-5" type="module"></script>
+    <script src="/assets/app.js?v=20260813-13" type="module"></script>
   </body>
 </html>

@@ -1,3 +1,5 @@
+import {sankey as d3Sankey, sankeyLinkHorizontal} from "./d3-sankey.js";
+
 const statsEl = document.querySelector("#stats");
 const statusListEl = document.querySelector("#status-list");
 const searchToggle = document.querySelector("#search-toggle");
@@ -68,6 +70,12 @@ const metricsStatus = document.querySelector("#metrics-status");
 const metricsOverview = document.querySelector("#metrics-overview");
 const metricsSections = document.querySelector("#metrics-sections");
 const metricsScanList = document.querySelector("#metrics-scan-list");
+const sankeyOpenButton = document.querySelector("#sankey-open-button");
+const sankeyView = document.querySelector("#sankey-view");
+const sankeyCloseButton = document.querySelector("#sankey-close");
+const sankeyStatus = document.querySelector("#sankey-status");
+const sankeyCanvas = document.querySelector("#sankey-canvas");
+const sankeyPathList = document.querySelector("#sankey-path-list");
 const appUpdateButton = document.querySelector("#app-update-button");
 const companiesView = document.querySelector("#companies-view");
 const companiesCloseButton = document.querySelector("#companies-close");
@@ -83,6 +91,18 @@ const roleAddStatus = document.querySelector("#role-add-status");
 const REVIEW_LATER_RECOMMENDATION_THRESHOLD = 3;
 const COVER_LETTER_AUTOSAVE_DELAY_MS = 1200;
 const APPLICATION_STATUSES = new Set(["applied", "OA", "interview", "rejected", "offer"]);
+const STATUS_COLORS = new Map([
+  ["discovered", "#4f6472"],
+  ["interested", "#00897b"],
+  ["disinterested", "#626970"],
+  ["applied", "#2257ad"],
+  ["oa", "#b36b00"],
+  ["interview", "#5f2bd8"],
+  ["rejected", "#b93d2d"],
+  ["offer", "#137347"],
+  ["closed", "#53606b"],
+  ["archived", "#765b4a"],
+]);
 const DESCRIPTION_SECTION_HEADING_PATTERN = /^(?:about (?:the )?(?:role|team|job)|about this role|job description|job responsibilities|minimum qualifications|preferred qualifications|qualifications|requirements|responsibilities|what to expect|what (?:you'll|you’ll|you will) (?:bring|do)|what'?s in it for you|who you are|your objectives|your skills & talents):?$/i;
 let hideEmpty = true;
 let trackerData = null;
@@ -106,6 +126,7 @@ let wasScanning = false;
 let scanStatusData = null;
 let settingsData = null;
 let metricsData = null;
+let sankeyData = null;
 let companiesData = null;
 let roleCompanyData = [];
 const companySaveTimers = new Map();
@@ -978,6 +999,282 @@ async function loadMetrics() {
   const response = await fetch("/api/metrics");
   if (!response.ok) throw new Error("Metrics request failed");
   renderMetrics(await response.json());
+}
+
+function renderSankey(payload, message = "") {
+  sankeyData = payload;
+  const roleCount = Number(payload?.role_count ?? 0);
+  const links = Array.isArray(payload?.links) ? payload.links : [];
+  const paths = Array.isArray(payload?.paths) ? payload.paths : [];
+  sankeyStatus.textContent =
+    message || (payload?.updated_at ? `${roleCount.toLocaleString()} roles | updated ${formatCompactDate(payload.updated_at)}` : "");
+  sankeyStatus.classList.toggle("is-empty", !sankeyStatus.textContent);
+  sankeyCanvas.innerHTML = links.length
+    ? renderSankeySvg(payload)
+    : '<p class="empty-copy">no role transitions recorded yet.</p>';
+  sankeyPathList.innerHTML = paths.length
+    ? paths.map(renderSankeyPath).join("")
+    : '<p class="empty-copy">no role paths recorded yet.</p>';
+}
+
+function renderSankeySvg(payload) {
+  const nodes = Array.isArray(payload?.nodes) ? payload.nodes : [];
+  const links = Array.isArray(payload?.links) ? payload.links : [];
+  const layout = buildSankeyLayout(nodes, links);
+  const flowNodes = layout.nodes;
+  const linkOffsets = layout.links;
+  const flowLinks = layout.flowLinks ?? links;
+  const linkMarkup = flowLinks
+    .map((link) => {
+      const source = flowNodes.get(link.source);
+      const target = flowNodes.get(link.target);
+      const offsets = linkOffsets.get(link);
+      if (!source || !target) return "";
+      if (!offsets) return "";
+      const width = offsets.width;
+      const isBacktrack = target.x < source.x;
+      const color = getStatusColor(link.target);
+      const fillOpacity = offsets.priority ? "0.42" : isBacktrack ? "0.28" : "0.34";
+      const path = offsets.path ?? buildSankeyRibbonPath({
+        isBacktrack,
+        sourceX: source.x + source.width,
+        sourceY: offsets.sourceY,
+        targetX: target.x,
+        targetY: offsets.targetY,
+        width,
+      });
+      const classes = [
+        "sankey-link",
+        isBacktrack ? "sankey-link-backtrack" : "",
+        offsets.priority ? "sankey-link-priority" : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+      return `
+        <path class="${classes}" d="${path}" fill="${offsets.path ? "none" : color}" fill-opacity="${fillOpacity}" stroke="${color}" style="stroke-width: ${offsets.path ? width : 1}px">
+          <title>${escapeUiText(source.label)} to ${escapeUiText(target.label)}: ${Number(link.value ?? 0).toLocaleString()}</title>
+        </path>
+      `;
+    })
+    .join("");
+  const nodeMarkup = Array.from(flowNodes.values())
+    .map((node) => {
+      const historyCount = Number(node.history_count ?? node.current_count ?? 0);
+      const flowCount = Number(node.value ?? historyCount);
+      const countText = flowCount > 0 ? flowCount.toLocaleString() : "0";
+      const labelOnLeft = node.x > layout.width - 180;
+      const labelX = labelOnLeft ? node.x - 8 : node.x + node.width + 8;
+      const labelY = Math.max(24, node.y - node.height / 2 - 16);
+      const labelAnchor = labelOnLeft ? "end" : "start";
+      const color = getStatusColor(node.id);
+      return `
+        <g class="sankey-node" transform="translate(${node.x}, ${node.y - node.height / 2})">
+          <rect width="${node.width}" height="${node.height}" rx="7" fill="${color}" stroke="${color}"></rect>
+        </g>
+        <g class="sankey-node-label" transform="translate(${labelX}, ${labelY})">
+          <text text-anchor="${labelAnchor}">${escapeUiText(node.label)}</text>
+          <text class="sankey-node-count" y="16" text-anchor="${labelAnchor}">${escapeUiText(countText)} roles</text>
+        </g>
+      `;
+    })
+    .join("");
+  return `
+    <svg class="sankey-svg" viewBox="0 0 ${layout.width} ${layout.height}" role="img" aria-label="role state transition sankey diagram">
+      <g>${linkMarkup}</g>
+      <g>${nodeMarkup}</g>
+    </svg>
+  `;
+}
+
+function getStatusColor(statusKey) {
+  return STATUS_COLORS.get(String(statusKey).toLowerCase()) ?? "#4f6472";
+}
+
+function buildSankeyRibbonPath({
+  isBacktrack,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  width,
+}) {
+  const halfWidth = width / 2;
+  const sourceTop = sourceY - halfWidth;
+  const sourceBottom = sourceY + halfWidth;
+  const targetTop = targetY - halfWidth;
+  const targetBottom = targetY + halfWidth;
+  if (isBacktrack) {
+    const controlGap = Math.max(80, Math.abs(sourceX - targetX) * 0.42);
+    return [
+      `M ${sourceX} ${sourceTop}`,
+      `C ${sourceX - controlGap} ${sourceTop}, ${targetX + controlGap} ${targetTop}, ${targetX} ${targetTop}`,
+      `L ${targetX} ${targetBottom}`,
+      `C ${targetX + controlGap} ${targetBottom}, ${sourceX - controlGap} ${sourceBottom}, ${sourceX} ${sourceBottom}`,
+      "Z",
+    ].join(" ");
+  }
+  const controlGap = Math.max(46, (targetX - sourceX) * 0.48);
+  return [
+    `M ${sourceX} ${sourceTop}`,
+    `C ${sourceX + controlGap} ${sourceTop}, ${targetX - controlGap} ${targetTop}, ${targetX} ${targetTop}`,
+    `L ${targetX} ${targetBottom}`,
+    `C ${targetX - controlGap} ${targetBottom}, ${sourceX + controlGap} ${sourceBottom}, ${sourceX} ${sourceBottom}`,
+    "Z",
+  ].join(" ");
+}
+
+function buildSankeyLayout(nodes, links) {
+  const statusColumns = new Map([
+    ["discovered", 0],
+    ["interested", 1],
+    ["disinterested", 2],
+    ["applied", 2],
+    ["oa", 3],
+    ["interview", 3],
+    ["rejected", 4],
+    ["closed", 4],
+    ["archived", 4],
+  ]);
+  const incoming = new Map();
+  const outgoing = new Map();
+  links.forEach((link) => {
+    incoming.set(link.target, (incoming.get(link.target) ?? 0) + Number(link.value ?? 0));
+    outgoing.set(link.source, (outgoing.get(link.source) ?? 0) + Number(link.value ?? 0));
+  });
+  const visibleNodes = nodes.filter((node) => {
+    const count = Number(node?.history_count ?? node?.current_count ?? 0);
+    return count > 0 || incoming.has(node.id) || outgoing.has(node.id);
+  });
+  const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
+  const validLinks = links.filter((link) => {
+    return (
+      visibleNodeIds.has(link.source) &&
+      visibleNodeIds.has(link.target) &&
+      Number(link.value ?? 0) > 0
+    );
+  });
+  const width = 1120;
+  const nodeWidth = 26;
+  const height = 720;
+  const statusLayer = (status) => statusColumns.get(String(status).toLowerCase()) ?? 0;
+  const forwardLinks = validLinks.filter((link) => statusLayer(link.target) >= statusLayer(link.source));
+  const backtrackLinks = validLinks.filter((link) => statusLayer(link.target) < statusLayer(link.source));
+  const graph = {
+    nodes: visibleNodes.map((node) => ({
+      ...node,
+      fixedValue: Math.max(0, Number(node?.history_count ?? node?.current_count ?? 0)),
+    })),
+    links: forwardLinks.map((link) => ({...link})),
+  };
+  const layoutGraph = d3Sankey()
+    .nodeId((node) => node.id)
+    .nodeWidth(nodeWidth)
+    .nodePadding(44)
+    .nodeAlign((node, layerCount) => Math.min(layerCount - 1, statusLayer(node.id)))
+    .extent([
+      [92, 88],
+      [width - 106, height - 86],
+    ])
+    .iterations(32)(graph);
+  const flowNodes = new Map();
+  layoutGraph.nodes.forEach((node) => {
+    flowNodes.set(node.id, {
+      ...node,
+      x: node.x0,
+      y: node.y0 + (node.y1 - node.y0) / 2,
+      width: node.x1 - node.x0,
+      height: Math.max(1.5, node.y1 - node.y0),
+      value: Number(node.fixedValue ?? node.value ?? 0),
+    });
+  });
+  const linkOffsets = new Map();
+  const renderLinks = [];
+  const d3LinkPath = sankeyLinkHorizontal();
+  layoutGraph.links.forEach((link) => {
+    const renderLink = {
+      source: link.source.id,
+      target: link.target.id,
+      value: link.value,
+    };
+    renderLinks.push(renderLink);
+    linkOffsets.set(renderLink, {
+      path: d3LinkPath(link),
+      width: Math.max(1.5, link.width),
+      sourceY: link.y0,
+      targetY: link.y1,
+      priority: Number(link.value ?? 0) >= 20,
+    });
+  });
+  const linkScale = Math.max(
+    0.6,
+    ...layoutGraph.links.map((link) => Number(link.width ?? 0) / Math.max(1, Number(link.value ?? 0))),
+  );
+  backtrackLinks.forEach((link) => {
+    const source = flowNodes.get(link.source);
+    const target = flowNodes.get(link.target);
+    if (!source || !target) return;
+    const width = Math.max(1.5, Number(link.value ?? 0) * linkScale);
+    const renderLink = {...link};
+    renderLinks.push(renderLink);
+    linkOffsets.set(renderLink, {
+      width,
+      sourceY: source.y + source.height / 2 - width / 2,
+      targetY: target.y + target.height / 2 - width / 2,
+      priority: false,
+    });
+  });
+  renderLinks.sort((firstLink, secondLink) => {
+    return (
+      Number(firstLink.value ?? 0) - Number(secondLink.value ?? 0)
+    );
+  });
+  return {flowLinks: renderLinks, height, links: linkOffsets, nodes: flowNodes, width};
+}
+
+function renderSankeyPath(pathItem) {
+  const path = Array.isArray(pathItem?.path) ? pathItem.path : [];
+  return `
+    <article class="sankey-path-row">
+      <div>
+        <strong>${escapeUiText(pathItem?.company_name ?? "unknown company")} / ${escapeUiText(pathItem?.title ?? "untitled role")}</strong>
+        <span>${path.map((status) => escapeUiText(status)).join(" -> ")}</span>
+      </div>
+      <span class="metrics-status-pill">${Number(pathItem?.loops_collapsed ?? 0).toLocaleString()} loops</span>
+    </article>
+  `;
+}
+
+async function openSankeyView() {
+  settingsView.hidden = true;
+  document.body.classList.remove("settings-open");
+  sankeyView.hidden = false;
+  document.body.classList.add("sankey-open");
+  sankeyCloseButton.focus();
+  if (sankeyData) {
+    renderSankey(sankeyData);
+  } else {
+    sankeyStatus.textContent = "loading role flow...";
+    sankeyStatus.classList.remove("is-empty");
+    sankeyCanvas.innerHTML = "";
+    sankeyPathList.innerHTML = "";
+  }
+  try {
+    await loadSankey();
+  } catch {
+    sankeyStatus.textContent = "could not load role flow.";
+  }
+}
+
+function closeSankeyView() {
+  sankeyView.hidden = true;
+  document.body.classList.remove("sankey-open");
+  settingsOpenButton.focus();
+}
+
+async function loadSankey() {
+  const response = await fetch("/api/role-sankey");
+  if (!response.ok) throw new Error("Role sankey request failed");
+  renderSankey(await response.json());
 }
 
 async function saveSetting(control) {
@@ -3268,6 +3565,7 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !prepView.hidden) closePrepView();
   if (event.key === "Escape" && !settingsView.hidden) closeSettingsView();
   if (event.key === "Escape" && !metricsView.hidden) closeMetricsView();
+  if (event.key === "Escape" && !sankeyView.hidden) closeSankeyView();
   if (event.key === "Escape" && !companiesView.hidden) closeCompaniesView();
 });
 
@@ -3324,6 +3622,10 @@ settingsCloseButton.addEventListener("click", closeSettingsView);
 metricsOpenButton.addEventListener("click", openMetricsView);
 
 metricsCloseButton.addEventListener("click", closeMetricsView);
+
+sankeyOpenButton.addEventListener("click", openSankeyView);
+
+sankeyCloseButton.addEventListener("click", closeSankeyView);
 
 manageCompaniesButton.addEventListener("click", openCompaniesView);
 

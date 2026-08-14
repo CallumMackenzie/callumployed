@@ -99,6 +99,7 @@ body::after {
 .review-open::after,
 .prep-open::after,
 .settings-open::after,
+.sankey-open::after,
 .companies-open::after {
   animation-play-state: paused;
 }
@@ -120,6 +121,10 @@ body.settings-open {
   overflow: hidden;
 }
 
+body.sankey-open {
+  overflow: hidden;
+}
+
 body.companies-open {
   overflow: hidden;
 }
@@ -127,6 +132,7 @@ body.companies-open {
 body.review-open .shell,
 body.prep-open .shell,
 body.settings-open .shell,
+body.sankey-open .shell,
 body.companies-open .shell {
   visibility: hidden;
   pointer-events: none;
@@ -2234,19 +2240,37 @@ a:hover .role-link-icon {
   display: none;
 }
 
+.sankey-view {
+  position: fixed;
+  inset: 0;
+  z-index: 14;
+  overflow-y: auto;
+  background:
+    linear-gradient(115deg, rgb(45 224 111 / 0.14), transparent 28%),
+    linear-gradient(245deg, rgb(15 106 242 / 0.14), transparent 30%),
+    rgb(255 254 253 / 0.96);
+}
+
+.sankey-view[hidden] {
+  display: none;
+}
+
 .settings-shell,
-.metrics-shell {
+.metrics-shell,
+.sankey-shell {
   width: min(860px, calc(100% - 32px));
   margin: 0 auto;
   padding: 28px 0 48px;
 }
 
-.metrics-shell {
+.metrics-shell,
+.sankey-shell {
   width: min(1040px, calc(100% - 32px));
 }
 
 .settings-header,
-.metrics-header {
+.metrics-header,
+.sankey-header {
   display: flex;
   gap: 16px;
   align-items: end;
@@ -2255,14 +2279,16 @@ a:hover .role-link-icon {
 }
 
 .settings-header h2,
-.metrics-header h2 {
+.metrics-header h2,
+.sankey-header h2 {
   margin: 0;
   font-size: clamp(2rem, 2.8rem, 2.8rem);
   line-height: 1;
 }
 
 .settings-status,
-.metrics-status {
+.metrics-status,
+.sankey-status {
   min-height: 1.3rem;
   margin-bottom: 10px;
   color: var(--muted);
@@ -2271,7 +2297,8 @@ a:hover .role-link-icon {
 }
 
 .settings-status.is-empty,
-.metrics-status.is-empty {
+.metrics-status.is-empty,
+.sankey-status.is-empty {
   visibility: hidden;
 }
 
@@ -2290,7 +2317,9 @@ a:hover .role-link-icon {
 }
 
 .metrics-section,
-.metrics-recent {
+.metrics-recent,
+.sankey-panel,
+.sankey-paths {
   border: 1px solid rgb(255 255 255 / 0.72);
   border-radius: var(--radius);
   padding: 14px;
@@ -2302,6 +2331,111 @@ a:hover .role-link-icon {
 
 .metrics-recent {
   margin-top: 16px;
+}
+
+.sankey-panel {
+  min-height: 500px;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.sankey-canvas {
+  min-height: 480px;
+}
+
+.sankey-svg {
+  display: block;
+  width: 100%;
+  min-width: 960px;
+  min-height: 480px;
+}
+
+.sankey-link {
+  mix-blend-mode: multiply;
+  stroke-opacity: 0.12;
+  stroke-width: 1;
+}
+
+.sankey-link-backtrack {
+  stroke-opacity: 0.1;
+}
+
+.sankey-link-priority {
+  stroke-opacity: 0.16;
+}
+
+.sankey-node rect {
+  fill-opacity: 0.88;
+  stroke-width: 2;
+}
+
+.sankey-node-label text {
+  fill: var(--text);
+  font-size: 0.8rem;
+  font-weight: 950;
+  paint-order: stroke;
+  stroke: rgb(255 255 255 / 0.96);
+  stroke-linejoin: round;
+  stroke-width: 5px;
+  text-transform: lowercase;
+}
+
+.sankey-node-count {
+  fill: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 850;
+}
+
+.sankey-paths {
+  margin-top: 16px;
+}
+
+.sankey-path-list {
+  display: grid;
+  gap: 8px;
+}
+
+.sankey-path-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  background: rgb(255 255 255 / 0.9);
+}
+
+.sankey-path-row div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.sankey-path-row strong,
+.sankey-path-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sankey-path-row strong {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  line-clamp: 2;
+  -webkit-line-clamp: 2;
+}
+
+.sankey-path-row strong {
+  color: var(--text);
+  font-size: 0.88rem;
+  font-weight: 950;
+}
+
+.sankey-path-row span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+  white-space: normal;
 }
 
 .metrics-section-heading {
@@ -3311,6 +3445,11 @@ a:hover .role-link-icon {
     padding-top: 18px;
   }
 
+  .sankey-shell {
+    width: min(100% - 20px, 1040px);
+    padding-top: 18px;
+  }
+
   .companies-shell {
     width: min(100% - 20px, 1040px);
     padding-top: 18px;
@@ -3321,6 +3460,10 @@ a:hover .role-link-icon {
   }
 
   .settings-header {
+    align-items: start;
+  }
+
+  .sankey-header {
     align-items: start;
   }
 
@@ -3416,6 +3559,18 @@ a:hover .role-link-icon {
 
   .settings-maintenance button {
     width: 100%;
+  }
+
+  .sankey-panel {
+    overflow-x: auto;
+  }
+
+  .sankey-svg {
+    min-width: 960px;
+  }
+
+  .sankey-path-row {
+    grid-template-columns: 1fr;
   }
 
   .prep-feedback-controls {

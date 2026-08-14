@@ -18,10 +18,11 @@ import callumployed.web.server as web_server
 from callumployed.central.config import DEFAULT_CENTRAL_API_URL
 from callumployed.cli import app
 from callumployed.data import db
-from callumployed.data.models import Company, Role, RoleDiscoveryAttempt, ScanStatus
+from callumployed.data.models import Company, Role, RoleDiscoveryAttempt, RoleStatus, ScanStatus
 from callumployed.data.repositories import (
     add_company,
     add_experience_note,
+    add_role,
     add_role_discovery_attempt,
     count_resume_feedback_history,
     create_scan_run,
@@ -32,12 +33,14 @@ from callumployed.data.repositories import (
     list_experience_notes,
     list_scan_runs,
     record_resume_feedback_history,
+    set_role_status,
 )
 from callumployed.web.server import (
     LocalThreadingHTTPServer,
     ScanCoordinator,
     build_config_payload,
     build_metrics_payload,
+    build_role_sankey_payload,
     build_scan_status_payload,
     build_tracker_payload,
     create_handler,
@@ -167,6 +170,11 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="metrics-overview"' in markup
         assert 'id="metrics-sections"' in markup
         assert 'id="metrics-scan-list"' in markup
+        assert 'id="sankey-open-button"' in markup
+        assert "view sankey" in markup
+        assert 'id="sankey-view"' in markup
+        assert 'id="sankey-canvas"' in markup
+        assert 'id="sankey-path-list"' in markup
         assert 'id="central-api-url-input"' in markup
         assert DEFAULT_CENTRAL_API_URL in markup
         assert 'id="central-passkey-input"' in markup
@@ -183,8 +191,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=20260804-5" in markup
-        assert "/assets/app.js?v=20260804-5" in markup
+        assert "/assets/app.css?v=20260813-13" in markup
+        assert "/assets/app.js?v=20260813-13" in markup
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -258,6 +266,82 @@ def test_metrics_payload_reports_scan_candidate_and_ai_counts(
     assert sections["ai usage"]["agent-selected links"] == 1
     assert sections["ai usage"]["scan runs with agent trace"] == 1
     assert payload["recent_scans"][0]["company_name"] == "Acme"
+
+
+def test_role_sankey_payload_collapses_state_history_loops(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "web-role-sankey.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Acme"))
+        assert company.id is not None
+        role = add_role(
+            connection,
+            Role(
+                company_id=company.id,
+                title="Backend Engineer",
+                role_url="https://example.com/jobs/backend",
+            ),
+        )
+        assert role.id is not None
+        untouched_role = add_role(
+            connection,
+            Role(
+                company_id=company.id,
+                title="Frontend Engineer",
+                role_url="https://example.com/jobs/frontend",
+            ),
+        )
+        assert untouched_role.id is not None
+        archived_role = add_role(
+            connection,
+            Role(
+                company_id=company.id,
+                title="Archived Engineer",
+                role_url="https://example.com/jobs/archived",
+            ),
+        )
+        assert archived_role.id is not None
+        set_role_status(connection, role.id, RoleStatus.INTERESTED, summary="Worth tracking.")
+        set_role_status(connection, role.id, RoleStatus.DISCOVERED, summary="Moved back.")
+        set_role_status(connection, role.id, RoleStatus.INTERESTED, summary="Worth tracking again.")
+        set_role_status(connection, role.id, RoleStatus.APPLIED, summary="Applied.")
+        set_role_status(connection, archived_role.id, RoleStatus.APPLIED, summary="Applied.")
+        set_role_status(connection, archived_role.id, RoleStatus.ARCHIVED, summary="Archived.")
+
+    payload = build_role_sankey_payload()
+    links = {(link["source"], link["target"]): link["value"] for link in payload["links"]}
+    nodes = {
+        node["id"]: {
+            "current_count": node["current_count"],
+            "history_count": node["history_count"],
+        }
+        for node in payload["nodes"]
+    }
+    path_counts = {tuple(path["path"]): path["value"] for path in payload["path_counts"]}
+    backend_path = next(path for path in payload["paths"] if path["title"] == "Backend Engineer")
+    frontend_path = next(path for path in payload["paths"] if path["title"] == "Frontend Engineer")
+
+    assert payload["role_count"] == 2
+    assert "archived" not in nodes
+    assert links == {
+        ("discovered", "interested"): 1,
+        ("interested", "applied"): 1,
+    }
+    assert nodes["discovered"] == {"current_count": 1, "history_count": 2}
+    assert nodes["interested"] == {"current_count": 0, "history_count": 1}
+    assert nodes["applied"] == {"current_count": 1, "history_count": 1}
+    assert path_counts == {
+        ("discovered",): 1,
+        ("discovered", "interested", "applied"): 1,
+    }
+    assert backend_path["path"] == ["discovered", "interested", "applied"]
+    assert backend_path["loops_collapsed"] == 2
+    assert frontend_path["path"] == ["discovered"]
 
 
 def test_prep_analysis_endpoint_reports_resume_fit(

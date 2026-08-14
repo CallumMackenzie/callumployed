@@ -445,6 +445,9 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             if parsed_url.path == "/api/metrics":
                 self._send_json(build_metrics_payload())
                 return
+            if parsed_url.path == "/api/role-sankey":
+                self._send_json(build_role_sankey_payload())
+                return
             if parsed_url.path == "/api/companies":
                 self._send_json(build_companies_payload())
                 return
@@ -2132,6 +2135,147 @@ def build_metrics_payload() -> dict[str, Any]:
             for scan in latest_scan_runs
         ],
     }
+
+
+def build_role_sankey_payload() -> dict[str, Any]:
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        role_rows = connection.execute(
+            """
+            SELECT
+                roles.id,
+                roles.title,
+                roles.role_status,
+                companies.name AS company_name
+            FROM roles
+            JOIN companies ON companies.id = roles.company_id
+            WHERE roles.role_status != 'archived'
+            ORDER BY roles.updated_at DESC, roles.id DESC
+            """
+        ).fetchall()
+        event_rows = connection.execute(
+            """
+            SELECT role_id, old_status, new_status, created_at, id
+            FROM events
+            WHERE event_type = 'status_changed'
+                AND role_id IS NOT NULL
+                AND new_status IS NOT NULL
+            ORDER BY role_id, created_at, id
+            """
+        ).fetchall()
+
+    events_by_role_id: dict[int, list[dict[str, Any]]] = {}
+    for row in event_rows:
+        role_id = int(row["role_id"])
+        events_by_role_id.setdefault(role_id, []).append(dict(row))
+
+    link_counts: dict[tuple[str, str], int] = {}
+    path_counts: dict[tuple[str, ...], int] = {}
+    status_counts: dict[str, int] = {}
+    history_status_counts: dict[str, int] = {}
+    paths: list[dict[str, Any]] = []
+    for row in role_rows:
+        role_id = int(row["id"])
+        current_status = str(row["role_status"])
+        status_counts[current_status] = status_counts.get(current_status, 0) + 1
+        history = _role_status_history(
+            events_by_role_id.get(role_id, []),
+            current_status=current_status,
+        )
+        collapsed_history = _collapse_status_loops(history)
+        for status in set(collapsed_history):
+            history_status_counts[status] = history_status_counts.get(status, 0) + 1
+        path_key = tuple(collapsed_history)
+        path_counts[path_key] = path_counts.get(path_key, 0) + 1
+        for source, target in zip(collapsed_history, collapsed_history[1:], strict=False):
+            link_counts[(source, target)] = link_counts.get((source, target), 0) + 1
+        paths.append(
+            {
+                "role_id": role_id,
+                "company_name": row["company_name"],
+                "title": row["title"],
+                "current_status": current_status,
+                "path": collapsed_history,
+                "loops_collapsed": max(0, len(history) - len(collapsed_history)),
+            }
+        )
+
+    node_statuses = set(status_counts)
+    for source, target in link_counts:
+        node_statuses.add(source)
+        node_statuses.add(target)
+
+    ordered_statuses = [status.value for status in RoleStatus if status.value in node_statuses]
+    ordered_statuses.extend(sorted(node_statuses.difference(ordered_statuses)))
+
+    return {
+        "updated_at": _datetime_or_none(datetime.now(UTC)),
+        "role_count": len(role_rows),
+        "nodes": [
+            {
+                "id": status,
+                "label": STATUS_LABELS.get(status, status),
+                "current_count": status_counts.get(status, 0),
+                "history_count": history_status_counts.get(status, 0),
+            }
+            for status in ordered_statuses
+        ],
+        "links": [
+            {"source": source, "target": target, "value": count}
+            for (source, target), count in sorted(
+                link_counts.items(),
+                key=lambda item: (
+                    ordered_statuses.index(item[0][0])
+                    if item[0][0] in ordered_statuses
+                    else len(ordered_statuses),
+                    ordered_statuses.index(item[0][1])
+                    if item[0][1] in ordered_statuses
+                    else len(ordered_statuses),
+                ),
+            )
+        ],
+        "path_counts": [
+            {"path": list(path), "value": count}
+            for path, count in sorted(
+                path_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+        ],
+        "paths": paths[:12],
+    }
+
+
+def _role_status_history(
+    events: list[dict[str, Any]],
+    *,
+    current_status: str,
+) -> list[str]:
+    if not events:
+        return [current_status]
+    first_old_status = events[0].get("old_status")
+    history = [str(first_old_status)] if first_old_status else []
+    for event in events:
+        new_status = event.get("new_status")
+        if new_status is not None:
+            history.append(str(new_status))
+    if not history or history[-1] != current_status:
+        history.append(current_status)
+    return history
+
+
+def _collapse_status_loops(history: list[str]) -> list[str]:
+    collapsed: list[str] = []
+    seen_indexes: dict[str, int] = {}
+    for status in history:
+        if status in seen_indexes:
+            loop_start = seen_indexes[status]
+            for removed_status in collapsed[loop_start + 1 :]:
+                seen_indexes.pop(removed_status, None)
+            collapsed = collapsed[: loop_start + 1]
+            continue
+        seen_indexes[status] = len(collapsed)
+        collapsed.append(status)
+    return collapsed
 
 
 def build_master_resume_payload() -> dict[str, Any]:
