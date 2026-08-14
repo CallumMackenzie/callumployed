@@ -727,17 +727,22 @@ def test_scan_company_uses_direct_greenhouse_job_board(
     assert scan is not None
     assert scan["results"][0].candidates_scanned == 3
     assert {link.url for link in scan["results"][0].links} == {
-        "https://job-boards.greenhouse.io/aquaticcapitalmanagement/jobs/8489233002"
+        "https://job-boards.greenhouse.io/aquaticcapitalmanagement/jobs/8489233002",
+        "https://job-boards.greenhouse.io/aquaticcapitalmanagement/jobs/8489226002",
     }
     with db.connect() as connection:
         roles = list_roles(connection)
         attempts = list_role_discovery_attempts(connection)
 
-    assert len(roles) == 1
-    assert roles[0].title == "Software Engineer, Intern (Summer 2027)"
-    assert roles[0].posting_id == "8489233002"
-    assert len(attempts) == 1
-    assert attempts[0].assessment_extraction_method == "ats_heuristic"
+    roles_by_title = {role.title: role for role in roles}
+    assert set(roles_by_title) == {
+        "Software Engineer, Intern (Summer 2027)",
+        "Software Engineer, Early Career",
+    }
+    assert roles_by_title["Software Engineer, Intern (Summer 2027)"].posting_id == "8489233002"
+    assert roles_by_title["Software Engineer, Early Career"].posting_id == "8489226002"
+    assert len(attempts) == 2
+    assert {attempt.assessment_extraction_method for attempt in attempts} == {"ats_heuristic"}
 
 
 def test_scan_company_detects_embedded_greenhouse_api(

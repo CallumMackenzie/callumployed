@@ -155,6 +155,7 @@ TITLE_SEASON_PATTERN = re.compile(
 )
 TITLE_DEPARTMENT_SUFFIXES = {
     "business",
+    "communications",
     "design",
     "engineering",
     "finance",
@@ -167,6 +168,17 @@ TITLE_DEPARTMENT_SUFFIXES = {
     "security",
     "technology",
 }
+TITLE_CITY_REGION_COUNTRY_PATTERN = re.compile(
+    r"\b([A-Z][A-Za-z .'-]{1,80}),\s*"
+    r"(?:AB|BC|MB|NB|NL|NS|NT|NU|ON|PE|QC|SK|YT|CA|NY|WA|TX|IL|FL|"
+    r"California|New York|Washington|Texas|Illinois|Florida),\s*"
+    r"(?:Canada|United States(?: of America)?)\b"
+)
+TITLE_CITY_REGION_SUFFIX_PATTERN = re.compile(
+    r"\b([A-Z][A-Za-z .'-]{1,80}),\s*"
+    r"(?:AB|BC|MB|NB|NL|NS|NT|NU|ON|PE|QC|SK|YT|CA|NY|WA|TX|IL|FL|"
+    r"California|New York|Washington|Texas|Illinois|Florida),?\s*$"
+)
 
 @dataclass(frozen=True)
 class TitleCandidate:
@@ -517,6 +529,10 @@ def _clean_title(text: str | None) -> str | None:
 
 
 def _strip_title_listing_metadata(title: str) -> str:
+    without_explicit_location = _strip_explicit_title_location(title)
+    if without_explicit_location != title:
+        return without_explicit_location
+
     if " - " in title:
         prefix, suffix = title.rsplit(" - ", 1)
         prefix_words = prefix.split()
@@ -542,6 +558,49 @@ def _strip_title_listing_metadata(title: str) -> str:
             ):
                 return _strip_title_listing_metadata(candidate)
     return title
+
+
+def _strip_explicit_title_location(title: str) -> str:
+    for pattern in (TITLE_CITY_REGION_COUNTRY_PATTERN, TITLE_CITY_REGION_SUFFIX_PATTERN):
+        stripped = _strip_title_location_match(title, pattern)
+        if stripped != title:
+            return stripped
+    return title
+
+
+def _strip_title_location_match(title: str, pattern: re.Pattern[str]) -> str:
+    for match in pattern.finditer(title):
+        city = _strip_title_location_prefix(match.group(1))
+        if not city:
+            continue
+        city_index = title.lower().rfind(city.lower(), 0, match.end())
+        if city_index == -1:
+            continue
+        candidate = title[:city_index].strip(" -|:;,")
+        candidate = _strip_trailing_title_department(candidate)
+        if _matching_terms(candidate, ROLE_TITLE_TERMS):
+            return candidate
+    return title
+
+
+def _strip_title_location_prefix(text: str) -> str | None:
+    cleaned = _clean_text(text)
+    if not cleaned:
+        return None
+    cleaned = re.sub(
+        r"^.*\b(?:early\s+career|interns?|internships?|new\s+grad(?:uate)?|student)\s+",
+        "",
+        cleaned,
+        flags=re.I,
+    )
+    return cleaned.strip(" -|:;,") or None
+
+
+def _strip_trailing_title_department(title: str) -> str:
+    words = title.split()
+    while words and words[-1].lower().strip(" -|:;,") in TITLE_DEPARTMENT_SUFFIXES:
+        words.pop()
+    return " ".join(words).strip(" -|:;,")
 
 
 def _extract_dom_location(soup: BeautifulSoup, visible_text: str | None) -> str | None:

@@ -59,7 +59,7 @@ NON_SOFTWARE_TITLE_PATTERN = re.compile(
 )
 INTERN_INTENT_PATTERN = re.compile(
     r"\b(?:interns?|internships?|co[- ]?ops?|student|students|university|campus|"
-    r"new grad|new graduate|early(?:[+\s_-]|%20)+talent)\b",
+    r"new grad|new graduate|early(?:[+\s_-]|%20)+(?:career|talent))\b",
     re.I,
 )
 CANADA_LOCATION_PATTERN = re.compile(

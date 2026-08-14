@@ -599,6 +599,7 @@ def test_parse_job_location_normalizes_geograpy_places(
         parse_job_location("Hybrid; Hybrid; Hybrid; Hybrid; Hybrid; In-Office")
         == "Hybrid; In-office"
     )
+    assert parse_job_location("and") is None
     jane_street_nav_location = (
         "S STREET VIEW PUZZLES DEPARTMENTS OPEN ROLES PROGRAMS; "
         "EVENTS INTERNSHIPS INTERVIEWING Join Jane Street Open roles"
@@ -636,6 +637,33 @@ def test_parse_job_location_normalizes_geograpy_places(
         parse_job_location(bytedance_nav_location, context_text=bytedance_context)
         == "San Jose"
     )
+    assert (
+        parse_job_location(
+            "business needs; market demand",
+            context_text=(
+                "[2027] Software Engineer, Early Career "
+                "San Mateo, CA, United States Early Career"
+            ),
+        )
+        == "San Mateo, CA, United States"
+    )
+    assert (
+        parse_job_location(
+            "and",
+            context_text=(
+                "[2027] Software Engineer, Early Career "
+                "Communications San Mateo, CA, United States Early Career"
+            ),
+        )
+        == "San Mateo, CA, United States"
+    )
+    assert (
+        parse_job_location(
+            "business needs; market demand",
+            context_text="[Summer 2027] Software Engineer Intern San Mateo, CA, United States",
+        )
+        == "San Mateo, CA, United States"
+    )
 
 
 def test_assess_role_page_extracts_structured_country_object_location() -> None:
@@ -663,6 +691,45 @@ def test_assess_role_page_extracts_structured_country_object_location() -> None:
 
     assert assessment.location == "Brazil"
     assert assessment.description == "Come build software."
+
+
+def test_assess_role_page_cleans_roblox_listing_title_metadata() -> None:
+    page = RenderedPageState(
+        url="https://careers.roblox.com/jobs/8072244",
+        final_url="https://careers.roblox.com/jobs/8072244",
+        title="View Job | Roblox",
+        html="""
+        <html>
+          <body>
+            <h1>[2027] Software Engineer, Early Career</h1>
+            <a>Apply Now</a>
+            <section>Location San Mateo, CA, United States</section>
+          </body>
+        </html>
+        """,
+        visible_text=(
+            "[2027] Software Engineer, Early Career Communications "
+            "San Mateo, CA, United States Early Career Apply Now"
+        ),
+    )
+
+    assessment = assess_role_page(
+        page,
+        title_hints=(
+            "[2027] Software Engineer, Early Career Communications "
+            "San Mateo, CA, United States Early Career",
+        ),
+    )
+
+    assert assessment.is_role
+    assert assessment.title == "[2027] Software Engineer, Early Career"
+
+    assessment = assess_role_page(
+        page,
+        title_hints=("[2027] Software Engineer, Early Career San Mateo, CA,",),
+    )
+
+    assert assessment.title == "[2027] Software Engineer, Early Career"
 
 
 def test_assess_role_page_extracts_location_from_job_text(

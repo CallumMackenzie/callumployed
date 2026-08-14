@@ -34,7 +34,8 @@ SEARCH_FILTER_NOISE_PATTERN = re.compile(
     r"departments\s+open\s+roles\s+programs|who\s+we\s+are\s+trade\s+with\s+us|"
     r"diversity\s*&\s+inclusion\s+contact|early\s+careers\s+blog\s+jobs|"
     r"north\s+america\s+new\s+york\s+city|search\s+for\s+jobs\s+by\s+title|"
-    r"keyword\s+search\s+job\s+by\s+location|search\s+job\s+by\s+location)\b",
+    r"keyword\s+search\s+job\s+by\s+location|search\s+job\s+by\s+location|"
+    r"business\s+needs|market\s+demand)\b",
     re.I,
 )
 PARENTHETICAL_COUNTRY_PATTERN = re.compile(
@@ -54,6 +55,12 @@ LOCATION_CONTEXT_PATTERNS = (
 GOOGLE_JOB_CARD_LOCATION_PATTERN = re.compile(
     r"\bplace\s+([\s\S]{2,260}?)(?=\s+bar_chart\b|\s+info_outline\b|\s+This\s+posting\b)",
     re.I,
+)
+CITY_REGION_COUNTRY_PATTERN = re.compile(
+    r"\b([A-Z][A-Za-z .'-]{1,80}),\s*"
+    r"(AB|BC|MB|NB|NL|NS|NT|NU|ON|PE|QC|SK|YT|CA|NY|WA|TX|IL|FL|"
+    r"California|New York|Washington|Texas|Illinois|Florida),\s*"
+    r"(Canada|United States(?: of America)?)\b"
 )
 COUNTRY_ALIASES = {
     "br": "Brazil",
@@ -96,6 +103,7 @@ CANADIAN_REGION_CODES = {
     "YT",
 }
 NON_LOCATION_PLACES = {
+    "and",
     "apply",
     "hybrid",
     "job",
@@ -103,6 +111,7 @@ NON_LOCATION_PLACES = {
     "locations",
     "office",
     "offices",
+    "or",
     "remote",
     "role",
 }
@@ -133,6 +142,10 @@ def parse_job_location(
     parenthetical_country = _parenthetical_country_location(context_text)
     if parenthetical_country:
         return parenthetical_country
+
+    city_region_country = _city_region_country_location(context_text)
+    if city_region_country:
+        return city_region_country
 
     geograpy_location = _location_from_geograpy(context_text)
     if geograpy_location:
@@ -175,6 +188,10 @@ def _normalize_location_text(text: str | None) -> str | None:
         return None
 
     modes = _work_modes(cleaned)
+    city_region_country = _city_region_country_location(cleaned)
+    if city_region_country:
+        return _join_location_parts([*modes, city_region_country])
+
     if MULTIPLE_PATTERN.search(cleaned):
         return _join_location_parts([*modes, "Multiple locations"])
 
@@ -242,6 +259,56 @@ def _parenthetical_country_location(text: str | None) -> str | None:
     return _normalize_place_name(match.group(1))
 
 
+def _city_region_country_location(text: str | None) -> str | None:
+    if not text:
+        return None
+    for match in CITY_REGION_COUNTRY_PATTERN.finditer(text):
+        city = _strip_non_location_prefix(match.group(1))
+        if not city:
+            continue
+        region = _normalize_place_name(match.group(2))
+        country = _normalize_place_name(match.group(3))
+        return f"{city}, {region}, {country}"
+    return None
+
+
+def _strip_non_location_prefix(text: str) -> str | None:
+    cleaned = _clean_location_text(text)
+    if not cleaned:
+        return None
+    cleaned = re.sub(
+        r"^.*\b(?:early\s+career|interns?|internships?|new\s+grad(?:uate)?|student)\s+",
+        "",
+        cleaned,
+        flags=re.I,
+    )
+    words = cleaned.split()
+    while words and words[0].lower() in {
+        "communications",
+        "design",
+        "software",
+        "engineer",
+        "engineering",
+        "developer",
+        "backend",
+        "frontend",
+        "finance",
+        "legal",
+        "marketing",
+        "operations",
+        "product",
+        "research",
+        "senior",
+        "staff",
+        "principal",
+        "security",
+        "team",
+        "technology",
+    }:
+        words.pop(0)
+    return " ".join(words).strip(" -|:;,") or None
+
+
 def _work_modes(text: str) -> list[str]:
     modes: list[str] = []
     if REMOTE_PATTERN.search(text):
@@ -267,6 +334,8 @@ def _strip_work_modes(text: str) -> str:
 
 
 def _looks_like_location_fragment(text: str) -> bool:
+    if text.strip(" -|:;,").lower() in NON_LOCATION_PLACES:
+        return False
     if len(text) > 100:
         return False
     if re.search(r"\b(?:job|responsibilities|requirements|qualifications|salary)\b", text, re.I):
