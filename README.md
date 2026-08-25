@@ -225,7 +225,7 @@ Configure the provider through shell environment variables or a local `.env` fil
 
 ```bash
 CALLUMPLOYED_LLM_PROVIDER=openai
-CALLUMPLOYED_LLM_MODEL=gpt-4.1-mini
+CALLUMPLOYED_LLM_MODEL=gpt-5.6-terra
 OPENAI_API_KEY=...
 ```
 

@@ -614,7 +614,7 @@ def test_posting_link_classifier_agent_uses_settings_and_validates_response() ->
 
     def fake_model_factory(settings: LlmSettings) -> FakeStructuredModel:
         assert settings.provider == "openai"
-        assert settings.model == "gpt-4.1-mini"
+        assert settings.model == "gpt-5.6-terra"
         return FakeStructuredModel()
 
     agent = PostingLinkClassifierAgent(chat_model_factory=fake_model_factory)
