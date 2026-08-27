@@ -6,6 +6,7 @@ import {onRequest} from "firebase-functions/v2/https";
 import {centralPasskeySha256, hasValidPasskey, requirePasskey} from "./auth";
 import {listCompanies, resolveCompany} from "./companies";
 import {bulkUpsertRoles, listRoles} from "./roles";
+import {submitScanMetrics} from "./scanMetrics";
 
 initializeApp();
 
@@ -31,6 +32,15 @@ app.get("/v1/roles", requirePasskey, async (_req, res) => {
 app.post("/v1/roles/bulk-upsert", requirePasskey, async (req, res) => {
   const roles = Array.isArray(req.body?.roles) ? req.body.roles : [];
   res.json({upserted: await bulkUpsertRoles(getFirestore(), roles)});
+});
+
+app.post("/v1/scan-metrics", async (req, res) => {
+  try {
+    const scanMetricId = await submitScanMetrics(getFirestore(), req.body ?? {});
+    res.json({accepted: true, scan_metric_id: scanMetricId});
+  } catch (error) {
+    res.status(400).json({error: error instanceof Error ? error.message : "invalid request"});
+  }
 });
 
 export const centralApi = onRequest(

@@ -384,6 +384,12 @@ def test_scan_company_records_ai_classification_errors_on_scan_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _use_database(monkeypatch, tmp_path)
+    published_scan_statuses: list[ScanStatus] = []
+    monkeypatch.setattr(
+        scan_workflow,
+        "publish_scan_metrics",
+        lambda _company, scan_run: published_scan_statuses.append(scan_run.scan_status),
+    )
 
     with db.connect() as connection:
         company = add_company(connection, Company(name="Acme"))
@@ -422,6 +428,7 @@ def test_scan_company_records_ai_classification_errors_on_scan_run(
     assert len(scan_runs) == 1
     assert scan_runs[0].scan_status is ScanStatus.FAILED
     assert scan_runs[0].error == "AI classification failed: OpenAI API key is invalid"
+    assert published_scan_statuses == [ScanStatus.FAILED]
 
 
 def test_scan_company_uses_bytedance_api_scanner(
@@ -429,6 +436,12 @@ def test_scan_company_uses_bytedance_api_scanner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _use_database(monkeypatch, tmp_path)
+    published_scan_statuses: list[ScanStatus] = []
+    monkeypatch.setattr(
+        scan_workflow,
+        "publish_scan_metrics",
+        lambda _company, scan_run: published_scan_statuses.append(scan_run.scan_status),
+    )
 
     def fake_fetch_page(
         self: object,
@@ -494,6 +507,7 @@ def test_scan_company_uses_bytedance_api_scanner(
     scan = asyncio.run(scan_workflow.scan_company(company))
 
     assert scan is not None
+    assert published_scan_statuses == [ScanStatus.SUCCEEDED]
     assert scan["results"][0].candidates_scanned == 2
     assert {link.url for link in scan["results"][0].links} == {
         "https://joinbytedance.com/search/7639884334834862341"

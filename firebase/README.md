@@ -7,6 +7,8 @@ TypeScript Firebase Functions API for the shared Callumployed company/role store
 - `POST /v1/companies/resolve` resolves or creates a global company ID.
 - `GET /v1/roles` returns central roles for local import.
 - `POST /v1/roles/bulk-upsert` writes roles into the central store.
+- `POST /v1/scan-metrics` writes an idempotent, privacy-safe scan aggregate to the
+  `scan_metrics` collection. This endpoint does not require a passkey.
 
 All routes require:
 

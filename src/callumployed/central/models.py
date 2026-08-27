@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -76,3 +77,30 @@ class BulkUpsertRolesRequest(CentralModel):
 
 class BulkUpsertRolesResponse(CentralModel):
     upserted: int
+
+
+class ScanMetricsRequest(CentralModel):
+    schema_version: Literal[1] = 1
+    client_id: str = Field(min_length=1, max_length=128)
+    scan_event_id: str = Field(min_length=1, max_length=128)
+    global_company_id: str | None = Field(default=None, max_length=128)
+    company_name: str = Field(min_length=1, max_length=256)
+    scan_status: Literal["succeeded", "failed"]
+    started_at: datetime
+    finished_at: datetime
+    duration_ms: int = Field(ge=0, le=86_400_000)
+    career_pages_total: int = Field(ge=0, le=10_000)
+    pages_scanned: int = Field(ge=0, le=10_000)
+    candidates_scanned: int = Field(ge=0, le=1_000_000)
+    potential_roles_discovered: int = Field(ge=0, le=1_000_000)
+    role_verification_attempts: int = Field(ge=0, le=1_000_000)
+    verified_open_roles: int = Field(ge=0, le=1_000_000)
+    roles_saved: int = Field(ge=0, le=1_000_000)
+    failed_role_visits: int = Field(ge=0, le=1_000_000)
+    error_type: str | None = Field(default=None, max_length=128)
+    app_version: str = Field(min_length=1, max_length=64)
+
+
+class ScanMetricsResponse(CentralModel):
+    accepted: bool
+    scan_metric_id: str

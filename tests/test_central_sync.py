@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 import httpx
 
 from callumployed.central.client import CentralStoreClient
@@ -6,6 +8,7 @@ from callumployed.central.config import (
     get_central_api_url,
     set_central_api_url,
 )
+from callumployed.central.metrics import build_scan_metrics
 from callumployed.central.models import (
     CentralCompaniesResponse,
     CentralCompany,
@@ -13,13 +16,16 @@ from callumployed.central.models import (
     CentralRolesResponse,
     ResolveCompanyRequest,
     ResolveCompanyResponse,
+    ScanMetricsRequest,
 )
 from callumployed.central.sync import pull_companies, pull_roles, resolve_unlinked_companies
 from callumployed.data import db
-from callumployed.data.models import Company, CompanyCareerPage, RoleStatus
+from callumployed.data.models import Company, CompanyCareerPage, RoleStatus, ScanStatus
 from callumployed.data.repositories import (
     add_company,
     add_company_career_page,
+    create_scan_run,
+    finish_scan_run,
     get_company,
     list_companies,
     list_company_career_pages,
@@ -221,3 +227,88 @@ def test_central_client_uses_custom_passkey_header() -> None:
     assert client.list_roles().roles == []
     assert seen_headers["x-callumployed-passkey"] == "secret"
     assert "authorization" not in seen_headers
+
+
+def test_central_client_submits_scan_metrics_without_passkey() -> None:
+    seen_headers: dict[str, str] = {}
+    seen_payload: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_headers.update(request.headers)
+        seen_payload.update(__import__("json").loads(request.content))
+        return httpx.Response(
+            200,
+            json={"accepted": True, "scan_metric_id": "scan_metric_123"},
+        )
+
+    client = CentralStoreClient(
+        api_url="https://central.example",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    response = client.submit_scan_metrics(
+        ScanMetricsRequest(
+            client_id="client-1",
+            scan_event_id="event-1",
+            company_name="Acme",
+            scan_status="succeeded",
+            started_at=datetime(2026, 8, 27, tzinfo=UTC),
+            finished_at=datetime(2026, 8, 27, 0, 0, 1, tzinfo=UTC),
+            duration_ms=1_000,
+            career_pages_total=1,
+            pages_scanned=1,
+            candidates_scanned=4,
+            potential_roles_discovered=2,
+            role_verification_attempts=2,
+            verified_open_roles=1,
+            roles_saved=1,
+            failed_role_visits=0,
+            app_version="0.1.0",
+        )
+    )
+
+    assert response.scan_metric_id == "scan_metric_123"
+    assert seen_payload["company_name"] == "Acme"
+    assert "authorization" not in seen_headers
+    assert "x-callumployed-passkey" not in seen_headers
+
+
+def test_build_scan_metrics_aggregates_persisted_scan_data() -> None:
+    connection = db.connect(":memory:")
+    db.run_migrations(connection)
+    company = add_company(
+        connection,
+        Company(name="Acme", central_company_id="co_acme"),
+    )
+    assert company.id is not None
+    add_company_career_page(
+        connection,
+        CompanyCareerPage(company_id=company.id, url="https://example.com/careers"),
+    )
+    scan_run = create_scan_run(connection, company.id)
+    assert scan_run.id is not None
+    page_cursor = connection.execute(
+        """
+        INSERT INTO scan_pages (scan_run_id, source_url, final_url, candidates_scanned)
+        VALUES (?, 'https://example.com/careers', 'https://example.com/careers', 4)
+        """,
+        (scan_run.id,),
+    )
+    scan_page_id = int(page_cursor.lastrowid)
+    connection.execute(
+        """
+        INSERT INTO scan_candidates (scan_page_id, url, source_url, tag, confidence, selected)
+        VALUES
+            (?, 'https://example.com/1', 'https://example.com/careers', 'a', 1.0, 1),
+            (?, 'https://example.com/2', 'https://example.com/careers', 'a', 0.5, 0)
+        """,
+        (scan_page_id, scan_page_id),
+    )
+    finished = finish_scan_run(connection, scan_run.id, ScanStatus.SUCCEEDED)
+
+    metrics = build_scan_metrics(connection, company, finished)
+
+    assert metrics.global_company_id == "co_acme"
+    assert metrics.pages_scanned == 1
+    assert metrics.candidates_scanned == 4
+    assert metrics.potential_roles_discovered == 1
+    assert metrics.scan_status == "succeeded"

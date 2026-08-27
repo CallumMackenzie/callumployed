@@ -10,6 +10,8 @@ from callumployed.central.models import (
     CentralRolesResponse,
     ResolveCompanyRequest,
     ResolveCompanyResponse,
+    ScanMetricsRequest,
+    ScanMetricsResponse,
 )
 
 
@@ -49,6 +51,15 @@ class CentralStoreClient:
         request = BulkUpsertRolesRequest(roles=list(roles))
         return BulkUpsertRolesResponse.model_validate(
             self._request("POST", "/v1/roles/bulk-upsert", json=request.model_dump())
+        )
+
+    def submit_scan_metrics(self, metrics: ScanMetricsRequest) -> ScanMetricsResponse:
+        return ScanMetricsResponse.model_validate(
+            self._request(
+                "POST",
+                "/v1/scan-metrics",
+                json=metrics.model_dump(mode="json"),
+            )
         )
 
     def _request(

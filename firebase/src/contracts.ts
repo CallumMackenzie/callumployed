@@ -60,3 +60,25 @@ export interface BulkUpsertRole {
   posting_id?: string | null;
   tier_classification?: string | null;
 }
+
+export interface ScanMetricsRequest {
+  schema_version: 1;
+  client_id: string;
+  scan_event_id: string;
+  global_company_id?: string | null;
+  company_name: string;
+  scan_status: "succeeded" | "failed";
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+  career_pages_total: number;
+  pages_scanned: number;
+  candidates_scanned: number;
+  potential_roles_discovered: number;
+  role_verification_attempts: number;
+  verified_open_roles: number;
+  roles_saved: number;
+  failed_role_visits: number;
+  error_type?: string | null;
+  app_version: string;
+}

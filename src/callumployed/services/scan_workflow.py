@@ -1,3 +1,4 @@
+import logging
 from typing import Any, Literal, TypedDict, cast
 from urllib.parse import urlparse
 
@@ -7,6 +8,7 @@ from callumployed.agents.posting_link_classifier import (
     ChatModelFactory,
     build_posting_link_agent_classifier,
 )
+from callumployed.central.metrics import publish_scan_metrics
 from callumployed.config import LlmSettings
 from callumployed.data import db
 from callumployed.data.models import (
@@ -99,6 +101,7 @@ ROLE_PAGE_CONTENT_SETTLE_TIMEOUT_MS = browser.ROLE_PAGE_CONTENT_SETTLE_TIMEOUT_M
 ROLE_PAGE_CONTENT_SETTLE_POLL_MS = browser.ROLE_PAGE_CONTENT_SETTLE_POLL_MS
 ROLE_PAGE_LAZY_SCROLL_STEP_DELAY_MS = browser.ROLE_PAGE_LAZY_SCROLL_STEP_DELAY_MS
 render_careers_page = browser.render_careers_page
+LOGGER = logging.getLogger(__name__)
 
 
 class ScanWorkflowState(TypedDict, total=False):
@@ -1229,7 +1232,13 @@ async def scan_company(
             results.append(result)
     except Exception as error:
         with db.connect() as connection:
-            finish_scan_run(connection, scan_run.id, ScanStatus.FAILED, error=str(error))
+            failed_scan_run = finish_scan_run(
+                connection,
+                scan_run.id,
+                ScanStatus.FAILED,
+                error=str(error),
+            )
+        _publish_scan_metrics_safely(current_company, failed_scan_run)
         raise
 
     with db.connect() as connection:
@@ -1245,6 +1254,8 @@ async def scan_company(
             role_discovery_attempts=role_discovery_attempts,
         )
 
+    _publish_scan_metrics_safely(current_company, scan_run)
+
     return {
         "company": current_company,
         "scan_run": scan_run,
@@ -1257,6 +1268,13 @@ async def scan_company(
         "internship_mode": internship_mode,
         "location_filter": location_filter,
     }
+
+
+def _publish_scan_metrics_safely(company: Company, scan_run: ScanRun) -> None:
+    try:
+        publish_scan_metrics(company, scan_run)
+    except Exception as error:  # noqa: BLE001 - metrics must never fail a completed scan.
+        LOGGER.warning("Could not publish scan metrics: %s", error)
 
 
 def _close_missing_disinterested_roles(
