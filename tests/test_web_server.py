@@ -126,7 +126,9 @@ def test_static_svg_assets_are_served_with_svg_content_type() -> None:
         with urlopen(url, timeout=5) as response:
             assert response.status == 200
             assert response.headers["Content-Type"] == "image/svg+xml; charset=utf-8"
-            assert response.read().startswith(b'<?xml version="1.0" encoding="UTF-8"?>')
+            body = response.read()
+            assert body.startswith(b'<?xml version="1.0" encoding="UTF-8"?>')
+            assert b"path { fill: #00897b; }" in body
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -175,14 +177,13 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
 
         assert 'id="toggle-all"' in markup
         assert (
-            '<link rel="icon" href="/assets/camackenzie-logo.svg" type="image/svg+xml" />'
+            '<link rel="icon" href="/assets/camackenzie-logo.svg?v=20260827-2" '
+            'type="image/svg+xml" />'
             in markup
         )
-        assert (
-            '<link rel="apple-touch-icon" sizes="180x180" '
-            'href="/assets/apple-touch-icon.png" />'
-            in markup
-        )
+        assert 'rel="apple-touch-icon"' in markup
+        assert 'sizes="180x180"' in markup
+        assert 'href="/assets/apple-touch-icon.png?v=20260827-2"' in markup
         assert '<link rel="manifest" href="/assets/manifest.webmanifest" />' in markup
         assert '<meta name="apple-mobile-web-app-capable" content="yes" />' in markup
         assert '<meta name="apple-mobile-web-app-title" content="callumployed" />' in markup
