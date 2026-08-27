@@ -132,6 +132,33 @@ def test_static_svg_assets_are_served_with_svg_content_type() -> None:
         server.server_close()
 
 
+def test_pwa_manifest_and_apple_icon_are_served_with_correct_content_types() -> None:
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        with urlopen(
+            f"http://127.0.0.1:{port}/assets/manifest.webmanifest", timeout=5
+        ) as response:
+            assert response.status == 200
+            assert response.headers["Content-Type"] == "application/manifest+json; charset=utf-8"
+            manifest = json.loads(response.read())
+        with urlopen(
+            f"http://127.0.0.1:{port}/assets/apple-touch-icon.png", timeout=5
+        ) as response:
+            assert response.status == 200
+            assert response.headers["Content-Type"] == "image/png"
+            assert response.read().startswith(b"\x89PNG\r\n\x1a\n")
+
+        assert manifest["display"] == "standalone"
+        assert {icon["sizes"] for icon in manifest["icons"]} == {"192x192", "512x512"}
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_index_serves_single_state_aware_status_toggle() -> None:
     server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -150,7 +177,14 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
             '<link rel="icon" href="/assets/camackenzie-logo.svg" type="image/svg+xml" />'
             in markup
         )
-        assert '<link rel="apple-touch-icon" href="/assets/camackenzie-logo.svg" />' in markup
+        assert (
+            '<link rel="apple-touch-icon" sizes="180x180" '
+            'href="/assets/apple-touch-icon.png" />'
+            in markup
+        )
+        assert '<link rel="manifest" href="/assets/manifest.webmanifest" />' in markup
+        assert '<meta name="apple-mobile-web-app-capable" content="yes" />' in markup
+        assert '<meta name="apple-mobile-web-app-title" content="callumployed" />' in markup
         assert "expand all" in markup
         assert 'id="expand-all"' not in markup
         assert 'id="collapse-all"' not in markup

@@ -3808,4 +3808,8 @@ def _content_type_for(filename: str) -> str:
         return "text/javascript; charset=utf-8"
     if filename.endswith(".svg"):
         return "image/svg+xml; charset=utf-8"
+    if filename.endswith(".png"):
+        return "image/png"
+    if filename.endswith(".webmanifest"):
+        return "application/manifest+json; charset=utf-8"
     return "application/octet-stream"
