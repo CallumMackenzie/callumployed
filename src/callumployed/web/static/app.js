@@ -1376,6 +1376,28 @@ async function syncCentralCompanies() {
   }
 }
 
+async function syncCompaniesOnPageLoad() {
+  const response = await fetch("/api/central/resolve-companies", { method: "POST" });
+  if (!response.ok) throw new Error("Central company sync failed");
+  const payload = await response.json();
+  if (payload.companies) {
+    companiesData = payload.companies;
+    renderRoleCompanyOptions(payload.companies.companies);
+  }
+}
+
+async function loadInitialTrackerData() {
+  await syncCompaniesOnPageLoad().catch(() => {});
+  await Promise.all([
+    loadTracker().catch(() => {
+      statusListEl.innerHTML = '<p class="empty-copy">could not load jobs.</p>';
+    }),
+    loadRoleCompanyOptions().catch(() => {
+      roleAddStatus.textContent = "could not load companies.";
+    }),
+  ]);
+}
+
 async function updateApp() {
   const confirmed = window.confirm("Update callumployed and restart the tracker?");
   if (!confirmed) return;
@@ -3728,13 +3750,7 @@ clearRecommendationHistoryButton.addEventListener("click", clearRecommendationHi
 
 appUpdateButton.addEventListener("click", updateApp);
 
-loadTracker().catch(() => {
-  statusListEl.innerHTML = '<p class="empty-copy">could not load jobs.</p>';
-});
-
-loadRoleCompanyOptions().catch(() => {
-  roleAddStatus.textContent = "could not load companies.";
-});
+loadInitialTrackerData();
 
 loadApplicationMaterials({ applyDefaultCollapsed: true }).catch(() => {
   renderMasterResume(null, "could not load resume.");

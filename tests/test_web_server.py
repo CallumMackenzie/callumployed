@@ -142,6 +142,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
 
         with urlopen(url, timeout=5) as response:
             markup = response.read().decode()
+        with urlopen(f"http://127.0.0.1:{port}/assets/app.js", timeout=5) as response:
+            app_javascript = response.read().decode()
 
         assert 'id="toggle-all"' in markup
         assert (
@@ -213,7 +215,10 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
         assert "/assets/app.css?v=20260813-13" in markup
-        assert "/assets/app.js?v=20260813-13" in markup
+        assert "/assets/app.js?v=20260827-14" in markup
+        assert 'fetch("/api/central/resolve-companies", { method: "POST" })' in app_javascript
+        assert "await syncCompaniesOnPageLoad().catch(() => {});" in app_javascript
+        assert "loadInitialTrackerData();" in app_javascript
     finally:
         server.shutdown()
         thread.join(timeout=5)
