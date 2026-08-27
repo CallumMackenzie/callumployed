@@ -506,9 +506,14 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 self._send_cover_letter_pdf(path_parts[2])
                 return
             if parsed_url.path.startswith("/assets/"):
-                filename = PurePosixPath(parsed_url.path).name
-                content_type = _content_type_for(filename)
-                self._send_static_file(filename, content_type)
+                asset_path = parsed_url.path.removeprefix("/assets/")
+                asset_parts = PurePosixPath(asset_path).parts
+                if not asset_parts or any(part in {"", ".", ".."} for part in asset_parts):
+                    self.send_error(HTTPStatus.NOT_FOUND)
+                    return
+                relative_path = "/".join(asset_parts)
+                content_type = _content_type_for(relative_path)
+                self._send_static_file(relative_path, content_type)
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 

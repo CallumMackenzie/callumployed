@@ -141,16 +141,28 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         url = f"http://127.0.0.1:{port}/"
 
         with urlopen(url, timeout=5) as response:
-            markup = response.read().decode()
-        with urlopen(f"http://127.0.0.1:{port}/assets/app.js", timeout=5) as response:
-            app_javascript = response.read().decode()
+            index_markup = response.read().decode()
+        with urlopen(
+            f"http://127.0.0.1:{port}/assets/build/app.js", timeout=5
+        ) as response:
+            assert response.status == 200
+            assert response.headers["Content-Type"] == "text/javascript; charset=utf-8"
+
+        static_directory = Path(web_server.__file__).with_name("static")
+        markup = (static_directory / "shell.html").read_text()
+        repository_root = Path(web_server.__file__).parents[3]
+        app_javascript = (repository_root / "frontend" / "src" / "legacy.ts").read_text()
 
         assert 'id="toggle-all"' in markup
         assert (
             '<link rel="icon" href="/assets/camackenzie-logo.svg" type="image/svg+xml" />'
-            in markup
+            in index_markup
         )
-        assert '<link rel="apple-touch-icon" href="/assets/camackenzie-logo.svg" />' in markup
+        assert (
+            '<link rel="apple-touch-icon" href="/assets/camackenzie-logo.svg" />'
+            in index_markup
+        )
+        assert '<div id="root"></div>' in index_markup
         assert "expand all" in markup
         assert 'id="expand-all"' not in markup
         assert 'id="collapse-all"' not in markup
@@ -214,8 +226,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=20260813-13" in markup
-        assert "/assets/app.js?v=20260827-15" in markup
+        assert "/assets/app.css?v=react-ts" in index_markup
+        assert "/assets/build/app.js?v=react-ts" in index_markup
         assert 'fetch("/api/central/resolve-companies", { method: "POST" })' in app_javascript
         assert "await syncCompaniesOnPageLoad().catch(() => {});" in app_javascript
         assert "loadInitialTrackerData();" in app_javascript
