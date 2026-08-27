@@ -119,6 +119,14 @@ LOGGER = logging.getLogger(__name__)
 SCAN_ALL_COMPANY_TIMEOUT_SECONDS = 5 * 60
 APPLICANT_FIRST_NAME_CONFIG_KEY = "applicant_first_name"
 APPLICANT_LAST_NAME_CONFIG_KEY = "applicant_last_name"
+APPLICANT_EMAIL_CONFIG_KEY = "applicant_email"
+APPLICANT_INSTITUTION_CONFIG_KEY = "applicant_institution"
+APPLICANT_DEGREE_CONFIG_KEY = "applicant_degree"
+APPLICANT_PROFILE_TEXT_CONFIG_KEYS = {
+    APPLICANT_EMAIL_CONFIG_KEY,
+    APPLICANT_INSTITUTION_CONFIG_KEY,
+    APPLICANT_DEGREE_CONFIG_KEY,
+}
 STATUS_LABELS: dict[str, str] = {
     RoleStatus.DISCOVERED.value: "discovered",
     RoleStatus.INTERESTED.value: "interested",
@@ -1578,6 +1586,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             allowed_keys = {
                 APPLICANT_FIRST_NAME_CONFIG_KEY,
                 APPLICANT_LAST_NAME_CONFIG_KEY,
+                *APPLICANT_PROFILE_TEXT_CONFIG_KEYS,
                 "central_api_url",
                 "central_passkey",
                 "include_graduate_degree_roles",
@@ -1653,6 +1662,13 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                                 payload[APPLICANT_LAST_NAME_CONFIG_KEY]
                             ),
                         )
+                    for key in APPLICANT_PROFILE_TEXT_CONFIG_KEYS:
+                        if key in payload:
+                            set_config_value(
+                                connection,
+                                key,
+                                _clean_applicant_profile_text(key, payload[key]),
+                            )
                     if "central_api_url" in payload:
                         set_central_api_url(connection, payload["central_api_url"])
                     central_passkey = _optional_text(payload.get("central_passkey"))
@@ -1833,6 +1849,11 @@ def build_config_payload() -> dict[str, Any]:
             connection,
             APPLICANT_LAST_NAME_CONFIG_KEY,
         ) or ""
+        applicant_email = get_config_value(connection, APPLICANT_EMAIL_CONFIG_KEY) or ""
+        applicant_institution = (
+            get_config_value(connection, APPLICANT_INSTITUTION_CONFIG_KEY) or ""
+        )
+        applicant_degree = get_config_value(connection, APPLICANT_DEGREE_CONFIG_KEY) or ""
         recommendation_history_count = count_resume_feedback_history(connection)
         central_api_url = get_central_api_url(connection)
         companies = list_companies(connection, include_inactive=True)
@@ -1858,7 +1879,7 @@ def build_config_payload() -> dict[str, Any]:
             {
                 "key": APPLICANT_FIRST_NAME_CONFIG_KEY,
                 "label": "first name",
-                "description": "used for saved resume and cover letter PDF filenames",
+                "description": "used in generated documents and saved PDF filenames",
                 "control": "text",
                 "value": applicant_first_name,
                 "default": "",
@@ -1867,9 +1888,40 @@ def build_config_payload() -> dict[str, Any]:
             {
                 "key": APPLICANT_LAST_NAME_CONFIG_KEY,
                 "label": "last name",
-                "description": "used for saved resume and cover letter PDF filenames",
+                "description": "used in generated documents and saved PDF filenames",
                 "control": "text",
                 "value": applicant_last_name,
+                "default": "",
+                "editable": True,
+            },
+            {
+                "key": APPLICANT_EMAIL_CONFIG_KEY,
+                "label": "email",
+                "description": "used in the cover letter sender block",
+                "control": "text",
+                "input_type": "email",
+                "autocomplete": "email",
+                "value": applicant_email,
+                "default": "",
+                "editable": True,
+            },
+            {
+                "key": APPLICANT_INSTITUTION_CONFIG_KEY,
+                "label": "institution",
+                "description": "school or university used in cover letters",
+                "control": "text",
+                "autocomplete": "organization",
+                "value": applicant_institution,
+                "default": "",
+                "editable": True,
+            },
+            {
+                "key": APPLICANT_DEGREE_CONFIG_KEY,
+                "label": "degree / program",
+                "description": "education description used in cover letters",
+                "control": "text",
+                "autocomplete": "off",
+                "value": applicant_degree,
                 "default": "",
                 "editable": True,
             },
@@ -3085,6 +3137,19 @@ def _clean_applicant_name_part(value: object) -> str:
     cleaned = re.sub(r"[^A-Za-z]", "", value)
     if len(cleaned) > 80:
         raise ValueError("Applicant name values are too long")
+    return cleaned
+
+
+def _clean_applicant_profile_text(key: str, value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Applicant profile values must be text")
+    cleaned = " ".join(value.split())
+    if len(cleaned) > 300:
+        raise ValueError("Applicant profile values are too long")
+    if key == APPLICANT_EMAIL_CONFIG_KEY and cleaned:
+        local_part, separator, domain = cleaned.partition("@")
+        if not separator or not local_part or "." not in domain:
+            raise ValueError("Applicant email must be a valid email address")
     return cleaned
 
 

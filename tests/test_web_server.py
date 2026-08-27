@@ -1757,7 +1757,7 @@ def test_config_payload_returns_current_settings(
         {
             "key": "applicant_first_name",
             "label": "first name",
-            "description": "used for saved resume and cover letter PDF filenames",
+            "description": "used in generated documents and saved PDF filenames",
             "control": "text",
             "value": "",
             "default": "",
@@ -1766,8 +1766,39 @@ def test_config_payload_returns_current_settings(
         {
             "key": "applicant_last_name",
             "label": "last name",
-            "description": "used for saved resume and cover letter PDF filenames",
+            "description": "used in generated documents and saved PDF filenames",
             "control": "text",
+            "value": "",
+            "default": "",
+            "editable": True,
+        },
+        {
+            "key": "applicant_email",
+            "label": "email",
+            "description": "used in the cover letter sender block",
+            "control": "text",
+            "input_type": "email",
+            "autocomplete": "email",
+            "value": "",
+            "default": "",
+            "editable": True,
+        },
+        {
+            "key": "applicant_institution",
+            "label": "institution",
+            "description": "school or university used in cover letters",
+            "control": "text",
+            "autocomplete": "organization",
+            "value": "",
+            "default": "",
+            "editable": True,
+        },
+        {
+            "key": "applicant_degree",
+            "label": "degree / program",
+            "description": "education description used in cover letters",
+            "control": "text",
+            "autocomplete": "off",
             "value": "",
             "default": "",
             "editable": True,
@@ -1854,6 +1885,9 @@ def test_config_endpoint_updates_settings(
                     "include_graduate_degree_roles": True,
                     "applicant_first_name": "Callum",
                     "applicant_last_name": "Mackenzie",
+                    "applicant_email": "callum@example.com",
+                    "applicant_institution": "University of Victoria",
+                    "applicant_degree": "Bachelor of Engineering in Software Engineering",
                     "require_software_keywords": False,
                     "internship_mode": False,
                     "location_filter": "north_america",
@@ -1869,7 +1903,10 @@ def test_config_endpoint_updates_settings(
         default_values = {setting["key"]: setting["value"] for setting in defaults["settings"]}
         assert default_values["include_graduate_degree_roles"] is False
         assert updated["values"] == {
+            "applicant_degree": "Bachelor of Engineering in Software Engineering",
+            "applicant_email": "callum@example.com",
             "applicant_first_name": "Callum",
+            "applicant_institution": "University of Victoria",
             "applicant_last_name": "Mackenzie",
             "include_graduate_degree_roles": "true",
             "internship_mode": "false",
@@ -1878,7 +1915,10 @@ def test_config_endpoint_updates_settings(
         }
         setting_values = {setting["key"]: setting["value"] for setting in updated["settings"]}
         assert setting_values == {
+            "applicant_degree": "Bachelor of Engineering in Software Engineering",
+            "applicant_email": "callum@example.com",
             "applicant_first_name": "Callum",
+            "applicant_institution": "University of Victoria",
             "applicant_last_name": "Mackenzie",
             "include_graduate_degree_roles": True,
             "include_hardware_roles": False,
