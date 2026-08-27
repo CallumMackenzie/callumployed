@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import gzip
 import json
 import os
 from io import BytesIO
@@ -249,11 +250,52 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
         assert "/assets/app.css?v=20260813-13" in markup
-        assert "/assets/app.js?v=20260827-15" in markup
+        assert "/assets/app.js?v=20260827-16" in markup
         assert 'fetch("/api/central/resolve-companies", { method: "POST" })' in app_javascript
-        assert "await syncCompaniesOnPageLoad().catch(() => {});" in app_javascript
+        assert "const companySync = syncCompaniesOnPageLoad().catch(() => {});" in app_javascript
+        assert "await companySync;" in app_javascript
+        assert app_javascript.index("const companySync = syncCompaniesOnPageLoad()") < (
+            app_javascript.index("await Promise.all([")
+        )
+        assert app_javascript.index("await Promise.all([") < app_javascript.index(
+            "await companySync;"
+        )
         assert "loadInitialTrackerData();" in app_javascript
         assert 'aria-label="disinterested role actions"' in app_javascript
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_tracker_json_uses_gzip_when_client_accepts_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "CALLUMPLOYED_DATABASE_PATH",
+        str(tmp_path / "tracker-gzip.sqlite3"),
+    )
+    db.ensure_initialized()
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        request = Request(
+            f"http://127.0.0.1:{port}/api/tracker",
+            headers={"Accept-Encoding": "gzip"},
+        )
+        with urlopen(request, timeout=5) as response:
+            compressed = response.read()
+            assert response.status == 200
+            assert response.headers["Content-Encoding"] == "gzip"
+            assert response.headers["Vary"] == "Accept-Encoding"
+            assert int(response.headers["Content-Length"]) == len(compressed)
+
+        payload = json.loads(gzip.decompress(compressed))
+        assert "stats" in payload
+        assert "statuses" in payload
     finally:
         server.shutdown()
         thread.join(timeout=5)

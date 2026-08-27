@@ -1396,7 +1396,7 @@ async function syncCompaniesOnPageLoad() {
 }
 
 async function loadInitialTrackerData() {
-  await syncCompaniesOnPageLoad().catch(() => {});
+  const companySync = syncCompaniesOnPageLoad().catch(() => {});
   await Promise.all([
     loadTracker().catch(() => {
       statusListEl.innerHTML = '<p class="empty-copy">could not load jobs.</p>';
@@ -1405,6 +1405,7 @@ async function loadInitialTrackerData() {
       roleAddStatus.textContent = "could not load companies.";
     }),
   ]);
+  await companySync;
 }
 
 async function updateApp() {
