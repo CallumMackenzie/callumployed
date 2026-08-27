@@ -1677,6 +1677,28 @@ def list_scan_runs(
     return [ScanRunListItem.model_validate(dict(row)) for row in rows]
 
 
+def get_company_scan_discovery_counts(
+    connection: turso.Connection,
+) -> dict[int, tuple[int, int]]:
+    rows = connection.execute(
+        """
+        SELECT
+            scan_runs.company_id,
+            COUNT(DISTINCT scan_runs.id) AS scan_count,
+            COUNT(DISTINCT CASE WHEN scan_candidates.selected = 1 THEN scan_candidates.id END)
+                AS discovered_role_count
+        FROM scan_runs
+        LEFT JOIN scan_pages ON scan_pages.scan_run_id = scan_runs.id
+        LEFT JOIN scan_candidates ON scan_candidates.scan_page_id = scan_pages.id
+        GROUP BY scan_runs.company_id
+        """
+    ).fetchall()
+    return {
+        int(row["company_id"]): (int(row["scan_count"]), int(row["discovered_role_count"]))
+        for row in rows
+    }
+
+
 def add_scan_page(
     connection: turso.Connection,
     scan_run_id: int,

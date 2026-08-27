@@ -38,6 +38,7 @@ from callumployed.data.repositories import (
 from callumployed.web.server import (
     LocalThreadingHTTPServer,
     ScanCoordinator,
+    build_companies_payload,
     build_config_payload,
     build_metrics_payload,
     build_role_sankey_payload,
@@ -47,6 +48,26 @@ from callumployed.web.server import (
 )
 
 runner = CliRunner()
+
+
+def test_companies_payload_reports_zero_discovered_roles_after_scan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "company-scan-counts.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Acme"))
+        assert company.id is not None
+        scan = create_scan_run(connection, company.id)
+        assert scan.id is not None
+        finish_scan_run(connection, scan.id, ScanStatus.SUCCEEDED)
+
+    [company_payload] = build_companies_payload()["companies"]
+    assert company_payload["scan_count"] == 1
+    assert company_payload["discovered_role_count"] == 0
 
 
 def _add_scan_candidate(connection: Any, scan_run_id: int, url: str) -> int:

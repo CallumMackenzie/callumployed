@@ -1417,6 +1417,11 @@ function renderCompanyAccordion(company) {
   const careerPages = Array.isArray(company.career_pages) ? company.career_pages : [];
   const updated = formatCompactDate(company.updated_at);
   const tierClass = renderCompanyTierClass(company.prestige_tier);
+  const scanCount = Number(company.scan_count ?? 0);
+  const discoveredRoleCount = Number(company.discovered_role_count ?? 0);
+  const discoveryStatus = scanCount > 0 && discoveredRoleCount === 0
+    ? '<span class="company-discovery-status">Discovered 0 potential roles</span>'
+    : "";
   return `
     <details class="company-panel ${tierClass}" data-company-id="${company.id}">
       <summary class="company-summary">
@@ -1424,6 +1429,7 @@ function renderCompanyAccordion(company) {
         <span class="company-summary-main">
           <span class="company-name">${escapeUiText(company.name)}</span>
           <span class="company-summary-meta">${careerPages.length} ${careerPages.length === 1 ? "link" : "links"}${updated ? ` | updated ${escapeUiText(updated)}` : ""}</span>
+          ${discoveryStatus}
         </span>
       </summary>
       <div class="company-body">

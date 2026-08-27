@@ -37,6 +37,11 @@ from callumployed.data.repositories import (
     set_require_software_keywords,
 )
 from callumployed.services import scan_workflow
+from callumployed.services.company_scanners import (
+    AshbyJobBoardScanner,
+    KulaJobBoardScanner,
+    ScannerOptions,
+)
 from callumployed.webscraping.errors import ClassificationError, NavigationError
 from callumployed.webscraping.models import (
     CareersPageScanResult,
@@ -67,6 +72,75 @@ def _page(url: str) -> RenderedPageState:
         <a href="/about">About</a>
         """,
     )
+
+
+def _scanner_options() -> ScannerOptions:
+    return ScannerOptions(
+        scan_run_id=None,
+        include_graduate_degree_roles=True,
+        include_hardware_roles=True,
+        require_software_keywords=False,
+        internship_mode=False,
+        location_filter="all",
+        existing_posting_urls=set(),
+    )
+
+
+def test_kula_scanner_reads_jobs_from_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        KulaJobBoardScanner,
+        "_fetch_jobs",
+        lambda _self, account_name: {
+            "data": [
+                {
+                    "id": 33153,
+                    "title": "Senior Mechanical Engineer",
+                    "listed": True,
+                    "ats_job": {
+                        "job_description": "Build humanoid robots.",
+                        "offices": [{"location": "Vancouver, British Columbia, Canada"}],
+                    },
+                }
+            ]
+        },
+    )
+    company = Company(name="Sanctuary AI")
+    career_page = CompanyCareerPage(
+        company_id=1,
+        url="https://careers.kula.ai/sanctuary-ai",
+    )
+
+    result = asyncio.run(KulaJobBoardScanner().scan(company, career_page, _scanner_options()))
+
+    assert result.candidates_scanned == 1
+    assert [link.url for link in result.links] == [
+        "https://careers.kula.ai/sanctuary-ai/33153"
+    ]
+
+
+def test_ashby_scanner_probes_company_slug_when_careers_page_is_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        AshbyJobBoardScanner,
+        "_fetch_html",
+        lambda _self, _url: (_ for _ in ()).throw(RuntimeError("cloudflare")),
+    )
+    monkeypatch.setattr(
+        AshbyJobBoardScanner,
+        "_fetch_graphql_postings",
+        lambda _self, board_url: [{"id": "role-1"}]
+        if board_url == "https://jobs.ashbyhq.com/perplexity"
+        else [],
+    )
+
+    scanner = AshbyJobBoardScanner.from_career_page(
+        Company(name="Perplexity", canonical_domain="perplexity.ai"),
+        CompanyCareerPage(company_id=1, url="https://www.perplexity.ai/hub/careers#roles"),
+    )
+
+    assert scanner is not None
+    assert scanner.board_url == "https://jobs.ashbyhq.com/perplexity"
 
 
 class EmptyStructuredModel:

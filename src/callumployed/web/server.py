@@ -70,6 +70,7 @@ from callumployed.data.repositories import (
     delete_company_career_page,
     finish_scan_run,
     get_company,
+    get_company_scan_discovery_counts,
     get_config_value,
     get_location_filter,
     get_master_resume,
@@ -403,6 +404,7 @@ def build_tracker_payload(query: str | None = None) -> dict[str, Any]:
 def build_companies_payload() -> dict[str, Any]:
     with db.connect() as connection:
         companies = list_companies(connection)
+        scan_discovery_counts = get_company_scan_discovery_counts(connection)
         career_pages_by_company_id = {
             company.id: list_company_career_pages(connection, company.id)
             for company in companies
@@ -413,6 +415,7 @@ def build_companies_payload() -> dict[str, Any]:
             _company_payload(
                 company,
                 career_pages_by_company_id.get(company.id, []) if company.id is not None else [],
+                scan_discovery_counts.get(company.id, (0, 0)) if company.id is not None else (0, 0),
             )
             for company in companies
         ]
@@ -3498,7 +3501,9 @@ def _experience_note_context(note: ExperienceNote) -> dict[str, Any]:
 def _company_payload(
     company: Company,
     career_pages: list[CompanyCareerPage],
+    scan_discovery_counts: tuple[int, int],
 ) -> dict[str, Any]:
+    scan_count, discovered_role_count = scan_discovery_counts
     return {
         "id": company.id,
         "name": company.name,
@@ -3514,6 +3519,8 @@ def _company_payload(
         else None,
         "created_at": company.created_at.isoformat() if company.created_at else None,
         "updated_at": company.updated_at.isoformat() if company.updated_at else None,
+        "scan_count": scan_count,
+        "discovered_role_count": discovered_role_count,
         "career_pages": [_company_career_page_payload(page) for page in career_pages],
     }
 

@@ -3030,6 +3030,12 @@ a:hover .role-link-icon {
   white-space: nowrap;
 }
 
+.company-discovery-status {
+  color: #b45309;
+  font-size: 0.76rem;
+  font-weight: 900;
+}
+
 .company-body {
   display: grid;
   gap: 12px;

@@ -60,6 +60,7 @@ GREENHOUSE_JOB_BOARD_PATTERN = re.compile(
 GREENHOUSE_API_PATTERN = re.compile(
     r"https://(?:boards-api|api)\.greenhouse\.io/v1/boards/([a-zA-Z0-9_-]+)/jobs"
 )
+KULA_CAREERS_HOST = "careers.kula.ai"
 
 
 @dataclass(frozen=True)
@@ -202,6 +203,102 @@ class ByteDanceApiScanner:
             return json.loads(response.read().decode())
 
 
+class KulaJobBoardScanner:
+    def supports(self, company: Company, career_page: CompanyCareerPage) -> bool:
+        _ = company
+        return _kula_account_name(career_page.url) is not None
+
+    async def scan(
+        self,
+        company: Company,
+        career_page: CompanyCareerPage,
+        options: ScannerOptions,
+    ) -> CareersPageScanResult:
+        account_name = _kula_account_name(career_page.url)
+        if account_name is None:
+            raise RuntimeError(f"No Kula account detected for {career_page.url}")
+        data = self._fetch_jobs(account_name)
+        posts = data.get("data")
+        posts = posts if isinstance(posts, list) else []
+        candidates: list[ScoredLinkCandidate] = []
+        links: list[DiscoveredJobLink] = []
+        assessments: dict[str, dict[str, object]] = {}
+
+        for post in posts:
+            if not isinstance(post, dict) or not post.get("listed", True):
+                continue
+            posting_id = str(post.get("id") or "")
+            title = _optional_string(post.get("title")) or ""
+            if not posting_id or not title:
+                continue
+            ats_job = post.get("ats_job")
+            ats_job = ats_job if isinstance(ats_job, dict) else {}
+            description = _optional_string(ats_job.get("job_description"))
+            location = _kula_location(ats_job)
+            url = f"https://{KULA_CAREERS_HOST}/{account_name}/{posting_id}"
+            reasons = ["kula job board API", f"job id: {posting_id}"]
+            rejection_reason = _rejection_reason(
+                title=title,
+                description=description,
+                location=location,
+                url=url,
+                options=options,
+            )
+            confidence = 0.0 if rejection_reason else 1.0
+            candidates.append(
+                _candidate(
+                    url=url,
+                    source_url=career_page.url,
+                    title=title,
+                    confidence=confidence,
+                    reasons=[*reasons, *([rejection_reason] if rejection_reason else [])],
+                )
+            )
+            if rejection_reason:
+                continue
+            links.append(
+                DiscoveredJobLink(
+                    url=url,
+                    source_url=career_page.url,
+                    text=title,
+                    confidence=1.0,
+                    discovery_method="heuristic",
+                    reasons=reasons,
+                )
+            )
+            assessments[url] = {
+                "title": title,
+                "location": location,
+                "description": description,
+                "posting_id": posting_id,
+                "confidence": 1.0,
+                "extraction_method": "ats_heuristic",
+                "reasons": reasons,
+            }
+
+        result = CareersPageScanResult(
+            source_url=career_page.url,
+            final_url=career_page.url,
+            title=f"Kula: {account_name}",
+            candidates=candidates,
+            links=links,
+            candidates_scanned=len(candidates),
+            confidence=ExtractionConfidence.HIGH if links else ExtractionConfidence.LOW,
+        )
+        if options.scan_run_id is not None and company.id is not None:
+            _persist_scan_result(company, career_page, options.scan_run_id, result, assessments)
+        return result
+
+    def _fetch_jobs(self, account_name: str) -> dict[str, object]:
+        url = (
+            f"https://{KULA_CAREERS_HOST}/api/internal/ats_job_posts"
+            f"?accountName={account_name}&type=ats_job_post.index&items=99&page=1"
+        )
+        request = urllib.request.Request(url, headers={"user-agent": "callumployed"})
+        with urllib.request.urlopen(request, timeout=30) as response:
+            data = json.loads(response.read().decode())
+        return data if isinstance(data, dict) else {}
+
 @dataclass(frozen=True)
 class AshbyJobBoardScanner:
     board_url: str | None = None
@@ -219,6 +316,9 @@ class AshbyJobBoardScanner:
         detected_board_url = cls()._detect_board_url(career_page.url)
         if detected_board_url is not None:
             return cls(board_url=detected_board_url)
+        candidate_board_url = cls()._detect_candidate_board_url(company, career_page.url)
+        if candidate_board_url is not None:
+            return cls(board_url=candidate_board_url)
         return None
 
     def supports(self, company: Company, career_page: CompanyCareerPage) -> bool:
@@ -368,6 +468,16 @@ class AshbyJobBoardScanner:
         if match is None:
             return None
         return f"https://jobs.ashbyhq.com/{match.group(1)}"
+
+    def _detect_candidate_board_url(self, company: Company, url: str) -> str | None:
+        for slug in _ashby_slug_candidates(company, url):
+            board_url = f"https://jobs.ashbyhq.com/{slug}"
+            try:
+                if self._fetch_graphql_postings(board_url):
+                    return board_url
+            except Exception:
+                continue
+        return None
 
     def _assess_posting(self, url: str, title: str) -> RolePageAssessment:
         html = self._fetch_html(url)
@@ -543,6 +653,9 @@ def scanner_for(company: Company, career_page: CompanyCareerPage) -> CompanyScan
     bytedance_scanner = ByteDanceApiScanner()
     if bytedance_scanner.supports(company, career_page):
         return bytedance_scanner
+    kula_scanner = KulaJobBoardScanner()
+    if kula_scanner.supports(company, career_page):
+        return kula_scanner
     ashby_scanner = AshbyJobBoardScanner.from_career_page(company, career_page)
     if ashby_scanner is not None:
         return ashby_scanner
@@ -749,6 +862,35 @@ def _direct_ashby_board_url(url: str) -> str | None:
 def _ashby_slug(path: str) -> str | None:
     slug = path.strip("/").split("/", 1)[0]
     return slug or None
+
+
+def _ashby_slug_candidates(company: Company, url: str) -> list[str]:
+    hostname = urlparse(url).netloc.lower().removeprefix("www.")
+    values = [company.name, company.canonical_domain or "", hostname.split(".", 1)[0]]
+    candidates = ["".join(re.split(r"[^a-z0-9]+", value.lower())) for value in values]
+    return _dedupe_strings(
+        [candidate for candidate in candidates if candidate not in {"", "careers", "jobs"}]
+    )
+
+
+def _kula_account_name(url: str) -> str | None:
+    parsed = urlparse(url)
+    if parsed.netloc.lower() != KULA_CAREERS_HOST:
+        return None
+    return parsed.path.strip("/").split("/", 1)[0] or None
+
+
+def _kula_location(ats_job: dict[str, object]) -> str | None:
+    offices = ats_job.get("offices")
+    if not isinstance(offices, list):
+        return None
+    locations = [
+        location
+        for office in offices
+        if isinstance(office, dict)
+        if isinstance(location := office.get("location") or office.get("name"), str)
+    ]
+    return "; ".join(locations) or None
 
 
 def _direct_greenhouse_board(url: str) -> dict[str, str] | None:
