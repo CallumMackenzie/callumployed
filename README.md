@@ -4,9 +4,10 @@ Most impactful features:
 
 - Track companies, career pages, roles, statuses, notes, and application lifecycle counts from one local database.
 - Scan company career pages and individual role links with Playwright-backed extraction, job-posting assessment, and configurable filters.
-- Manage active/deactivated companies, company tiers, career links, and explicit role additions from the web UI.
+- Manage active/deactivated companies, company tiers, career links, explicit role additions, and lifecycle transitions from the web UI.
 - Store a master resume, cover letter examples, render resources, and experience notes for role-specific prep.
 - Generate resume feedback, tailored resumes, cover letters, and PDFs from saved materials and job postings.
+- Sync shared company metadata on page load and publish privacy-safe scan metrics to the Firebase-backed Central store.
 - Expose the same data and workflows through a Typer CLI and FastMCP tools for agent access.
 
 Install: `curl -fsSL https://raw.githubusercontent.com/CallumMackenzie/callumployed/master/scripts/install.sh | bash`
@@ -158,9 +159,9 @@ Available MCP tools cover:
 - config: show and update scan filters
 - scans: scan a URL, scan a company, list scan runs, show a scan run
 
-## Central Role Store
+## Central Store
 
-Callumployed can optionally sync with a central Firebase-backed role store. Local
+Callumployed can optionally sync with a central Firebase-backed company and role store. Local
 company and role IDs remain authoritative for each instance; central IDs are stored as
 linking metadata so imported roles do not overwrite local status, notes, or application
 history.
@@ -174,6 +175,10 @@ company ID:
 ```bash
 callumployed central resolve-companies
 ```
+
+The web tracker runs company reconciliation and pulling during initial page load. If
+Central is unavailable, startup continues with local company data. The manual company
+sync control in settings can be used to retry and inspect the result.
 
 Configure a passkey when you want to pull the private central role feed:
 
@@ -189,6 +194,17 @@ The TypeScript Firebase Functions app lives in `firebase/`. It owns Firestore ac
 passkey auth, company matching, and the shared role feed. Python talks to it only over
 the HTTP API. Set `CALLUMPLOYED_CENTRAL_API_URL` or run
 `callumployed central configure --api-url ...` only when overriding the default store.
+
+Every completed company scan also submits an idempotent aggregate to the public
+`POST /v1/scan-metrics` endpoint. These records are stored in Firestore's
+`scan_metrics` collection and do not require the Central passkey. Metrics include a
+pseudonymous client ID, company identity, scan timing/status, page and candidate
+counts, role-verification counts, failed visits, and app version. They do not include
+role URLs, raw errors, filters, notes, application state, or application materials.
+Central submission failures are logged but never fail the local scan.
+
+The Central role models and pull/bulk-upsert endpoints are present, but automatic role
+sharing after scans is not enabled yet.
 
 ### Optional LLM classifier
 
@@ -221,12 +237,28 @@ callumployed roles rescan 49
 with overall stats, status panes, search, compact application-material controls,
 and collapsible job lists.
 
+### Web tracker
+
+The tracker groups roles by lifecycle status and exposes valid next actions on each
+role card. Discovered roles can be marked interested, disinterested, or closed;
+interested roles can move into application prep and applied states; and disinterested
+roles can be restored to interested. Local status, notes, and application history are
+never replaced by Central data.
+
+The manage-companies view supports company creation/deactivation, tier and note
+autosaving, and career-link management. A scanned company that has never yielded a
+selected potential-role link displays `Discovered 0 potential roles`; never-scanned
+companies are not given that label.
+
 ### Application materials
 
 Application materials are stored in the local database alongside the tracker data.
 The master resume is a single replaceable `.tex` document. Cover letter examples are
 an append-only collection, so users can upload as many prior examples as they want for
 future tailoring.
+Uploading a replacement master resume through the web tracker also replaces the saved
+`resume.tex` for every role currently in `interested`. Tailored resumes belonging to
+roles in applied or later states are preserved.
 Resume render resources such as images, class files, and bibliography files are stored
 locally next to the app data and copied into each per-role resume folder before PDF
 generation.
@@ -298,6 +330,11 @@ LangGraph checkpointing yet. Link discovery is layered:
 3. Selected links are rendered and assessed as role pages.
 4. Role-page assessment prefers structured `schema.org/JobPosting` data, then ATS
    and HTML/text heuristics.
+
+Dedicated scanners bypass fragile rendered-page extraction where a supported job board
+provides better structured data. Current adapters include ByteDance, Greenhouse, Ashby,
+and Kula. Ashby detection can probe a company-derived public board slug when the source
+careers page is blocked by Cloudflare or another anti-bot page.
 
 ### Role-page assessment
 
@@ -472,4 +509,6 @@ and a title is available.
 
 `scan_company()` scans each saved career page for the company. After all pages finish,
 it marks the `scan_runs` row as succeeded and returns the scan run, career pages,
-page results, role-discovery attempts, and browser-port context.
+page results, role-discovery attempts, and active scan-filter context. Successful and
+failed scans then submit their aggregate metrics to Central through a failure-isolated
+three-second client timeout.
