@@ -247,11 +247,15 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="materials-required-warning"' in markup
         assert 'aria-label="missing required application materials"' in markup
         assert 'id="toolbar-summary"' in markup
-        assert 'id="scan-errors"' in markup
+        assert 'id="scan-failures-open" hidden>view scan failures</button>' in markup
+        assert 'id="scan-failures-dialog"' in markup
+        assert 'id="scan-failures-list"' in markup
+        assert 'id="scan-failures-close"' in markup
+        assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
         assert "/assets/app.css?v=20260813-13" in markup
-        assert "/assets/app.js?v=20260827-16" in markup
+        assert "/assets/app.js?v=20260827-17" in markup
         assert 'fetch("/api/central/resolve-companies", { method: "POST" })' in app_javascript
         assert "const companySync = syncCompaniesOnPageLoad().catch(() => {});" in app_javascript
         assert "await companySync;" in app_javascript
@@ -263,6 +267,13 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         )
         assert "loadInitialTrackerData();" in app_javascript
         assert 'aria-label="disinterested role actions"' in app_javascript
+        assert "scanFailuresOpenButton.hidden = failures.length === 0;" in app_javascript
+        assert 'scanFailuresOpenButton.addEventListener("click", openScanFailuresDialog);' in (
+            app_javascript
+        )
+        assert 'scanFailuresCloseButton.addEventListener("click", closeScanFailuresDialog);' in (
+            app_javascript
+        )
     finally:
         server.shutdown()
         thread.join(timeout=5)
