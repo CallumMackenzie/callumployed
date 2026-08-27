@@ -575,6 +575,7 @@ function renderJob(job, statusKey) {
       <div class="job-detail">
         ${statusKey === "discovered" ? renderDiscoveredActions(job) : ""}
         ${statusKey === "interested" ? renderInterestedActions(job) : ""}
+        ${statusKey === "disinterested" ? renderDisinterestedActions(job) : ""}
         ${statusKey === "applied" ? renderAppliedActions(job) : ""}
         ${statusKey === "OA" ? renderOaActions(job) : ""}
         ${statusKey === "interview" ? renderInterviewActions(job) : ""}
@@ -628,6 +629,14 @@ function renderInterestedActions(job) {
       <button class="job-action" type="button" data-role-id="${job.id}" data-status="applied">applied</button>
       <button class="job-action" type="button" data-role-id="${job.id}" data-status="disinterested">disinterested</button>
       <button class="job-action danger" type="button" data-role-id="${job.id}" data-status="closed">closed</button>
+    </div>
+  `;
+}
+
+function renderDisinterestedActions(job) {
+  return `
+    <div class="job-actions" aria-label="disinterested role actions">
+      <button class="job-action success" type="button" data-role-id="${job.id}" data-status="interested">interested</button>
     </div>
   `;
 }

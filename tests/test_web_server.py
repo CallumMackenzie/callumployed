@@ -215,10 +215,11 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
         assert "/assets/app.css?v=20260813-13" in markup
-        assert "/assets/app.js?v=20260827-14" in markup
+        assert "/assets/app.js?v=20260827-15" in markup
         assert 'fetch("/api/central/resolve-companies", { method: "POST" })' in app_javascript
         assert "await syncCompaniesOnPageLoad().catch(() => {});" in app_javascript
         assert "loadInitialTrackerData();" in app_javascript
+        assert 'aria-label="disinterested role actions"' in app_javascript
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -3354,6 +3355,45 @@ def test_tracker_status_endpoint_moves_interested_role(
     target = next(item for item in payload["statuses"] if item["key"] == status)
     assert interested["count"] == 0
     assert target["count"] == 1
+
+
+def test_tracker_status_endpoint_moves_disinterested_role_to_interested(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-disinterested-interested.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Backend Engineer", "https://example.com/jobs/backend"],
+        env=env,
+    )
+    runner.invoke(app, ["roles", "set-status", "1", "disinterested"], env=env)
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/roles/1/status",
+            data=b'{"status":"interested"}',
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=5) as response:
+            assert response.status == 200
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+    payload = build_tracker_payload()
+    disinterested = next(item for item in payload["statuses"] if item["key"] == "disinterested")
+    interested = next(item for item in payload["statuses"] if item["key"] == "interested")
+    assert disinterested["count"] == 0
+    assert interested["count"] == 1
 
 
 @pytest.mark.parametrize("status", ["interview", "disinterested", "rejected"])
