@@ -2878,6 +2878,57 @@ def test_master_resume_endpoint_rejects_non_tex_resume(
         server.server_close()
 
 
+def test_master_resume_upload_replaces_resumes_for_interested_roles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-interested-resumes.sqlite3"
+    resume_root = tmp_path / "prepared-resumes"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Interested", "https://example.com/interested"],
+        env=env,
+    )
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Applied", "https://example.com/applied"],
+        env=env,
+    )
+    runner.invoke(app, ["roles", "set-status", "1", "interested"], env=env)
+    runner.invoke(app, ["roles", "set-status", "2", "applied"], env=env)
+    (resume_root / "role-1").mkdir(parents=True)
+    (resume_root / "role-2").mkdir(parents=True)
+    (resume_root / "role-1" / "resume.tex").write_text("old interested resume")
+    (resume_root / "role-2" / "resume.tex").write_text("old applied resume")
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/master-resume",
+            data=json.dumps(
+                {"filename": "new.tex", "content": "new master resume"}
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode())
+
+        assert payload["interested_resumes_updated"] == 1
+        assert (resume_root / "role-1" / "resume.tex").read_text() == "new master resume"
+        assert (resume_root / "role-2" / "resume.tex").read_text() == "old applied resume"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_cover_letter_examples_endpoint_uploads_multiple_examples(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

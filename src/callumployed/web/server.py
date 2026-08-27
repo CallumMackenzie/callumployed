@@ -85,6 +85,7 @@ from callumployed.data.repositories import (
     list_resume_feedback_knowledge,
     list_role_discovery_attempts,
     list_role_items,
+    list_roles,
     list_scan_candidates,
     list_scan_pages,
     list_scan_runs,
@@ -1466,11 +1467,21 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                         filename=filename,
                         content=content,
                     )
+                    interested_roles = list_roles(
+                        connection,
+                        role_status=RoleStatus.INTERESTED,
+                    )
             except ValueError as error:
                 self.send_error(HTTPStatus.BAD_REQUEST, str(error))
                 return
 
-            self._send_json({"master_resume": _master_resume_summary(resume)})
+            updated_count = _replace_role_resumes(interested_roles, resume)
+            self._send_json(
+                {
+                    "master_resume": _master_resume_summary(resume),
+                    "interested_resumes_updated": updated_count,
+                }
+            )
 
         def _add_cover_letter_example(self) -> None:
             payload = self._read_json_body()
@@ -3186,6 +3197,19 @@ def _ensure_role_resume_copy(role_id: int, resume: MasterResume) -> Path:
         resume_path.write_text(resume.content)
     _sync_resume_resources_to_role(role_id)
     return resume_path
+
+
+def _replace_role_resumes(roles: list[Role], resume: MasterResume) -> int:
+    updated_count = 0
+    for role in roles:
+        if role.id is None:
+            continue
+        resume_dir = _role_resume_dir(role.id)
+        resume_dir.mkdir(parents=True, exist_ok=True)
+        _role_resume_tex_path(role.id).write_text(resume.content)
+        _sync_resume_resources_to_role(role.id)
+        updated_count += 1
+    return updated_count
 
 
 def _sync_resume_resources_to_role(role_id: int) -> None:
