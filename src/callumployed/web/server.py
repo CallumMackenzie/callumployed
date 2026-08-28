@@ -2684,6 +2684,7 @@ def build_role_cover_letter(
         example_ids = draft.example_ids
         source = "ai_cover_letter"
     except Exception:  # noqa: BLE001 - prep should degrade when the LLM is unavailable.
+        LOGGER.exception("AI cover letter generation failed for role %s", role_id)
         latex = _normalize_cover_letter_latex(
             _fallback_cover_letter_latex(
                 role,

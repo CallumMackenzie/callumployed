@@ -367,6 +367,56 @@ def test_cover_letter_agent_queries_example_tool_and_passes_documents() -> None:
     assert "Previous draft body" in prompts[0]
 
 
+def test_cover_letter_agent_bounds_large_retrieved_context() -> None:
+    queries: list[str] = []
+    prompts: list[str] = []
+    huge_context = "START " + ("context " * 80000) + " END"
+
+    def search_tool(query: str, *, limit: int = 3) -> list[dict[str, object]]:
+        queries.append(query)
+        return [
+            {
+                "id": 7,
+                "filename": "large-example.tex",
+                "content": huge_context,
+                "knowledge_text": huge_context,
+                "similarity": 0.9,
+            }
+        ]
+
+    class FakeCoverLetterModel:
+        async def ainvoke(self, prompt: object) -> dict[str, object]:
+            assert isinstance(prompt, str)
+            prompts.append(prompt)
+            return {
+                "latex": "\\documentclass{letter}\\begin{document}Draft\\end{document}",
+                "summary": "drafted",
+                "example_ids": [7],
+            }
+
+    asyncio.run(
+        CoverLetterAgent(
+            search_tool=search_tool,
+            chat_model_factory=lambda _settings: FakeCoverLetterModel(),
+        ).generate(
+            role={
+                "id": 1,
+                "company_name": "Acme",
+                "title": "Backend Intern",
+                "description": huge_context,
+            },
+            resume_content=huge_context,
+            other_experience_context=[{"filename": "history.md", "content": huge_context}],
+        )
+    )
+
+    assert max(map(len, queries)) <= 24000
+    assert len(prompts[0]) <= 160000
+    assert '"knowledge_text"' not in prompts[0]
+    assert "START" in prompts[0]
+    assert "END" in prompts[0]
+
+
 def test_resume_feedback_prompt_includes_recommendation_history() -> None:
     prompt = build_resume_feedback_prompt(
         role={

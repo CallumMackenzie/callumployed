@@ -42,6 +42,51 @@ class CoverLetterSearchTool(Protocol):
     def __call__(self, query: str, *, limit: int = 3) -> list[dict[str, object]]: ...
 
 
+MAX_COVER_LETTER_SEARCH_QUERY_CHARS = 24000
+MAX_ROLE_DESCRIPTION_CHARS = 12000
+MAX_RESUME_CONTEXT_CHARS = 16000
+MAX_OTHER_EXPERIENCE_CONTEXT_CHARS = 16000
+MAX_COVER_LETTER_EXAMPLE_CONTEXT_CHARS = 12000
+MAX_REGENERATION_TWEAKS_CHARS = 3000
+MAX_PREVIOUS_COVER_LETTER_CHARS = 12000
+
+
+def _bounded_context_text(value: object, limit: int) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    marker = "\n...[context truncated]...\n"
+    if limit <= len(marker):
+        return text[:limit]
+    available = limit - len(marker)
+    head_length = available * 2 // 3
+    return f"{text[:head_length]}{marker}{text[-(available - head_length):]}"
+
+
+def _bounded_context_items(
+    items: list[dict[str, Any]],
+    total_content_limit: int,
+    *,
+    include_similarity: bool = False,
+) -> list[dict[str, object]]:
+    if not items:
+        return []
+    item_limit = max(1, total_content_limit // len(items))
+    bounded_items: list[dict[str, object]] = []
+    for item in items:
+        bounded_item: dict[str, object] = {
+            "id": item.get("id"),
+            "filename": item.get("filename"),
+            "content": _bounded_context_text(item.get("content"), item_limit),
+        }
+        if item.get("updated_at") is not None:
+            bounded_item["updated_at"] = item.get("updated_at")
+        if include_similarity and item.get("similarity") is not None:
+            bounded_item["similarity"] = item.get("similarity")
+        bounded_items.append(bounded_item)
+    return bounded_items
+
+
 SYSTEM_PROMPT = """
 You generate a role-specific LaTeX cover letter for a job application.
 
@@ -182,17 +227,24 @@ class CoverLetterAgent:
         tweaks: str | None = None,
         previous_cover_letter_latex: str | None = None,
     ) -> CoverLetterDraft:
+        bounded_experience_context = _bounded_context_items(
+            other_experience_context or [],
+            MAX_OTHER_EXPERIENCE_CONTEXT_CHARS,
+        )
         other_experience_text = " ".join(
-            str(item.get("content") or "") for item in other_experience_context or []
+            str(item.get("content") or "") for item in bounded_experience_context
         )
         queries = [
-            " ".join(
-                [
-                    str(role.get("title") or ""),
-                    str(role.get("description") or ""),
-                    resume_content,
-                    other_experience_text,
-                ]
+            _bounded_context_text(
+                " ".join(
+                    [
+                        str(role.get("title") or ""),
+                        str(role.get("description") or ""),
+                        resume_content,
+                        other_experience_text,
+                    ]
+                ),
+                MAX_COVER_LETTER_SEARCH_QUERY_CHARS,
             ),
             " ".join(
                 [
@@ -283,28 +335,34 @@ def build_cover_letter_prompt(
             "title": role.get("title"),
             "url": role.get("role_url"),
             "location": role.get("location"),
-            "description": role.get("description"),
+            "description": _bounded_context_text(
+                role.get("description"), MAX_ROLE_DESCRIPTION_CHARS
+            ),
         },
         "resume_context": {
             "format": "latex",
-            "content": resume_content,
+            "content": _bounded_context_text(resume_content, MAX_RESUME_CONTEXT_CHARS),
         },
-        "other_experience_context": [
-            {
-                "filename": item.get("filename"),
-                "content": item.get("content"),
-                "updated_at": item.get("updated_at"),
-            }
-            for item in other_experience_context or []
-        ],
-        "cover_letter_example_tool_results": cover_letter_examples,
+        "other_experience_context": _bounded_context_items(
+            other_experience_context or [],
+            MAX_OTHER_EXPERIENCE_CONTEXT_CHARS,
+        ),
+        "cover_letter_example_tool_results": _bounded_context_items(
+            cover_letter_examples,
+            MAX_COVER_LETTER_EXAMPLE_CONTEXT_CHARS,
+            include_similarity=True,
+        ),
     }
     if tweaks:
-        payload["regeneration_tweaks"] = tweaks
+        payload["regeneration_tweaks"] = _bounded_context_text(
+            tweaks, MAX_REGENERATION_TWEAKS_CHARS
+        )
     if tweaks and previous_cover_letter_latex:
         payload["previous_cover_letter_context"] = {
             "purpose": "revise this prior draft according to regeneration_tweaks",
-            "draft_latex": previous_cover_letter_latex,
+            "draft_latex": _bounded_context_text(
+                previous_cover_letter_latex, MAX_PREVIOUS_COVER_LETTER_CHARS
+            ),
         }
     return f"{SYSTEM_PROMPT}\n\nContext:\n{json.dumps(payload, indent=2, sort_keys=True)}"
 
