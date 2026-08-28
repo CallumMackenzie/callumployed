@@ -198,6 +198,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="settings-view"' in markup
         assert 'aria-label="applicant profile"' in markup
         assert 'id="settings-profile-options"' in markup
+        assert '<button type="submit">save settings</button>' in markup
         assert 'id="settings-options"' in markup
         assert 'aria-label="filters"' in markup
         assert 'aria-label="config"' in markup

@@ -234,6 +234,7 @@ Error generating stack: `+e.message+`
               <h3>filters</h3>
             </div>
             <div class="settings-options" id="settings-options"></div>
+            <button type="submit">save settings</button>
           </section>
           <section class="settings-group" aria-label="config">
             <div class="settings-group-heading">
