@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import suppress
@@ -12,6 +13,7 @@ import turso
 from callumployed.data import db
 
 DocumentKind = Literal["resume", "cover_letter"]
+LOGGER = logging.getLogger(__name__)
 
 _RESUME_STATUSES = {
     "queued",
@@ -97,9 +99,13 @@ class AutoprepCoordinator:
                 with self._claim_lock:
                     if self._stop.is_set():
                         break
-                    with db.connect() as connection:
-                        ensure_autoprep_schema(connection)
-                        job = claim_next_autoprep_job(connection)
+                    try:
+                        with db.connect() as connection:
+                            ensure_autoprep_schema(connection)
+                            job = claim_next_autoprep_job(connection)
+                    except Exception:  # noqa: BLE001 - keep the durable queue alive.
+                        LOGGER.exception("Autoprep coordinator could not claim queued work")
+                        break
                     if job is None:
                         break
                     if self._stop.is_set():

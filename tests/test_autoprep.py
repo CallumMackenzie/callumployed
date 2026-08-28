@@ -1,11 +1,14 @@
 import json
+import time
 from pathlib import Path
-from threading import Thread
+from threading import Event, Thread
 from urllib.request import Request, urlopen
 
 import pytest
 from pypdf import PdfWriter
 
+import callumployed.services.autoprep as autoprep_service
+import callumployed.services.hermes_generation as hermes_generation
 import callumployed.web.server as web_server
 from callumployed.data import db
 from callumployed.data.models import Company, Role, RoleStatus
@@ -18,6 +21,7 @@ from callumployed.data.repositories import (
 )
 from callumployed.services.autoprep import (
     AutoprepConflictError,
+    AutoprepCoordinator,
     claim_next_autoprep_job,
     enqueue_autoprep_jobs,
     ensure_autoprep_schema,
@@ -35,6 +39,7 @@ from callumployed.services.hermes_generation import (
     HermesSessionRunner,
     parse_hermes_generation_output,
     parse_json_response,
+    resolve_hermes_executable,
 )
 from callumployed.web.server import LocalThreadingHTTPServer, create_handler
 
@@ -234,6 +239,87 @@ def test_hermes_runner_combines_stderr_session_metadata_with_stdout_result(
     )
     assert result.session_id == "real-session"
     assert parse_json_response(result.content) == {"summary": "generated"}
+
+
+def test_hermes_executable_resolves_outside_gui_launcher_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hermes = tmp_path / "hermes-agent" / "venv" / "bin" / "hermes"
+    hermes.parent.mkdir(parents=True)
+    hermes.write_text("#!/bin/sh\n")
+    monkeypatch.delenv("CALLUMPLOYED_HERMES_EXECUTABLE", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(hermes_generation.shutil, "which", lambda _name: None)
+
+    assert resolve_hermes_executable() == str(hermes)
+
+
+def test_database_connections_wait_for_brief_concurrent_write_lock(tmp_path: Path) -> None:
+    database = tmp_path / "busy.sqlite3"
+    with db.connect(database) as connection:
+        connection.execute("CREATE TABLE writes (value INTEGER)")
+        connection.commit()
+    holder = db.connect(database)
+    holder.execute("BEGIN IMMEDIATE")
+    result: list[str] = []
+
+    def write_after_holder() -> None:
+        with db.connect(database) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("INSERT INTO writes VALUES (1)")
+            connection.commit()
+            result.append("written")
+
+    writer = Thread(target=write_after_holder)
+    writer.start()
+    time.sleep(0.1)
+    assert writer.is_alive()
+    holder.commit()
+    writer.join(timeout=3)
+    holder.close()
+
+    assert result == ["written"]
+
+
+def test_coordinator_survives_a_transient_claim_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "coordinator-retry.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    with db.connect() as connection:
+        ensure_autoprep_schema(connection)
+        role_id = _interested_role(connection)
+        [job] = enqueue_autoprep_jobs(connection, [role_id], idempotency_key="claim-retry")
+    original_claim = autoprep_service.claim_next_autoprep_job
+    attempts = 0
+    processed = Event()
+
+    def flaky_claim(connection):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("database is locked")
+        return original_claim(connection)
+
+    def process_claimed_job(job_id: int) -> None:
+        with db.connect() as connection:
+            finish_autoprep_worker(connection, job_id)
+        processed.set()
+
+    monkeypatch.setattr(autoprep_service, "claim_next_autoprep_job", flaky_claim)
+    coordinator = AutoprepCoordinator(process_claimed_job, max_workers=1)
+    coordinator.start()
+    coordinator.wake()
+    try:
+        assert processed.wait(timeout=3)
+    finally:
+        coordinator.stop()
+    assert attempts >= 2
+    with db.connect() as connection:
+        assert get_autoprep_job(connection, job["id"])["worker_state"] == "idle"
 
 
 def test_autoprep_api_lists_only_interested_and_returns_accepted_jobs_immediately(

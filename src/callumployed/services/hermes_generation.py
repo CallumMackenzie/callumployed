@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import subprocess
 import threading
 from dataclasses import dataclass
@@ -29,11 +31,11 @@ class HermesSessionRunner:
     def __init__(
         self,
         *,
-        executable: str = "hermes",
+        executable: str | None = None,
         cwd: Path | None = None,
         timeout_seconds: int = 600,
     ) -> None:
-        self.executable = executable
+        self.executable = executable or resolve_hermes_executable()
         self.cwd = cwd
         self.timeout_seconds = timeout_seconds
         self._lock = threading.Lock()
@@ -134,6 +136,26 @@ class HermesSessionRunner:
         # Hermes CLI writes session metadata to stderr while -Q writes the final
         # response to stdout. Preserve both so every artifact keeps its real session.
         return parse_hermes_generation_output(f"{stderr}\n{stdout}")
+
+
+def resolve_hermes_executable() -> str:
+    """Resolve Hermes even when a GUI launcher supplies a minimal PATH."""
+    configured = os.environ.get("CALLUMPLOYED_HERMES_EXECUTABLE")
+    if configured:
+        return str(Path(configured).expanduser())
+    discovered = shutil.which("hermes")
+    if discovered:
+        return discovered
+    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")).expanduser()
+    candidates = (
+        hermes_home / "hermes-agent" / "venv" / "bin" / "hermes",
+        Path.home() / ".hermes" / "hermes-agent" / "venv" / "bin" / "hermes",
+        Path.home() / ".local" / "bin" / "hermes",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return "hermes"
 
 
 def parse_hermes_generation_output(output: str) -> HermesGenerationResult:

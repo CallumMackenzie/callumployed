@@ -22,6 +22,11 @@ def connect(database: str | Path | None = None) -> turso.Connection:
     connection = turso.connect(str(database_path))
     connection.row_factory = turso.Row
     connection.execute("PRAGMA foreign_keys = ON")
+    # Autoprep runs bounded workers alongside HTTP request threads. Turso's
+    # default is to fail immediately when another connection briefly owns the
+    # write lock; waiting avoids turning normal concurrent state updates into
+    # document failures.
+    connection.execute("PRAGMA busy_timeout = 10000")
     return connection
 
 
