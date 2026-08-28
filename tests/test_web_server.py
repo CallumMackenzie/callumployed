@@ -746,6 +746,7 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         captured["previous_cover_letter_latex"] = kwargs.get("previous_cover_letter_latex")
         captured["other_experience_context"] = kwargs.get("other_experience_context")
         captured["applicant_profile"] = kwargs.get("applicant_profile")
+        captured["settings"] = kwargs.get("settings")
 
         class Draft:
             latex = "\\documentclass{letter}\\begin{document}Dear Acme\\end{document}"
@@ -789,6 +790,7 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         web_server.set_config_value(connection, "applicant_email", "jake@example.com")
         web_server.set_config_value(connection, "applicant_institution", "University of Victoria")
         web_server.set_config_value(connection, "applicant_degree", "Software Engineering")
+        web_server.set_config_value(connection, "cover_letter_model", "gpt-5.6-terra")
     db.ensure_initialized()
 
     server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
@@ -848,6 +850,9 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
             "institution": "University of Victoria",
             "degree": "Software Engineering",
         }
+        settings = captured["settings"]
+        assert isinstance(settings, web_server.LlmSettings)
+        assert settings.model == "gpt-5.6-terra"
         saved_latex = (resume_root / "role-1" / "cover-letter.tex").read_text()
         assert "Dear Acme" in saved_latex
         assert "\\setlength{\\parskip}{0.85em}" in saved_latex
@@ -1963,6 +1968,25 @@ def test_config_payload_returns_current_settings(
             "editable": True,
         },
         {
+            "key": "cover_letter_model",
+            "label": "cover letter model",
+            "description": "model identifier used only for cover letter generation",
+            "control": "text",
+            "autocomplete": "off",
+            "value": "gpt-4.1-mini",
+            "default": "gpt-4.1-mini",
+            "editable": True,
+        },
+        {
+            "key": "scan_headless",
+            "label": "headless job scanning",
+            "description": "run scan browsers without opening visible browser windows",
+            "control": "toggle",
+            "value": True,
+            "default": True,
+            "editable": True,
+        },
+        {
             "key": "include_graduate_degree_roles",
             "label": "graduate-degree roles",
             "description": "include roles that require or strongly prefer a graduate degree",
@@ -2047,6 +2071,8 @@ def test_config_endpoint_updates_settings(
                     "applicant_email": "callum@example.com",
                     "applicant_institution": "University of Victoria",
                     "applicant_degree": "Bachelor of Engineering in Software Engineering",
+                    "cover_letter_model": "gpt-5.6-terra",
+                    "scan_headless": False,
                     "require_software_keywords": False,
                     "internship_mode": False,
                     "location_filter": "north_america",
@@ -2067,10 +2093,12 @@ def test_config_endpoint_updates_settings(
             "applicant_first_name": "Callum",
             "applicant_institution": "University of Victoria",
             "applicant_last_name": "Mackenzie",
+            "cover_letter_model": "gpt-5.6-terra",
             "include_graduate_degree_roles": "true",
             "internship_mode": "false",
             "location_filter": "north_america",
             "require_software_keywords": "false",
+            "scan_headless": "false",
         }
         setting_values = {setting["key"]: setting["value"] for setting in updated["settings"]}
         assert setting_values == {
@@ -2079,12 +2107,15 @@ def test_config_endpoint_updates_settings(
             "applicant_first_name": "Callum",
             "applicant_institution": "University of Victoria",
             "applicant_last_name": "Mackenzie",
+            "cover_letter_model": "gpt-5.6-terra",
             "include_graduate_degree_roles": True,
             "include_hardware_roles": False,
             "require_software_keywords": False,
             "internship_mode": False,
             "location_filter": "north_america",
+            "scan_headless": False,
         }
+        assert web_server._configured_browser_profile_manager().headless is False
     finally:
         server.shutdown()
         thread.join(timeout=5)

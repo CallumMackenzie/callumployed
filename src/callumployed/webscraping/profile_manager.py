@@ -61,11 +61,13 @@ class BrowserProfileManager:
         *,
         root: Path | None = None,
         launcher: Callable[[list[str]], subprocess.Popen[bytes]] | None = None,
+        headless: bool = True,
     ) -> None:
         self.root = (
             root or user_data_path("callumployed", appauthor=False) / PROFILE_MANAGER_DIR_NAME
         )
         self.launcher = launcher or self._default_launcher
+        self.headless = headless
 
     @property
     def registry_path(self) -> Path:
@@ -142,13 +144,14 @@ class BrowserProfileManager:
             record = self._record_from_registry(pool_name, profile_name, profile)
             self._refresh_profile_copy(pool_name, profile_name, Path(pool["template_path"]))
             port = _find_free_port()
-            process = self.launcher(
-                [
-                    str(pool["browser_executable"]),
-                    f"--remote-debugging-port={port}",
-                    f"--user-data-dir={record.path}",
-                ]
-            )
+            launch_args = [
+                str(pool["browser_executable"]),
+                f"--remote-debugging-port={port}",
+                f"--user-data-dir={record.path}",
+            ]
+            if self.headless:
+                launch_args.append("--headless=new")
+            process = self.launcher(launch_args)
             self._wait_for_cdp(port, process)
             return BrowserProfileLease(record=record, process=process, port=port)
         if pool_name == DEFAULT_POOL_NAME:

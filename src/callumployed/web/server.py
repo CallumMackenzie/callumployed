@@ -47,6 +47,7 @@ from callumployed.central.config import (
 )
 from callumployed.central.models import ResolveCompanyRequest
 from callumployed.central.sync import pull_companies, resolve_unlinked_companies
+from callumployed.config import LlmSettings
 from callumployed.data import db
 from callumployed.data.models import (
     Company,
@@ -124,6 +125,10 @@ APPLICANT_LAST_NAME_CONFIG_KEY = "applicant_last_name"
 APPLICANT_EMAIL_CONFIG_KEY = "applicant_email"
 APPLICANT_INSTITUTION_CONFIG_KEY = "applicant_institution"
 APPLICANT_DEGREE_CONFIG_KEY = "applicant_degree"
+COVER_LETTER_MODEL_CONFIG_KEY = "cover_letter_model"
+SCAN_HEADLESS_CONFIG_KEY = "scan_headless"
+DEFAULT_COVER_LETTER_MODEL = "gpt-4.1-mini"
+DEFAULT_SCAN_HEADLESS = True
 APPLICANT_PROFILE_TEXT_CONFIG_KEYS = {
     APPLICANT_EMAIL_CONFIG_KEY,
     APPLICANT_INSTITUTION_CONFIG_KEY,
@@ -258,7 +263,7 @@ class ScanCoordinator:
         with self._lock:
             self._total_companies = len(companies)
 
-        browser_profile_manager = BrowserProfileManager()
+        browser_profile_manager = _configured_browser_profile_manager()
         for company in companies:
             if self._cancel_requested.is_set():
                 LOGGER.info("Scan cancelled before scanning %s.", company.name)
@@ -839,7 +844,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                     scan = asyncio.run(
                         run_rescan_role(
                             role.id,
-                            browser_profile_manager=BrowserProfileManager(),
+                            browser_profile_manager=_configured_browser_profile_manager(),
                             update_status=True,
                         )
                     )
@@ -1590,6 +1595,8 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 APPLICANT_FIRST_NAME_CONFIG_KEY,
                 APPLICANT_LAST_NAME_CONFIG_KEY,
                 *APPLICANT_PROFILE_TEXT_CONFIG_KEYS,
+                COVER_LETTER_MODEL_CONFIG_KEY,
+                SCAN_HEADLESS_CONFIG_KEY,
                 "central_api_url",
                 "central_passkey",
                 "include_graduate_degree_roles",
@@ -1613,6 +1620,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 "include_hardware_roles",
                 "internship_mode",
                 "require_software_keywords",
+                SCAN_HEADLESS_CONFIG_KEY,
             }
             if not all(
                 isinstance(value, bool) if key in bool_keys else isinstance(value, str)
@@ -1672,6 +1680,18 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                                 key,
                                 _clean_applicant_profile_text(key, payload[key]),
                             )
+                    if COVER_LETTER_MODEL_CONFIG_KEY in payload:
+                        set_config_value(
+                            connection,
+                            COVER_LETTER_MODEL_CONFIG_KEY,
+                            _clean_cover_letter_model(payload[COVER_LETTER_MODEL_CONFIG_KEY]),
+                        )
+                    if SCAN_HEADLESS_CONFIG_KEY in payload:
+                        set_config_value(
+                            connection,
+                            SCAN_HEADLESS_CONFIG_KEY,
+                            "true" if payload[SCAN_HEADLESS_CONFIG_KEY] else "false",
+                        )
                     if "central_api_url" in payload:
                         set_central_api_url(connection, payload["central_api_url"])
                     central_passkey = _optional_text(payload.get("central_passkey"))
@@ -1836,6 +1856,8 @@ def build_scan_status_payload() -> dict[str, Any]:
 
 
 def build_config_payload() -> dict[str, Any]:
+    cover_letter_model = DEFAULT_COVER_LETTER_MODEL
+    scan_headless = DEFAULT_SCAN_HEADLESS
     with db.connect() as connection:
         db.run_migrations(connection)
         values = list_config_values(connection)
@@ -1857,6 +1879,14 @@ def build_config_payload() -> dict[str, Any]:
             get_config_value(connection, APPLICANT_INSTITUTION_CONFIG_KEY) or ""
         )
         applicant_degree = get_config_value(connection, APPLICANT_DEGREE_CONFIG_KEY) or ""
+        cover_letter_model = (
+            get_config_value(connection, COVER_LETTER_MODEL_CONFIG_KEY)
+            or DEFAULT_COVER_LETTER_MODEL
+        )
+        scan_headless = _config_bool(
+            get_config_value(connection, SCAN_HEADLESS_CONFIG_KEY),
+            default=DEFAULT_SCAN_HEADLESS,
+        )
         recommendation_history_count = count_resume_feedback_history(connection)
         central_api_url = get_central_api_url(connection)
         companies = list_companies(connection, include_inactive=True)
@@ -1926,6 +1956,25 @@ def build_config_payload() -> dict[str, Any]:
                 "autocomplete": "off",
                 "value": applicant_degree,
                 "default": "",
+                "editable": True,
+            },
+            {
+                "key": COVER_LETTER_MODEL_CONFIG_KEY,
+                "label": "cover letter model",
+                "description": "model identifier used only for cover letter generation",
+                "control": "text",
+                "autocomplete": "off",
+                "value": cover_letter_model,
+                "default": DEFAULT_COVER_LETTER_MODEL,
+                "editable": True,
+            },
+            {
+                "key": SCAN_HEADLESS_CONFIG_KEY,
+                "label": "headless job scanning",
+                "description": "run scan browsers without opening visible browser windows",
+                "control": "toggle",
+                "value": scan_headless,
+                "default": DEFAULT_SCAN_HEADLESS,
                 "editable": True,
             },
             {
@@ -2539,6 +2588,7 @@ def build_role_cover_letter(
 
     applicant_profile = ApplicantProfile()
     experience_notes: list[ExperienceNote] = []
+    cover_letter_model = DEFAULT_COVER_LETTER_MODEL
 
     def search_cover_letters(query: str, *, limit: int = 3) -> list[dict[str, object]]:
         with db.connect() as connection:
@@ -2555,6 +2605,10 @@ def build_role_cover_letter(
             db.run_migrations(connection)
             experience_notes = list_experience_notes(connection)
             applicant_profile = _load_applicant_profile(connection)
+            cover_letter_model = (
+                get_config_value(connection, COVER_LETTER_MODEL_CONFIG_KEY)
+                or DEFAULT_COVER_LETTER_MODEL
+            )
         draft = asyncio.run(
             generate_cover_letter(
                 role=role,
@@ -2566,6 +2620,7 @@ def build_role_cover_letter(
                 ],
                 tweaks=tweaks,
                 previous_cover_letter_latex=previous_cover_letter_latex,
+                settings=LlmSettings(model=cover_letter_model),
             )
         )
         latex = _normalize_cover_letter_latex(draft.latex)
@@ -3170,6 +3225,32 @@ def _optional_text(value: object) -> str | None:
         return None
     cleaned = value.strip()
     return cleaned or None
+
+
+def _config_bool(value: str | None, *, default: bool) -> bool:
+    if value is None:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+def _clean_cover_letter_model(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Cover letter model must be text")
+    cleaned = value.strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}", cleaned):
+        raise ValueError("Cover letter model must be a valid model identifier")
+    return cleaned
+
+
+def _configured_browser_profile_manager() -> BrowserProfileManager:
+    headless = DEFAULT_SCAN_HEADLESS
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        headless = _config_bool(
+            get_config_value(connection, SCAN_HEADLESS_CONFIG_KEY),
+            default=DEFAULT_SCAN_HEADLESS,
+        )
+    return BrowserProfileManager(headless=headless)
 
 
 def _clean_applicant_name_part(value: object) -> str:

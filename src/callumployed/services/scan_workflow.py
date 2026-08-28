@@ -849,6 +849,8 @@ async def _render_with_browser_profile_manager(
     if "timeout_ms" not in render_options and state.get("browser_timeout_ms") is not None:
         render_options["timeout_ms"] = state["browser_timeout_ms"]
     profile_manager = state.get("browser_profile_manager")
+    if profile_manager is not None and hasattr(profile_manager, "headless"):
+        render_options.setdefault("headless", profile_manager.headless)
     if browser.browser_backend() == "browserbase":
         try:
             return await render_careers_page(

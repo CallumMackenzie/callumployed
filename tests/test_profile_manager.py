@@ -114,11 +114,13 @@ def test_profile_manager_clones_template_and_builds_brave_command(
             "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
             "--remote-debugging-port=9330",
             f"--user-data-dir={lease.record.path}",
+            "--headless=new",
         ],
         [
             "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
             "--remote-debugging-port=9330",
             f"--user-data-dir={lease.record.path}",
+            "--headless=new",
         ],
     ]
 

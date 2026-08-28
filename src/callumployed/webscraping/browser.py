@@ -43,9 +43,12 @@ async def render_careers_page(
     content_settle_poll_ms: int = CONTENT_SETTLE_POLL_MS,
     lazy_scroll_step_delay_ms: int = LAZY_SCROLL_STEP_DELAY_MS,
     backend: BrowserBackend | None = None,
+    headless: bool | None = None,
 ) -> RenderedPageState:
     blocked_types = set(blocked_resource_types)
     browser_settings = BrowserSettings()
+    if headless is not None:
+        browser_settings = browser_settings.model_copy(update={"headless": headless})
     selected_backend = backend or browser_settings.backend
     playwright_context = Stealth().use_async(async_playwright()) if stealth else async_playwright()
 
@@ -109,6 +112,7 @@ async def _render_with_playwright(
             return await _render_with_managed_browser(
                 playwright,
                 url,
+                headless=settings.headless,
                 timeout_ms=timeout_ms,
                 blocked_types=blocked_types,
                 content_settle_min_wait_ms=content_settle_min_wait_ms,
@@ -131,6 +135,7 @@ async def _render_with_playwright(
             return await _render_with_managed_browser(
                 playwright,
                 url,
+                headless=settings.headless,
                 timeout_ms=timeout_ms,
                 blocked_types=blocked_types,
                 content_settle_min_wait_ms=content_settle_min_wait_ms,
@@ -153,6 +158,7 @@ async def _render_with_playwright(
     return await _render_with_managed_browser(
         playwright,
         url,
+        headless=settings.headless,
         timeout_ms=timeout_ms,
         blocked_types=blocked_types,
         content_settle_min_wait_ms=content_settle_min_wait_ms,
@@ -226,6 +232,7 @@ async def _render_with_managed_browser(
     playwright: Playwright,
     url: str,
     *,
+    headless: bool,
     timeout_ms: int,
     blocked_types: set[str],
     content_settle_min_wait_ms: int,
@@ -237,7 +244,7 @@ async def _render_with_managed_browser(
     profile_path.mkdir(parents=True, exist_ok=True)
     context = await playwright.chromium.launch_persistent_context(
         user_data_dir=str(profile_path),
-        headless=False,
+        headless=headless,
         ignore_https_errors=True,
     )
     try:
