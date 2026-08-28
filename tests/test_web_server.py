@@ -55,10 +55,11 @@ from callumployed.web.server import (
 runner = CliRunner()
 
 
-def _valid_pdf_bytes() -> bytes:
+def _valid_pdf_bytes(page_count: int = 1) -> bytes:
     output = BytesIO()
     writer = PdfWriter()
-    writer.add_blank_page(width=612, height=792)
+    for _ in range(page_count):
+        writer.add_blank_page(width=612, height=792)
     writer.write(output)
     return output.getvalue()
 
@@ -766,10 +767,15 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
     )
     monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
     monkeypatch.setattr(web_server.shutil, "which", lambda _name: "/usr/bin/pdflatex")
+    compile_attempts = 0
 
     def fake_run(command: object, **kwargs: object) -> object:
+        nonlocal compile_attempts
+        compile_attempts += 1
         cwd = Path(kwargs["cwd"])
-        (cwd / "cover-letter.pdf").write_bytes(_valid_pdf_bytes())
+        (cwd / "cover-letter.pdf").write_bytes(
+            _valid_pdf_bytes(2 if compile_attempts <= 3 else 1)
+        )
 
         class Completed:
             returncode = 0
@@ -778,14 +784,10 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
 
     monkeypatch.setattr(web_server.subprocess, "run", fake_run)
 
-    captured: dict[str, object] = {}
+    captured_calls: list[dict[str, object]] = []
 
     async def fake_generate_cover_letter(**kwargs: object) -> object:
-        captured["tweaks"] = kwargs.get("tweaks")
-        captured["previous_cover_letter_latex"] = kwargs.get("previous_cover_letter_latex")
-        captured["other_experience_context"] = kwargs.get("other_experience_context")
-        captured["applicant_profile"] = kwargs.get("applicant_profile")
-        captured["settings"] = kwargs.get("settings")
+        captured_calls.append(dict(kwargs))
 
         class Draft:
             latex = "\\documentclass{letter}\\begin{document}Dear Acme\\end{document}"
@@ -870,12 +872,17 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         assert cover_letter["path"] == str(resume_root / "role-1" / "cover-letter.tex")
         assert cover_letter["pdf_path"] == str(resume_root / "role-1" / "cover-letter.pdf")
         assert cover_letter["pdf_base64"]
+        assert base64.b64decode(cover_letter["pdf_base64"]) == _valid_pdf_bytes()
+        assert compile_attempts == 4
+        assert len(captured_calls) == 2
         assert cover_letter["tweaks"] == "Make it warmer and shorten the Amazon paragraph."
-        assert captured["tweaks"] == "Make it warmer and shorten the Amazon paragraph."
-        assert captured["previous_cover_letter_latex"] == (
+        assert captured_calls[0]["tweaks"] == "Make it warmer and shorten the Amazon paragraph."
+        assert captured_calls[0]["previous_cover_letter_latex"] == (
             "\\documentclass{letter}\\begin{document}Previous Acme draft\\end{document}"
         )
-        indexed_context = captured["other_experience_context"]
+        assert "exactly one PDF page" in str(captured_calls[1]["tweaks"])
+        assert "Dear Acme" in str(captured_calls[1]["previous_cover_letter_latex"])
+        indexed_context = captured_calls[0]["other_experience_context"]
         assert isinstance(indexed_context, list)
         assert len(indexed_context) == 1
         indexed_page = indexed_context[0]
@@ -884,7 +891,7 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         assert str(indexed_page["filename"]).startswith("sections/")
         assert "Python backend for secure sensor ingestion" in str(indexed_page["content"])
         assert "neighborhood arts event" not in str(indexed_page["content"])
-        applicant_profile = captured["applicant_profile"]
+        applicant_profile = captured_calls[0]["applicant_profile"]
         assert isinstance(applicant_profile, ApplicantProfile)
         assert applicant_profile.model_dump() == {
             "first_name": "Jake",
@@ -893,7 +900,7 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
             "institution": "University of Victoria",
             "degree": "Software Engineering",
         }
-        settings = captured["settings"]
+        settings = captured_calls[0]["settings"]
         assert isinstance(settings, web_server.LlmSettings)
         assert settings.model == "gpt-5.6-terra"
         saved_latex = (resume_root / "role-1" / "cover-letter.tex").read_text()
@@ -1568,10 +1575,15 @@ def test_role_resume_endpoint_regenerates_with_tweaks(
     monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
     monkeypatch.setattr(web_server, "_resume_resources_root", lambda: tmp_path / "resources")
     monkeypatch.setattr(web_server.shutil, "which", lambda _name: "/usr/bin/pdflatex")
+    compile_attempts = 0
 
     def fake_run(command: object, **kwargs: object) -> object:
+        nonlocal compile_attempts
+        compile_attempts += 1
         cwd = Path(kwargs["cwd"])
-        (cwd / "resume.pdf").write_bytes(_valid_pdf_bytes())
+        (cwd / "resume.pdf").write_bytes(
+            _valid_pdf_bytes(2 if compile_attempts <= 3 else 1)
+        )
 
         class Completed:
             returncode = 0
@@ -1579,12 +1591,10 @@ def test_role_resume_endpoint_regenerates_with_tweaks(
         return Completed()
 
     monkeypatch.setattr(web_server.subprocess, "run", fake_run)
-    captured: dict[str, object] = {}
+    captured_calls: list[dict[str, object]] = []
 
     async def fake_generate_resume_tweak(**kwargs: object) -> object:
-        captured["resume_content"] = kwargs.get("resume_content")
-        captured["tweaks"] = kwargs.get("tweaks")
-        captured["other_experience_context"] = kwargs.get("other_experience_context")
+        captured_calls.append(dict(kwargs))
 
         class Draft:
             latex = (
@@ -1657,9 +1667,13 @@ def test_role_resume_endpoint_regenerates_with_tweaks(
         assert resume["tweaks"] == "Emphasize distributed systems."
         assert "Python distributed systems" in resume["latex"]
         assert base64.b64decode(resume["pdf_base64"]) == _valid_pdf_bytes()
-        assert captured["resume_content"] == "Current editor latex"
-        assert captured["tweaks"] == "Emphasize distributed systems."
-        indexed_context = captured["other_experience_context"]
+        assert compile_attempts == 4
+        assert len(captured_calls) == 2
+        assert captured_calls[0]["resume_content"] == "Current editor latex"
+        assert captured_calls[0]["tweaks"] == "Emphasize distributed systems."
+        assert "exactly one PDF page" in str(captured_calls[1]["tweaks"])
+        assert "Python distributed systems" in str(captured_calls[1]["resume_content"])
+        indexed_context = captured_calls[0]["other_experience_context"]
         assert isinstance(indexed_context, list)
         assert len(indexed_context) == 1
         indexed_page = indexed_context[0]

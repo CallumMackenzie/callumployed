@@ -1629,6 +1629,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                     resume,
                     tweaks=tweaks,
                     previous_latex=previous_latex,
+                    required_page_count=1,
                 )
             except RuntimeError as error:
                 self._send_json_with_status(
@@ -3077,6 +3078,7 @@ def _prepare_autoprep_resume(
         resume,
         tweaks=tweaks,
         previous_latex=previous_latex if instruction else None,
+        required_page_count=1,
     )
     source_pdf = _required_generated_pdf(generated, "resume")
     artifact_directory, artifact_path = _copy_autoprep_pdf(
@@ -3389,7 +3391,7 @@ def build_role_cover_letter(
     tweaks: str | None = None,
     previous_cover_letter_latex: str | None = None,
     allow_local_fallback: bool = True,
-    required_page_count: int | None = None,
+    required_page_count: int | None = 1,
 ) -> dict[str, Any]:
     """Generate with the configured LangChain provider and role-local Turso retrieval."""
     role_id = role.get("id")
@@ -3490,14 +3492,50 @@ def build_role_cover_letter(
         example_ids = []
         source = "local_cover_letter_fallback"
 
-    return _write_role_cover_letter(
-        role_for_prompt,
-        latex,
-        source=source,
-        example_ids=example_ids,
-        tweaks=tweaks,
-        required_page_count=required_page_count,
-    )
+    for attempt in range(3):
+        try:
+            return _write_role_cover_letter(
+                role_for_prompt,
+                latex,
+                source=source,
+                example_ids=example_ids,
+                tweaks=tweaks,
+                required_page_count=required_page_count,
+            )
+        except GeneratedDocumentPageCountError as error:
+            if attempt == 2 or source != "ai_cover_letter":
+                raise RuntimeError(
+                    "Cover letter generation could not produce exactly one PDF page after "
+                    "three bounded attempts. Shorten the requested content or adjust the source."
+                ) from error
+            retry_tweaks = (
+                f"{tweaks or ''}\n\n"
+                "The compiled cover letter exceeded one page. Return a complete letter that fits "
+                "exactly one PDF page. Preserve all applicant facts and the role-specific "
+                "rationale. "
+                "Tighten prose and remove repetition only; never truncate text or invent facts."
+            )
+            try:
+                draft = asyncio.run(
+                    generate_cover_letter(
+                        role=role_for_prompt,
+                        resume_content=resume.content,
+                        search_tool=search_cover_letters,
+                        applicant_profile=applicant_profile,
+                        other_experience_context=experience_context,
+                        role_context=role_context,
+                        tweaks=retry_tweaks,
+                        previous_cover_letter_latex=latex,
+                        settings=llm_settings,
+                    )
+                )
+            except Exception as generation_error:
+                raise RuntimeError(
+                    "AI cover letter regeneration was unavailable."
+                ) from generation_error
+            latex = _normalize_cover_letter_latex(draft.latex)
+            example_ids = draft.example_ids
+    raise AssertionError("bounded cover letter generation loop did not return")
 
 
 def _load_applicant_profile(connection: Any) -> ApplicantProfile:
@@ -3520,7 +3558,47 @@ def save_role_cover_letter(role: dict[str, Any], latex: str) -> dict[str, Any]:
     )
 
 
-def save_role_resume(role: dict[str, Any], resume: MasterResume, latex: str) -> dict[str, Any]:
+class GeneratedDocumentPageCountError(RuntimeError):
+    pass
+
+
+def _one_page_resume_candidates(latex: str) -> list[str]:
+    modest_profile = (
+        "\\addtolength{\\topmargin}{-0.12in}\n"
+        "\\addtolength{\\textheight}{0.28in}\n"
+        "\\setlength{\\parskip}{0pt}\n"
+    )
+    compact = (
+        latex.replace("\\fontsize{9.5pt}{11pt}", "\\fontsize{9pt}{10pt}")
+        .replace("\\fontsize{10pt}{11.5pt}", "\\fontsize{9.5pt}{10.5pt}")
+        .replace("\\vspace{-2pt}", "\\vspace{-3pt}")
+    )
+    compact_profile = (
+        "\\addtolength{\\topmargin}{-0.18in}\n"
+        "\\addtolength{\\textheight}{0.42in}\n"
+        "\\setlength{\\parskip}{0pt}\n"
+    )
+
+    candidates = [latex]
+    for content, profile in ((latex, modest_profile), (compact, compact_profile)):
+        if "\\begin{document}" in content:
+            candidate = content.replace(
+                "\\begin{document}", f"{profile}\\begin{{document}}", 1
+            )
+        else:
+            candidate = f"{profile}{content}"
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
+def save_role_resume(
+    role: dict[str, Any],
+    resume: MasterResume,
+    latex: str,
+    *,
+    required_page_count: int | None = None,
+) -> dict[str, Any]:
     role_id = role.get("id")
     if not isinstance(role_id, int):
         raise RuntimeError("Role did not include an ID")
@@ -3535,22 +3613,45 @@ def save_role_resume(role: dict[str, Any], resume: MasterResume, latex: str) -> 
         dir=resume_path.parent,
     ) as temp_dir:
         candidate_path = Path(temp_dir) / "resume.tex"
-        candidate_path.write_text(latex)
         _copy_resume_resources_to_directory(candidate_path.parent)
-        candidate_pdf = _compile_role_resume_pdf(
-            role=role,
-            role_id=role_id,
-            compiler=compiler,
-            resume_path=candidate_path,
-            copy_to_downloads=False,
+        selected_latex: str | None = None
+        selected_pdf: Path | None = None
+        page_counts: list[int] = []
+        candidates = (
+            _one_page_resume_candidates(latex)
+            if required_page_count == 1
+            else [latex]
         )
-        if not candidate_pdf.is_file() or not PdfReader(str(candidate_pdf)).pages:
+        for candidate_latex in candidates:
+            candidate_path.write_text(candidate_latex)
+            candidate_pdf = _compile_role_resume_pdf(
+                role=role,
+                role_id=role_id,
+                compiler=compiler,
+                resume_path=candidate_path,
+                copy_to_downloads=False,
+            )
+            pages = PdfReader(str(candidate_pdf)).pages if candidate_pdf.is_file() else []
+            page_count = len(pages)
+            page_counts.append(page_count)
+            if page_count and (
+                required_page_count is None or page_count == required_page_count
+            ):
+                selected_latex = candidate_latex
+                selected_pdf = candidate_pdf
+                break
+        if selected_latex is None or selected_pdf is None:
+            if required_page_count is not None:
+                raise GeneratedDocumentPageCountError(
+                    "Generated resume did not fit exactly "
+                    f"{required_page_count} PDF page (attempts: {page_counts})."
+                )
             raise RuntimeError("Generated role resume PDF could not be verified.")
 
         staged_tex = resume_path.with_name(f".{resume_path.name}.candidate")
         staged_pdf = resume_path.with_name(f".{resume_path.stem}.pdf.candidate")
-        staged_tex.write_text(latex)
-        shutil.copyfile(candidate_pdf, staged_pdf)
+        staged_tex.write_text(selected_latex)
+        shutil.copyfile(selected_pdf, staged_pdf)
         try:
             staged_tex.replace(resume_path)
             staged_pdf.replace(resume_path.with_suffix(".pdf"))
@@ -3567,6 +3668,7 @@ def build_role_resume(
     *,
     tweaks: str,
     previous_latex: str | None = None,
+    required_page_count: int = 1,
 ) -> dict[str, Any]:
     role_id = role.get("id")
     if not isinstance(role_id, int):
@@ -3574,32 +3676,59 @@ def build_role_resume(
     source_latex = previous_latex or _ensure_role_resume_copy(role_id, resume).read_text()
     experience_notes: list[ExperienceNote] = []
     llm_settings = LlmSettings()
-    try:
-        with db.connect() as connection:
-            db.run_migrations(connection)
-            experience_notes = list_experience_notes(connection)
-            llm_settings = _llm_settings_for_generation(connection)
-        draft = asyncio.run(
-            generate_resume_tweak(
-                role=role,
-                resume_content=source_latex,
-                tweaks=tweaks,
-                other_experience_context=_generation_experience_context(
-                    experience_notes,
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        experience_notes = list_experience_notes(connection)
+        llm_settings = _llm_settings_for_generation(connection)
+    experience_context = _generation_experience_context(
+        experience_notes,
+        role=role,
+        tweaks=tweaks,
+    )
+    candidate_source = source_latex
+    candidate_tweaks = tweaks
+    for attempt in range(3):
+        try:
+            draft = asyncio.run(
+                generate_resume_tweak(
                     role=role,
-                    tweaks=tweaks,
-                ),
-                settings=llm_settings,
+                    resume_content=candidate_source,
+                    tweaks=candidate_tweaks,
+                    other_experience_context=experience_context,
+                    settings=llm_settings,
+                )
             )
-        )
-    except Exception as error:  # noqa: BLE001 - surface a concise UI failure.
-        raise RuntimeError("AI resume regeneration was unavailable.") from error
-    generated = save_role_resume(role, resume, draft.latex)
-    return {
-        **generated,
-        "summary": draft.summary or "Regenerated resume with tweaks.",
-        "tweaks": tweaks,
-    }
+        except Exception as error:  # noqa: BLE001 - surface a concise UI failure.
+            raise RuntimeError("AI resume regeneration was unavailable.") from error
+        try:
+            generated = save_role_resume(
+                role,
+                resume,
+                draft.latex,
+                required_page_count=required_page_count,
+            )
+        except GeneratedDocumentPageCountError as error:
+            if attempt == 2:
+                raise RuntimeError(
+                    "Resume generation could not produce exactly one PDF page after "
+                    "three bounded attempts. Shorten the requested content or adjust the source."
+                ) from error
+            candidate_source = draft.latex
+            candidate_tweaks = (
+                f"{tweaks}\n\n"
+                "The compiled resume exceeded one page. Return a complete resume that fits "
+                "exactly one PDF page. Preserve contact details, education, employers, roles, "
+                "dates, and factual accuracy. Prefer concise phrasing and select only the least "
+                "role-relevant bullet-level detail when necessary; never truncate text or "
+                "invent facts."
+            )
+            continue
+        return {
+            **generated,
+            "summary": draft.summary or "Regenerated resume with tweaks.",
+            "tweaks": tweaks,
+        }
+    raise AssertionError("bounded resume generation loop did not return")
 
 
 def build_role_chat_context(role_id: int) -> dict[str, Any]:
@@ -3627,6 +3756,36 @@ def build_role_chat_context(role_id: int) -> dict[str, Any]:
     }
 
 
+def _one_page_cover_letter_candidates(latex: str) -> list[str]:
+    candidates = [latex]
+    for margin, parskip, font_size in (
+        ("0.85in", "0.7em", None),
+        ("0.75in", "0.55em", "10pt"),
+    ):
+        candidate = re.sub(
+            r"\\usepackage\[margin=[^\]]+\]\{geometry\}",
+            rf"\\usepackage[margin={margin}]{{geometry}}",
+            latex,
+            count=1,
+        )
+        candidate = re.sub(
+            r"\\setlength\{\\parskip\}\{[^}]+\}",
+            rf"\\setlength{{\\parskip}}{{{parskip}}}",
+            candidate,
+            count=1,
+        )
+        if font_size is not None:
+            candidate = re.sub(
+                r"\\documentclass(?:\[[^\]]*\])?\{letter\}",
+                rf"\\documentclass[{font_size}]{{letter}}",
+                candidate,
+                count=1,
+            )
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
 def _write_role_cover_letter(
     role: dict[str, Any],
     latex: str,
@@ -3652,19 +3811,35 @@ def _write_role_cover_letter(
         dir=cover_letter_path.parent,
     ) as temp_dir:
         candidate_path = Path(temp_dir) / "cover-letter.tex"
-        candidate_path.write_text(latex)
-        candidate_pdf, pdf_base64 = _generate_cover_letter_pdf_preview(candidate_path)
-        page_count = len(PdfReader(str(candidate_pdf)).pages)
-        if required_page_count is not None and page_count != required_page_count:
-            raise RuntimeError(
+        selected_latex: str | None = None
+        selected_pdf: Path | None = None
+        selected_pdf_base64 = ""
+        page_counts: list[int] = []
+        candidates = (
+            _one_page_cover_letter_candidates(latex)
+            if required_page_count == 1
+            else [latex]
+        )
+        for candidate_latex in candidates:
+            candidate_path.write_text(candidate_latex)
+            candidate_pdf, pdf_base64 = _generate_cover_letter_pdf_preview(candidate_path)
+            page_count = len(PdfReader(str(candidate_pdf)).pages)
+            page_counts.append(page_count)
+            if required_page_count is None or page_count == required_page_count:
+                selected_latex = candidate_latex
+                selected_pdf = candidate_pdf
+                selected_pdf_base64 = pdf_base64
+                break
+        if selected_latex is None or selected_pdf is None:
+            raise GeneratedDocumentPageCountError(
                 "Generated cover letter did not fit exactly "
-                f"{required_page_count} PDF page ({page_count} pages)."
+                f"{required_page_count} PDF page (attempts: {page_counts})."
             )
 
         staged_tex = cover_letter_path.with_name(f".{cover_letter_path.name}.candidate")
         staged_pdf = cover_letter_path.with_name(f".{cover_letter_path.stem}.pdf.candidate")
-        staged_tex.write_text(latex)
-        shutil.copyfile(candidate_pdf, staged_pdf)
+        staged_tex.write_text(selected_latex)
+        shutil.copyfile(selected_pdf, staged_pdf)
         try:
             staged_tex.replace(cover_letter_path)
             staged_pdf.replace(cover_letter_path.with_suffix(".pdf"))
@@ -3676,12 +3851,12 @@ def _write_role_cover_letter(
         "role_id": role_id,
         "source": source,
         "summary": summary,
-        "latex": latex,
+        "latex": selected_latex,
         "example_ids": example_ids,
         "tweaks": tweaks,
         "path": str(cover_letter_path),
         "pdf_path": str(pdf_path),
-        "pdf_base64": pdf_base64,
+        "pdf_base64": selected_pdf_base64,
     }
 
 

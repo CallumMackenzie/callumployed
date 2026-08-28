@@ -611,6 +611,7 @@ def test_autoprep_worker_uses_direct_generation_and_preserves_document_artifacts
     )
     assert stored_resume_latex[1] is None and stored_resume_latex[2] is None
     assert resume_calls and cover_calls
+    assert resume_calls[0]["required_page_count"] == 1
     assert cover_calls[0]["allow_local_fallback"] is False
     assert cover_calls[0]["required_page_count"] == 1
     assert Path(completed["resume_artifact_path"]).is_file()
