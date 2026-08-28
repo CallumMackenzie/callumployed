@@ -292,8 +292,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=react-ts-20260828-8" in index_markup
-        assert "/assets/build/app.js?v=react-ts-20260828-9" in index_markup
+        assert "/assets/app.css?v=react-ts-20260828-10" in index_markup
+        assert "/assets/build/app.js?v=react-ts-20260828-10" in index_markup
         assert "résumé" not in markup
         assert "résumé" not in app_javascript
         assert "grid-template-columns: minmax(0, 1fr);" in app_styles
@@ -302,8 +302,16 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'class="prep-workspace-nav"' in app_javascript
         assert 'data-prep-section-target="prep-resume-' in app_javascript
         assert 'class="prep-document-workspace"' in app_javascript
+        assert 'class="prepped-document${previewOpen ? " has-open-preview" : ""}' in (
+            app_javascript
+        )
+        assert 'data-autoprep-view="${documentKind}"' in app_javascript
+        assert ">View PDF</a>" in app_javascript
         assert ".prep-role-hero" in app_styles
         assert ".prep-document-workspace" in app_styles
+        assert ".prepped-document.has-open-preview" in app_styles
+        assert "grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);" in app_styles
+        assert "height: clamp(640px, 78vh, 900px);" in app_styles
         assert 'fetch("/api/central/resolve-companies", { method: "POST" })' in app_javascript
         assert "const companySync = syncCompaniesOnPageLoad().catch(() => {});" in app_javascript
         assert "await companySync;" in app_javascript

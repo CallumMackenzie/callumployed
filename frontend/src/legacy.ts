@@ -3631,13 +3631,17 @@ function renderPreppedDocument(job, documentKind, label) {
     : "";
   const previewOpen = openPreppedPreviews.has(key);
   const previewUrl = `/api/autoprep/roles/${encodeURIComponent(job.role_id)}/documents/${documentKind}.pdf?v=${encodeURIComponent(job.updated_at || "")}`;
+  const viewLink = artifactPath
+    ? `<a class="prep-cover-pdf-link" data-autoprep-view="${documentKind}" href="${escapeHtml(previewUrl)}" target="_blank" rel="noreferrer" aria-label="View ${escapeHtml(label.toLowerCase())} PDF in browser">View PDF</a>`
+    : "";
   return `
-    <section class="prepped-document status-${escapeHtml(status)}">
+    <section class="prepped-document${previewOpen ? " has-open-preview" : ""} status-${escapeHtml(status)}">
       <div class="prepped-document-heading"><h4>${escapeHtml(label)}</h4><span>${escapeHtml(autoprepStatusLabel(status))}</span></div>
       <p class="prepped-filename">${escapeHtml(filename)}</p>
       ${error ? `<p class="prepped-error">${escapeHtml(error)}</p>` : ""}
       <div class="prepped-document-actions">
         <button type="button" data-autoprep-preview="${documentKind}" ${artifactPath ? "" : "disabled"}>${previewOpen ? "Hide preview" : "Preview PDF"}</button>
+        ${viewLink}
         ${retryButton}
       </div>
       <div class="prepped-pdf-preview" data-autoprep-preview-panel="${documentKind}" ${previewOpen && artifactPath ? "" : "hidden"}>

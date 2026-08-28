@@ -4197,6 +4197,10 @@ body.prepped-open {
   padding-bottom: 92px;
 }
 
+.prepped-shell {
+  width: min(1440px, calc(100% - 40px));
+}
+
 .autoprep-intro,
 .prepped-summary {
   color: #53615b;
@@ -4297,7 +4301,7 @@ body.prepped-open {
 
 .prepped-workspace {
   display: grid;
-  grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1.65fr);
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
   gap: 18px;
   margin-top: 18px;
 }
@@ -4356,6 +4360,10 @@ body.prepped-open {
   padding: 16px;
   border: 1px solid rgb(26 66 52 / 0.13);
   border-radius: 14px;
+}
+
+.prepped-document.has-open-preview {
+  grid-column: 1 / -1;
 }
 
 .prepped-filename,
@@ -4672,7 +4680,7 @@ body.prepped-open {
 .prepped-pdf-preview iframe {
   display: block;
   width: 100%;
-  height: 520px;
+  height: clamp(640px, 78vh, 900px);
   border: 0;
 }
 
