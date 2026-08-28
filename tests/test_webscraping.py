@@ -1206,7 +1206,9 @@ def test_assess_role_page_ignores_amazon_search_location_chrome() -> None:
         title="Software Development Engineer Internship - Amazon Jobs",
         html="""
         <header>
-          <div class="location-search">Search for jobs by title; keyword search job by location</div>
+          <div class="location-search">
+            Search for jobs by title; keyword search job by location
+          </div>
         </header>
         <main>
           <h1>Software Development Engineer Internship</h1>
