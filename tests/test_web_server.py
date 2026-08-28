@@ -3,6 +3,7 @@ import base64
 import gzip
 import json
 import os
+import socket
 from io import BytesIO
 from pathlib import Path
 from threading import Event, Thread
@@ -50,6 +51,14 @@ from callumployed.web.server import (
 )
 
 runner = CliRunner()
+
+
+def test_local_server_enables_address_reuse_before_binding() -> None:
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    try:
+        assert server.socket.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR) != 0
+    finally:
+        server.server_close()
 
 
 def test_companies_payload_reports_zero_discovered_roles_after_scan(

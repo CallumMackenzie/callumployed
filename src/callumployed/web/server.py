@@ -9,6 +9,7 @@ import logging
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -346,6 +347,7 @@ class LocalThreadingHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
     def server_bind(self) -> None:
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.socket.bind(self.server_address)
         host, port = self.socket.getsockname()[:2]
         self.server_address = (host, port)
