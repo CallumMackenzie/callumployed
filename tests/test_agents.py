@@ -1,10 +1,13 @@
 import asyncio
+import json
 from datetime import datetime
 from pathlib import Path
 
+import httpx
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
+from callumployed.agents.codex_chat_model import CodexStructuredChatModel
 from callumployed.agents.cover_letter import (
     ApplicantProfile,
     CoverLetterAgent,
@@ -836,6 +839,246 @@ def test_build_chat_model_supports_codex_without_changing_openai_configuration()
 
     assert model.__class__.__name__ == "CodexStructuredChatModel"
     assert model.model == "gpt-5.3-codex"
+
+
+def test_codex_subscription_provider_posts_structured_request_without_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text(
+        json.dumps(
+            {
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": "access-token",
+                    "refresh_token": "refresh-token",
+                    "account_id": "account-123",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CALLUMPLOYED_CHATGPT_AUTH_PATH", str(auth_path))
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        body = (
+            'data: {"type":"response.output_text.delta","delta":"{\\"accepted\\":"}\n\n'
+            'data: {"type":"response.output_text.delta","delta":"true}"}\n\n'
+            'data: {"type":"response.completed","response":{"id":"response-1"}}\n\n'
+        )
+        return httpx.Response(200, text=body)
+
+    class Result(BaseModel):
+        accepted: bool
+
+    model = CodexStructuredChatModel(
+        output_model=Result,
+        model="gpt-5.6-terra",
+        transport=httpx.MockTransport(handler),
+    )
+    result = asyncio.run(model.ainvoke("Return an accepted result"))
+
+    assert result == Result(accepted=True)
+    assert len(requests) == 1
+    request = requests[0]
+    assert request.url == "https://chatgpt.com/backend-api/codex/responses"
+    assert request.headers["authorization"] == "Bearer access-token"
+    assert request.headers["chatgpt-account-id"] == "account-123"
+    payload = json.loads(request.content)
+    assert payload["model"] == "gpt-5.6-terra"
+    assert payload["stream"] is True
+    assert payload["text"]["format"]["type"] == "json_schema"
+
+
+def test_codex_subscription_provider_refreshes_expired_access_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text(
+        json.dumps(
+            {
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": "expired-access-token",
+                    "refresh_token": "refresh-token",
+                    "account_id": "account-123",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CALLUMPLOYED_CHATGPT_AUTH_PATH", str(auth_path))
+    response_attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal response_attempts
+        if request.url == "https://auth.openai.com/oauth/token":
+            assert json.loads(request.content) == {
+                "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+                "grant_type": "refresh_token",
+                "refresh_token": "refresh-token",
+            }
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "fresh-access-token",
+                    "refresh_token": "fresh-refresh-token",
+                },
+            )
+        response_attempts += 1
+        if response_attempts == 1:
+            return httpx.Response(401, json={"error": {"message": "expired"}})
+        assert request.headers["authorization"] == "Bearer fresh-access-token"
+        return httpx.Response(
+            200,
+            text=(
+                'data: {"type":"response.output_text.delta","delta":"{\\"accepted\\":true}"}\n\n'
+                'data: {"type":"response.completed","response":{"id":"response-1"}}\n\n'
+            ),
+        )
+
+    class Result(BaseModel):
+        accepted: bool
+
+    model = CodexStructuredChatModel(
+        output_model=Result,
+        transport=httpx.MockTransport(handler),
+    )
+    result = asyncio.run(model.ainvoke("Return an accepted result"))
+
+    assert result.accepted is True
+    stored = json.loads(auth_path.read_text(encoding="utf-8"))
+    assert stored["tokens"]["access_token"] == "fresh-access-token"
+    assert stored["tokens"]["refresh_token"] == "fresh-refresh-token"
+    assert stored["last_refresh"].endswith("Z")
+
+
+def test_codex_subscription_provider_uses_newer_shared_auth_instead_of_stale_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    auth_path = tmp_path / "auth.json"
+    stale_auth = {
+        "auth_mode": "chatgpt",
+        "tokens": {
+            "access_token": "stale-access-token",
+            "refresh_token": "stale-refresh-token",
+            "account_id": "account-123",
+        },
+    }
+    fresh_auth = {
+        "auth_mode": "chatgpt",
+        "tokens": {
+            "access_token": "external-fresh-access-token",
+            "refresh_token": "external-fresh-refresh-token",
+            "account_id": "account-123",
+        },
+    }
+    auth_path.write_text(json.dumps(stale_auth), encoding="utf-8")
+    monkeypatch.setenv("CALLUMPLOYED_CHATGPT_AUTH_PATH", str(auth_path))
+    refresh_attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal refresh_attempts
+        if request.url == "https://auth.openai.com/oauth/token":
+            refresh_attempts += 1
+            return httpx.Response(500)
+        if request.headers["authorization"] == "Bearer stale-access-token":
+            auth_path.write_text(json.dumps(fresh_auth), encoding="utf-8")
+            return httpx.Response(401)
+        assert request.headers["authorization"] == "Bearer external-fresh-access-token"
+        return httpx.Response(
+            200,
+            text=(
+                'data: {"type":"response.output_text.delta","delta":"{\\"accepted\\":true}"}\n\n'
+                'data: {"type":"response.completed","response":{"id":"response-1"}}\n\n'
+            ),
+        )
+
+    class Result(BaseModel):
+        accepted: bool
+
+    model = CodexStructuredChatModel(
+        output_model=Result,
+        transport=httpx.MockTransport(handler),
+    )
+    result = asyncio.run(model.ainvoke("Return an accepted result"))
+
+    assert result.accepted is True
+    assert refresh_attempts == 0
+    assert json.loads(auth_path.read_text(encoding="utf-8")) == fresh_auth
+
+
+def test_codex_subscription_provider_serializes_concurrent_refreshes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text(
+        json.dumps(
+            {
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": "expired-access-token",
+                    "refresh_token": "shared-refresh-token",
+                    "account_id": "account-123",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CALLUMPLOYED_CHATGPT_AUTH_PATH", str(auth_path))
+    stale_attempts = 0
+    refresh_attempts = 0
+    both_stale_requests_started = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal stale_attempts, refresh_attempts
+        if request.url == "https://auth.openai.com/oauth/token":
+            refresh_attempts += 1
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "fresh-access-token",
+                    "refresh_token": "rotated-refresh-token",
+                },
+            )
+        if request.headers["authorization"] == "Bearer expired-access-token":
+            stale_attempts += 1
+            if stale_attempts == 2:
+                both_stale_requests_started.set()
+            await both_stale_requests_started.wait()
+            return httpx.Response(401)
+        assert request.headers["authorization"] == "Bearer fresh-access-token"
+        return httpx.Response(
+            200,
+            text=(
+                'data: {"type":"response.output_text.delta","delta":"{\\"accepted\\":true}"}\n\n'
+                'data: {"type":"response.completed","response":{"id":"response-1"}}\n\n'
+            ),
+        )
+
+    class Result(BaseModel):
+        accepted: bool
+
+    transport = httpx.MockTransport(handler)
+
+    async def invoke_twice() -> list[Result]:
+        models = [
+            CodexStructuredChatModel(output_model=Result, transport=transport),
+            CodexStructuredChatModel(output_model=Result, transport=transport),
+        ]
+        return await asyncio.gather(*(model.ainvoke("Return accepted") for model in models))
+
+    results = asyncio.run(invoke_twice())
+
+    assert results == [Result(accepted=True), Result(accepted=True)]
+    assert stale_attempts == 2
+    assert refresh_attempts == 1
 
 
 def test_build_chat_model_rejects_unsupported_provider() -> None:
