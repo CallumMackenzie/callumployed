@@ -49,7 +49,11 @@ const manageCompaniesButton = document.querySelector("#manage-companies-button")
 const scanStatusBar = document.querySelector("#scan-status-bar");
 const scanStatusText = document.querySelector("#scan-status-text");
 const scanLastTime = document.querySelector("#scan-last-time");
-const scanErrors = document.querySelector("#scan-errors");
+const scanFailuresOpenButton = document.querySelector("#scan-failures-open");
+const scanFailuresDialog = document.querySelector("#scan-failures-dialog");
+const scanFailuresBackdrop = document.querySelector("#scan-failures-backdrop");
+const scanFailuresCloseButton = document.querySelector("#scan-failures-close");
+const scanFailuresList = document.querySelector("#scan-failures-list");
 const toggleAllButton = document.querySelector("#toggle-all");
 const collapseEmptyButton = document.querySelector("#collapse-empty");
 const toolbarSummary = document.querySelector("#toolbar-summary");
@@ -730,9 +734,9 @@ function renderScanStatus(payload) {
     scanStatusText.textContent = "scan idle";
   }
 
-  if (scanErrors) {
-    scanErrors.hidden = failures.length === 0;
-    scanErrors.innerHTML = failures
+  if (scanFailuresOpenButton && scanFailuresList) {
+    scanFailuresOpenButton.hidden = failures.length === 0;
+    scanFailuresList.innerHTML = failures
       .slice(0, 5)
       .map((failure) => {
         const company = failure?.company_name || "unknown company";
@@ -745,6 +749,7 @@ function renderScanStatus(payload) {
         `;
       })
       .join("");
+    if (failures.length === 0) closeScanFailuresDialog();
   }
 
   const lastScanAt = payload?.last_scan_at;
@@ -754,6 +759,16 @@ function renderScanStatus(payload) {
     loadTracker(getActiveSearchQuery()).catch(() => {});
   }
   wasScanning = scanning;
+}
+
+function openScanFailuresDialog() {
+  if (scanFailuresOpenButton.hidden) return;
+  scanFailuresDialog.hidden = false;
+  scanFailuresCloseButton.focus();
+}
+
+function closeScanFailuresDialog() {
+  scanFailuresDialog.hidden = true;
 }
 
 function renderSettings(payload, message = "") {
@@ -1408,7 +1423,7 @@ async function syncCompaniesOnPageLoad() {
 }
 
 async function loadInitialTrackerData() {
-  await syncCompaniesOnPageLoad().catch(() => {});
+  const companySync = syncCompaniesOnPageLoad().catch(() => {});
   await Promise.all([
     loadTracker().catch(() => {
       statusListEl.innerHTML = '<p class="empty-copy">could not load jobs.</p>';
@@ -1417,6 +1432,7 @@ async function loadInitialTrackerData() {
       roleAddStatus.textContent = "could not load companies.";
     }),
   ]);
+  await companySync;
 }
 
 async function updateApp() {
@@ -3608,6 +3624,7 @@ function appendPrepResumeTweak(roleId, tweakPrompt) {
 }
 
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !scanFailuresDialog.hidden) closeScanFailuresDialog();
   if (event.key === "Escape" && !searchDialog.hidden) closeSearchDialog();
   if (event.key === "Escape" && !reviewView.hidden) closeReviewView();
   if (event.key === "Escape" && !prepView.hidden) closePrepView();
@@ -3616,6 +3633,12 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !sankeyView.hidden) closeSankeyView();
   if (event.key === "Escape" && !companiesView.hidden) closeCompaniesView();
 });
+
+scanFailuresOpenButton.addEventListener("click", openScanFailuresDialog);
+
+scanFailuresCloseButton.addEventListener("click", closeScanFailuresDialog);
+
+scanFailuresBackdrop.addEventListener("click", closeScanFailuresDialog);
 
 function statusPaneToggles() {
   return Array.from(document.querySelectorAll(".pane-toggle"));

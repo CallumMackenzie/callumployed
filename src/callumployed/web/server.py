@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import gzip
 import json
 import logging
 import re
@@ -699,17 +700,18 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             return
 
         def _send_json(self, payload: dict[str, Any]) -> None:
-            body = json.dumps(payload).encode()
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            self._send_json_with_status(payload, HTTPStatus.OK)
 
         def _send_json_with_status(self, payload: dict[str, Any], status: HTTPStatus) -> None:
             body = json.dumps(payload).encode()
+            accepts_gzip = "gzip" in self.headers.get("Accept-Encoding", "").lower()
+            if accepts_gzip:
+                body = gzip.compress(body, compresslevel=5)
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Vary", "Accept-Encoding")
+            if accepts_gzip:
+                self.send_header("Content-Encoding", "gzip")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -3917,4 +3919,8 @@ def _content_type_for(filename: str) -> str:
         return "text/javascript; charset=utf-8"
     if filename.endswith(".svg"):
         return "image/svg+xml; charset=utf-8"
+    if filename.endswith(".png"):
+        return "image/png"
+    if filename.endswith(".webmanifest"):
+        return "application/manifest+json; charset=utf-8"
     return "application/octet-stream"

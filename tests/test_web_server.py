@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import gzip
 import json
 import os
 from io import BytesIO
@@ -126,7 +127,36 @@ def test_static_svg_assets_are_served_with_svg_content_type() -> None:
         with urlopen(url, timeout=5) as response:
             assert response.status == 200
             assert response.headers["Content-Type"] == "image/svg+xml; charset=utf-8"
-            assert response.read().startswith(b'<?xml version="1.0" encoding="UTF-8"?>')
+            body = response.read()
+            assert body.startswith(b'<?xml version="1.0" encoding="UTF-8"?>')
+            assert b"path { fill: #00897b; }" in body
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_pwa_manifest_and_apple_icon_are_served_with_correct_content_types() -> None:
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        with urlopen(
+            f"http://127.0.0.1:{port}/assets/manifest.webmanifest", timeout=5
+        ) as response:
+            assert response.status == 200
+            assert response.headers["Content-Type"] == "application/manifest+json; charset=utf-8"
+            manifest = json.loads(response.read())
+        with urlopen(
+            f"http://127.0.0.1:{port}/assets/apple-touch-icon.png", timeout=5
+        ) as response:
+            assert response.status == 200
+            assert response.headers["Content-Type"] == "image/png"
+            assert response.read().startswith(b"\x89PNG\r\n\x1a\n")
+
+        assert manifest["display"] == "standalone"
+        assert {icon["sizes"] for icon in manifest["icons"]} == {"192x192", "512x512"}
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -156,13 +186,16 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
 
         assert 'id="toggle-all"' in markup
         assert (
-            '<link rel="icon" href="/assets/camackenzie-logo.svg" type="image/svg+xml" />'
+            '<link rel="icon" href="/assets/camackenzie-logo.svg?v=20260827-2" '
+            'type="image/svg+xml" />'
             in index_markup
         )
-        assert (
-            '<link rel="apple-touch-icon" href="/assets/camackenzie-logo.svg" />'
-            in index_markup
-        )
+        assert 'rel="apple-touch-icon"' in index_markup
+        assert 'sizes="180x180"' in index_markup
+        assert 'href="/assets/apple-touch-icon.png?v=20260827-2"' in index_markup
+        assert '<link rel="manifest" href="/assets/manifest.webmanifest" />' in index_markup
+        assert '<meta name="apple-mobile-web-app-capable" content="yes" />' in index_markup
+        assert '<meta name="apple-mobile-web-app-title" content="callumployed" />' in index_markup
         assert '<div id="root"></div>' in index_markup
         assert "expand all" in markup
         assert 'id="expand-all"' not in markup
@@ -228,18 +261,70 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="materials-required-warning"' in markup
         assert 'aria-label="missing required application materials"' in markup
         assert 'id="toolbar-summary"' in markup
-        assert 'id="scan-errors"' in markup
+        assert 'id="scan-failures-open" hidden>view scan failures</button>' in markup
+        assert 'id="scan-failures-dialog"' in markup
+        assert 'id="scan-failures-list"' in markup
+        assert 'id="scan-failures-close"' in markup
+        assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
         assert "/assets/app.css?v=react-ts" in index_markup
         assert "/assets/build/app.js?v=react-ts" in index_markup
         assert 'fetch("/api/central/resolve-companies", { method: "POST" })' in app_javascript
-        assert "await syncCompaniesOnPageLoad().catch(() => {});" in app_javascript
+        assert "const companySync = syncCompaniesOnPageLoad().catch(() => {});" in app_javascript
+        assert "await companySync;" in app_javascript
+        assert app_javascript.index("const companySync = syncCompaniesOnPageLoad()") < (
+            app_javascript.index("await Promise.all([")
+        )
+        assert app_javascript.index("await Promise.all([") < app_javascript.index(
+            "await companySync;"
+        )
         assert "loadInitialTrackerData();" in app_javascript
         assert "settingsProfileOptions.innerHTML" in app_javascript
         assert 'setting.input_type ?? "text"' in app_javascript
         assert 'setting.autocomplete ?? "name"' in app_javascript
         assert 'aria-label="disinterested role actions"' in app_javascript
+        assert "scanFailuresOpenButton.hidden = failures.length === 0;" in app_javascript
+        assert 'scanFailuresOpenButton.addEventListener("click", openScanFailuresDialog);' in (
+            app_javascript
+        )
+        assert 'scanFailuresCloseButton.addEventListener("click", closeScanFailuresDialog);' in (
+            app_javascript
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_tracker_json_uses_gzip_when_client_accepts_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "CALLUMPLOYED_DATABASE_PATH",
+        str(tmp_path / "tracker-gzip.sqlite3"),
+    )
+    db.ensure_initialized()
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        request = Request(
+            f"http://127.0.0.1:{port}/api/tracker",
+            headers={"Accept-Encoding": "gzip"},
+        )
+        with urlopen(request, timeout=5) as response:
+            compressed = response.read()
+            assert response.status == 200
+            assert response.headers["Content-Encoding"] == "gzip"
+            assert response.headers["Vary"] == "Accept-Encoding"
+            assert int(response.headers["Content-Length"]) == len(compressed)
+
+        payload = json.loads(gzip.decompress(compressed))
+        assert "stats" in payload
+        assert "statuses" in payload
     finally:
         server.shutdown()
         thread.join(timeout=5)
