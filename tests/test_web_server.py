@@ -234,6 +234,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="settings-profile-options"' in markup
         assert '<button type="submit">save settings</button>' in markup
         assert "input[data-setting-text][name]" in app_javascript
+        assert 'const response = await fetch("/api/config", {' in app_javascript
         assert 'body: JSON.stringify(payload)' in app_javascript
         assert 'id="settings-options"' in markup
         assert 'aria-label="filters"' in markup
@@ -270,8 +271,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=react-ts-20260827-3" in index_markup
-        assert "/assets/build/app.js?v=react-ts-20260827-3" in index_markup
+        assert "/assets/app.css?v=react-ts-20260827-4" in index_markup
+        assert "/assets/build/app.js?v=react-ts-20260827-4" in index_markup
         assert 'fetch("/api/central/resolve-companies", { method: "POST" })' in app_javascript
         assert "const companySync = syncCompaniesOnPageLoad().catch(() => {});" in app_javascript
         assert "await companySync;" in app_javascript

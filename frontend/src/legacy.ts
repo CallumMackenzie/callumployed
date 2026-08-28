@@ -3794,12 +3794,13 @@ settingsForm.addEventListener("submit", async (event) => {
   submitButton.textContent = "saving...";
   try {
     settingsStatus.textContent = "saving settings...";
-    await requestJson("/api/config", {
+    const response = await fetch("/api/config", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    await loadSettings();
+    if (!response.ok) throw new Error("Config update failed");
+    renderSettings(await response.json(), "settings saved.");
   } catch (error) {
     settingsStatus.textContent = "could not save settings.";
     settingsStatus.classList.remove("is-empty");
