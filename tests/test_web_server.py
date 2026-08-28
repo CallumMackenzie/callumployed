@@ -270,8 +270,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=react-ts" in index_markup
-        assert "/assets/build/app.js?v=react-ts" in index_markup
+        assert "/assets/app.css?v=react-ts-20260827-3" in index_markup
+        assert "/assets/build/app.js?v=react-ts-20260827-3" in index_markup
         assert 'fetch("/api/central/resolve-companies", { method: "POST" })' in app_javascript
         assert "const companySync = syncCompaniesOnPageLoad().catch(() => {});" in app_javascript
         assert "await companySync;" in app_javascript
