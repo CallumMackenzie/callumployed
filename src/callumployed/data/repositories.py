@@ -1562,6 +1562,48 @@ def set_role_status(
     return get_role(connection, role_id)
 
 
+def set_role_status_if_changed(
+    connection: turso.Connection,
+    role_id: int,
+    new_status: RoleStatus,
+    *,
+    summary: str,
+    source: EventSource = EventSource.MANUAL,
+) -> Role:
+    """Atomically change a role status once, even under repeated requests."""
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        old_role = get_role(connection, role_id)
+        if old_role.role_status == new_status:
+            connection.commit()
+            return old_role
+        connection.execute(
+            """
+            UPDATE roles
+            SET role_status = ?, updated_at = datetime('now')
+            WHERE id = ?
+            """,
+            (new_status.value, role_id),
+        )
+        add_event(
+            connection,
+            Event(
+                company_id=old_role.company_id,
+                role_id=role_id,
+                event_type="status_changed",
+                old_status=old_role.role_status,
+                new_status=new_status,
+                source=source,
+                summary=summary,
+            ),
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return get_role(connection, role_id)
+
+
 def record_role_review_later(
     connection: turso.Connection,
     role_id: int,

@@ -47,6 +47,21 @@ const prepHeading = document.querySelector("#prep-heading");
 const prepProgress = document.querySelector("#prep-progress");
 const prepCard = document.querySelector("#prep-card");
 const closePrepButton = document.querySelector("#close-prep");
+const autoprepInterestedButton = document.querySelector("#autoprep-interested");
+const preppedRolesButton = document.querySelector("#prepped-roles");
+const autoprepView = document.querySelector("#autoprep-view");
+const closeAutoprepButton = document.querySelector("#close-autoprep");
+const autoprepSelectAllButton = document.querySelector("#autoprep-select-all");
+const autoprepDeselectAllButton = document.querySelector("#autoprep-deselect-all");
+const autoprepSelectionCount = document.querySelector("#autoprep-selection-count");
+const autoprepStatus = document.querySelector("#autoprep-status");
+const autoprepList = document.querySelector("#autoprep-list");
+const autoprepSelectedButton = document.querySelector("#autoprep-selected");
+const preppedView = document.querySelector("#prepped-view");
+const closePreppedButton = document.querySelector("#close-prepped");
+const preppedSummary = document.querySelector("#prepped-summary");
+const preppedList = document.querySelector("#prepped-list");
+const preppedDetail = document.querySelector("#prepped-detail");
 const scanAllButton = document.querySelector("#scan-all-button");
 const manageCompaniesButton = document.querySelector("#manage-companies-button");
 const scanStatusBar = document.querySelector("#scan-status-bar");
@@ -133,6 +148,12 @@ let prepCoverLetterByRoleId = new Map();
 let prepRoleChatByRoleId = new Map();
 let prepResumeSaveStateByRoleId = new Map();
 let prepCoverLetterSaveStateByRoleId = new Map();
+let autoprepRoles = [];
+let autoprepSelectedRoleIds = new Set();
+let autoprepSubmitting = false;
+let preppedJobs = [];
+let selectedPreppedRoleId = null;
+let preppedPoll = null;
 let materialsInitialized = false;
 let scanStatusPoll = null;
 let wasScanning = false;
@@ -3458,11 +3479,313 @@ async function updateRoleStatusById(roleId, status) {
   return payload.role;
 }
 
+function autoprepActionKey(prefix) {
+  const suffix = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+  return `${prefix}-${suffix}`;
+}
+
+function setWorkspaceHash(hash) {
+  if (window.location.hash === hash) return;
+  window.history.pushState({}, "", hash || `${window.location.pathname}${window.location.search}`);
+}
+
+async function openAutoprepView() {
+  autoprepSubmitting = false;
+  autoprepSelectedButton.textContent = "Autoprep Selected";
+  autoprepView.hidden = false;
+  document.body.classList.add("autoprep-open");
+  setWorkspaceHash("#autoprep-interested");
+  autoprepStatus.textContent = "loading Interested roles...";
+  try {
+    const response = await fetch("/api/autoprep/interested");
+    if (!response.ok) throw new Error("Interested roles request failed");
+    autoprepRoles = (await response.json()).roles ?? [];
+    const selectableIds = new Set(autoprepRoles.filter((role) => role.selectable).map((role) => Number(role.id)));
+    autoprepSelectedRoleIds = new Set([...autoprepSelectedRoleIds].filter((roleId) => selectableIds.has(roleId)));
+    autoprepStatus.textContent = "";
+    renderAutoprepRoles();
+  } catch {
+    autoprepStatus.textContent = "could not load Interested roles.";
+    autoprepList.innerHTML = "";
+  }
+}
+
+function closeAutoprepView({clearHash = true} = {}) {
+  autoprepView.hidden = true;
+  document.body.classList.remove("autoprep-open");
+  if (clearHash && window.location.hash === "#autoprep-interested") setWorkspaceHash("");
+}
+
+function renderAutoprepRoles() {
+  if (autoprepRoles.length === 0) {
+    autoprepList.innerHTML = '<div class="autoprep-empty"><h3>no Interested roles.</h3><p>Mark roles Interested on the homepage before using Autoprep.</p></div>';
+    updateAutoprepSelection();
+    return;
+  }
+  autoprepList.innerHTML = autoprepRoles.map((role) => {
+    const roleId = Number(role.id);
+    const status = role.preparation_status
+      ? autoprepStatusLabel(role.preparation_status)
+      : role.manual_prep_started ? "Manual preparation started" : "Not started";
+    const meta = [role.location, role.date_added ? `added ${formatCompactDate(role.date_added)}` : ""]
+      .filter(Boolean).map(escapeUiText).join(" · ");
+    return `
+      <label class="autoprep-role${role.selectable ? "" : " is-unavailable"}">
+        <input type="checkbox" data-autoprep-role="${roleId}" ${autoprepSelectedRoleIds.has(roleId) ? "checked" : ""} ${role.selectable ? "" : "disabled"} />
+        <span class="autoprep-role-copy"><strong>${escapeUiText(role.company_name)}</strong><span>${escapeUiText(role.title)}</span><small>${meta}</small></span>
+        <span class="autoprep-role-status">${escapeHtml(status)}</span>
+      </label>`;
+  }).join("");
+  updateAutoprepSelection();
+}
+
+function updateAutoprepSelection() {
+  const count = autoprepSelectedRoleIds.size;
+  autoprepSelectionCount.textContent = `${count} selected`;
+  autoprepSelectedButton.disabled = count === 0 || autoprepSubmitting;
+  autoprepSelectAllButton.disabled = autoprepSubmitting || !autoprepRoles.some((role) => role.selectable);
+  autoprepDeselectAllButton.disabled = autoprepSubmitting || count === 0;
+}
+
+async function submitAutoprepSelection() {
+  if (autoprepSubmitting || autoprepSelectedRoleIds.size === 0) return;
+  autoprepSubmitting = true;
+  autoprepSelectedButton.disabled = true;
+  autoprepSelectedButton.textContent = "Queuing selected roles...";
+  autoprepStatus.textContent = "creating durable preparation jobs...";
+  autoprepList.querySelectorAll("input").forEach((input) => { input.disabled = true; });
+  try {
+    const response = await fetch("/api/autoprep/jobs", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({role_ids: [...autoprepSelectedRoleIds], idempotency_key: autoprepActionKey("autoprep")}),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Autoprep queue request failed");
+    preppedJobs = payload.jobs ?? [];
+    selectedPreppedRoleId = preppedJobs[0]?.role_id ?? null;
+    closeAutoprepView({clearHash: false});
+    openPreppedView({seedJobs: preppedJobs});
+  } catch (error) {
+    autoprepStatus.textContent = error.message || "could not queue selected roles.";
+    autoprepSubmitting = false;
+    autoprepSelectedButton.textContent = "Autoprep Selected";
+    renderAutoprepRoles();
+  }
+}
+
+async function openPreppedView({seedJobs = null} = {}) {
+  preppedView.hidden = false;
+  document.body.classList.add("prepped-open");
+  setWorkspaceHash("#prepped-roles");
+  if (seedJobs) {
+    preppedJobs = seedJobs;
+    selectedPreppedRoleId = selectedPreppedRoleId ?? preppedJobs[0]?.role_id ?? null;
+    renderPreppedRoles();
+  } else if (preppedJobs.length === 0) {
+    preppedSummary.textContent = "loading prepared roles...";
+  }
+  await refreshPreppedRoles();
+  startPreppedPolling();
+}
+
+function closePreppedView({clearHash = true} = {}) {
+  preppedView.hidden = true;
+  document.body.classList.remove("prepped-open");
+  stopPreppedPolling();
+  if (clearHash && window.location.hash === "#prepped-roles") setWorkspaceHash("");
+}
+
+async function refreshPreppedRoles() {
+  try {
+    const response = await fetch("/api/autoprep/jobs");
+    if (!response.ok) throw new Error("Prepped roles request failed");
+    preppedJobs = (await response.json()).jobs ?? [];
+    if (!preppedJobs.some((job) => Number(job.role_id) === Number(selectedPreppedRoleId))) {
+      selectedPreppedRoleId = preppedJobs[0]?.role_id ?? null;
+    }
+    renderPreppedRoles();
+  } catch {
+    preppedSummary.textContent = "could not refresh preparation progress.";
+  }
+}
+
+function startPreppedPolling() {
+  stopPreppedPolling();
+  if (!preppedJobs.some(autoprepJobIsActive)) return;
+  preppedPoll = window.setInterval(refreshPreppedRoles, 2000);
+}
+
+function stopPreppedPolling() {
+  if (preppedPoll !== null) window.clearInterval(preppedPoll);
+  preppedPoll = null;
+}
+
+function autoprepJobIsActive(job) {
+  return ["queued", "generating_resume_tweaks", "regenerating_resume", "generating_cover_letter"].includes(job.overall_status);
+}
+
+function autoprepStatusLabel(status) {
+  return ({
+    queued: "Queued", generating_resume_tweaks: "Generating résumé tweaks", regenerating_resume: "Regenerating résumé",
+    generating_cover_letter: "Generating cover letter", partially_complete: "Partially complete", ready: "Ready",
+    failed: "Failed", interrupted: "Interrupted", generating_tweaks: "Generating tweaks", regenerating: "Regenerating",
+    generating: "Generating",
+  })[status] ?? formatUiText(status);
+}
+
+function renderPreppedRoles() {
+  const activeCount = preppedJobs.filter(autoprepJobIsActive).length;
+  preppedSummary.textContent = preppedJobs.length
+    ? `${preppedJobs.length} prepped ${preppedJobs.length === 1 ? "role" : "roles"}${activeCount ? ` · ${activeCount} in progress` : ""}`
+    : "No queued or prepared roles.";
+  preppedList.innerHTML = preppedJobs.map((job) => `
+    <button type="button" class="prepped-list-item${Number(job.role_id) === Number(selectedPreppedRoleId) ? " is-active" : ""}" data-prepped-role="${job.role_id}">
+      <strong>${escapeUiText(job.company_name)}</strong><span>${escapeUiText(job.title)}</span>
+      <small class="status-${escapeHtml(job.overall_status)}">${escapeHtml(autoprepStatusLabel(job.overall_status))}</small>
+    </button>`).join("");
+  renderPreppedDetail();
+  startPreppedPolling();
+}
+
+function renderPreppedDetail() {
+  const currentIndex = preppedJobs.findIndex((job) => Number(job.role_id) === Number(selectedPreppedRoleId));
+  const job = preppedJobs[currentIndex];
+  if (!job) {
+    preppedDetail.innerHTML = '<div class="prepped-empty"><h3>nothing prepped yet.</h3><p>Queue Interested roles from Autoprep Interested.</p></div>';
+    return;
+  }
+  const resumeFilename = job.resume_artifact_path?.split("/").pop() ?? "Not available";
+  const coverFilename = job.cover_letter_artifact_path?.split("/").pop() ?? "Not available";
+  const retryResume = ["failed", "interrupted"].includes(job.resume_status) ? '<button type="button" data-autoprep-retry="resume">Retry résumé</button>' : "";
+  const retryCover = ["failed", "interrupted"].includes(job.cover_letter_status) ? '<button type="button" data-autoprep-retry="cover-letter">Retry cover letter</button>' : "";
+  preppedDetail.innerHTML = `
+    <header class="prepped-detail-heading"><div><p class="eyebrow">${escapeUiText(job.company_name)}</p><h3>${escapeUiText(job.title)}</h3><p>${escapeUiText(job.location || "location unavailable")}</p></div><span class="prepped-status status-${escapeHtml(job.overall_status)}">${escapeHtml(autoprepStatusLabel(job.overall_status))}</span></header>
+    <div class="prepped-document-grid">
+      ${renderPreppedDocument("Résumé", job.resume_status, resumeFilename, job.resume_error, job.resume_session_id, retryResume)}
+      ${renderPreppedDocument("Cover letter", job.cover_letter_status, coverFilename, job.cover_letter_error, job.cover_letter_session_id, retryCover)}
+    </div>
+    <div class="prepped-detail-actions">
+      <button type="button" data-prepped-nav="previous" ${currentIndex <= 0 ? "disabled" : ""}>Previous</button>
+      <button type="button" data-prepped-nav="next" ${currentIndex >= preppedJobs.length - 1 ? "disabled" : ""}>Next</button>
+      <button type="button" data-autoprep-open-folder ${job.artifact_directory ? "" : "disabled"}>Open Documents Folder</button>
+      <button class="success" type="button" data-autoprep-applied ${job.overall_status === "ready" ? "" : "disabled"}>Applied</button>
+    </div>
+    <p class="prepped-safety-note">Autoprep prepares files only. It never submits an application.</p>`;
+}
+
+function renderPreppedDocument(label, status, filename, error, sessionId, retryButton) {
+  return `<section class="prepped-document status-${escapeHtml(status)}"><div class="prepped-document-heading"><h4>${escapeHtml(label)}</h4><span>${escapeHtml(autoprepStatusLabel(status))}</span></div><p class="prepped-filename">${escapeHtml(filename)}</p>${sessionId ? `<p class="prepped-session">Hermes session: ${escapeHtml(sessionId)}</p>` : ""}${error ? `<p class="prepped-error">${escapeHtml(error)}</p>` : ""}${retryButton}</section>`;
+}
+
+async function retryAutoprepDocument(roleId, documentKind, button) {
+  if (button.disabled) return;
+  button.disabled = true;
+  button.textContent = "Queuing retry...";
+  try {
+    const response = await fetch(`/api/autoprep/roles/${encodeURIComponent(roleId)}/retry/${documentKind}`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({idempotency_key: autoprepActionKey(`retry-${documentKind}`)}),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Retry request failed");
+    const index = preppedJobs.findIndex((job) => Number(job.role_id) === Number(roleId));
+    if (index >= 0) preppedJobs[index] = payload.job;
+    renderPreppedRoles();
+  } catch { await refreshPreppedRoles(); }
+}
+
+async function markPreppedRoleApplied(roleId, button) {
+  if (button.disabled) return;
+  button.disabled = true;
+  button.textContent = "Moving to Applied...";
+  const currentIndex = preppedJobs.findIndex((job) => Number(job.role_id) === Number(roleId));
+  try {
+    const response = await fetch(`/api/autoprep/roles/${encodeURIComponent(roleId)}/applied`, {method: "POST"});
+    if (!response.ok) throw new Error("Applied update failed");
+    preppedJobs.splice(currentIndex, 1);
+    selectedPreppedRoleId = preppedJobs[Math.min(currentIndex, preppedJobs.length - 1)]?.role_id ?? null;
+    renderPreppedRoles();
+    loadInitialTrackerData();
+  } catch { await refreshPreppedRoles(); }
+}
+
 reviewDiscoveredButton.addEventListener("click", openReviewView);
 
 closeReviewButton.addEventListener("click", closeReviewView);
 
 prepInterestedButton.addEventListener("click", openPrepView);
+
+autoprepInterestedButton.addEventListener("click", openAutoprepView);
+
+preppedRolesButton.addEventListener("click", () => openPreppedView());
+
+closeAutoprepButton.addEventListener("click", closeAutoprepView);
+
+closePreppedButton.addEventListener("click", closePreppedView);
+
+autoprepSelectAllButton.addEventListener("click", () => {
+  if (autoprepSubmitting) return;
+  autoprepSelectedRoleIds = new Set(
+    autoprepRoles.filter((role) => role.selectable).map((role) => Number(role.id)),
+  );
+  renderAutoprepRoles();
+});
+
+autoprepDeselectAllButton.addEventListener("click", () => {
+  if (autoprepSubmitting) return;
+  autoprepSelectedRoleIds.clear();
+  renderAutoprepRoles();
+});
+
+autoprepList.addEventListener("change", (event) => {
+  const checkbox = event.target.closest("[data-autoprep-role]");
+  if (!checkbox || autoprepSubmitting) return;
+  const roleId = Number(checkbox.dataset.autoprepRole);
+  if (checkbox.checked) autoprepSelectedRoleIds.add(roleId);
+  else autoprepSelectedRoleIds.delete(roleId);
+  updateAutoprepSelection();
+});
+
+autoprepSelectedButton.addEventListener("click", submitAutoprepSelection);
+
+preppedList.addEventListener("click", (event) => {
+  const roleButton = event.target.closest("[data-prepped-role]");
+  if (!roleButton) return;
+  selectedPreppedRoleId = Number(roleButton.dataset.preppedRole);
+  renderPreppedRoles();
+});
+
+preppedDetail.addEventListener("click", async (event) => {
+  const job = preppedJobs.find((item) => Number(item.role_id) === Number(selectedPreppedRoleId));
+  if (!job) return;
+  const navButton = event.target.closest("[data-prepped-nav]");
+  if (navButton) {
+    const currentIndex = preppedJobs.indexOf(job);
+    const offset = navButton.dataset.preppedNav === "next" ? 1 : -1;
+    selectedPreppedRoleId = preppedJobs[currentIndex + offset]?.role_id ?? job.role_id;
+    renderPreppedRoles();
+    return;
+  }
+  const retryButton = event.target.closest("[data-autoprep-retry]");
+  if (retryButton) {
+    retryAutoprepDocument(job.role_id, retryButton.dataset.autoprepRetry, retryButton);
+    return;
+  }
+  const folderButton = event.target.closest("[data-autoprep-open-folder]");
+  if (folderButton && !folderButton.disabled) {
+    folderButton.disabled = true;
+    try {
+      const response = await fetch(`/api/autoprep/roles/${encodeURIComponent(job.role_id)}/open-folder`, {method: "POST"});
+      if (!response.ok) throw new Error("Folder open failed");
+    } finally {
+      folderButton.disabled = false;
+    }
+    return;
+  }
+  const appliedButton = event.target.closest("[data-autoprep-applied]");
+  if (appliedButton) markPreppedRoleApplied(job.role_id, appliedButton);
+});
 
 closePrepButton.addEventListener("click", closePrepView);
 
@@ -3766,6 +4089,8 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !searchDialog.hidden) closeSearchDialog();
   if (event.key === "Escape" && !reviewView.hidden) closeReviewView();
   if (event.key === "Escape" && !prepView.hidden) closePrepView();
+  if (event.key === "Escape" && !autoprepView.hidden) closeAutoprepView();
+  if (event.key === "Escape" && !preppedView.hidden) closePreppedView();
   if (event.key === "Escape" && !settingsView.hidden) closeSettingsView();
   if (event.key === "Escape" && !metricsView.hidden) closeMetricsView();
   if (event.key === "Escape" && !sankeyView.hidden) closeSankeyView();
@@ -3960,7 +4285,28 @@ clearRecommendationHistoryButton.addEventListener("click", clearRecommendationHi
 
 appUpdateButton.addEventListener("click", updateApp);
 
+function syncWorkspaceRoute() {
+  if (window.location.hash === "#autoprep-interested") {
+    closePreppedView({clearHash: false});
+    openAutoprepView();
+    return;
+  }
+  if (window.location.hash === "#prepped-roles") {
+    closeAutoprepView({clearHash: false});
+    openPreppedView();
+    return;
+  }
+  closeAutoprepView({clearHash: false});
+  closePreppedView({clearHash: false});
+}
+
+window.addEventListener("popstate", syncWorkspaceRoute);
+
 loadInitialTrackerData();
+
+if (["#autoprep-interested", "#prepped-roles"].includes(window.location.hash)) {
+  syncWorkspaceRoute();
+}
 
 loadApplicationMaterials({ applyDefaultCollapsed: true }).catch(() => {
   renderMasterResume(null, "could not load resume.");

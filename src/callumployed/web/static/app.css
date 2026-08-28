@@ -4192,3 +4192,235 @@ a:hover .role-link-icon {
     font-size: 1.45rem;
   }
 }
+
+/* Durable Autoprep workspaces ------------------------------------------ */
+body.autoprep-open,
+body.prepped-open {
+  overflow: hidden;
+}
+
+.autoprep-shell,
+.prepped-shell {
+  width: min(1120px, calc(100% - 40px));
+  padding-bottom: 92px;
+}
+
+.autoprep-intro,
+.prepped-summary {
+  color: #53615b;
+}
+
+.autoprep-toolbar {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 22px 0 12px;
+}
+
+.autoprep-toolbar > div,
+.prepped-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.autoprep-status {
+  min-height: 22px;
+  color: #8f3d2e;
+  font-size: 0.84rem;
+}
+
+.autoprep-list {
+  display: grid;
+  gap: 10px;
+}
+
+.autoprep-role {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 16px;
+  border: 1px solid rgb(26 66 52 / 0.14);
+  border-radius: 14px;
+  background: rgb(255 255 255 / 0.82);
+  cursor: pointer;
+}
+
+.autoprep-role:has(input:checked) {
+  border-color: var(--green);
+  box-shadow: 0 0 0 2px rgb(45 224 111 / 0.15);
+}
+
+.autoprep-role.is-unavailable {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.autoprep-role input {
+  width: 20px;
+  height: 20px;
+}
+
+.autoprep-role-copy {
+  display: grid;
+  gap: 3px;
+}
+
+.autoprep-role-copy small,
+.prepped-list-item small,
+.prepped-session,
+.prepped-safety-note {
+  color: #68736e;
+  font-size: 0.76rem;
+}
+
+.autoprep-role-status,
+.prepped-status,
+.prepped-document-heading span {
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: #edf1ef;
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.autoprep-actions {
+  justify-content: flex-end;
+  padding-inline: max(20px, calc((100% - 1120px) / 2));
+}
+
+.autoprep-actions #autoprep-selected {
+  flex: 0 1 280px;
+}
+
+.autoprep-empty,
+.prepped-empty {
+  padding: 42px;
+  border: 1px dashed rgb(26 66 52 / 0.22);
+  border-radius: 16px;
+  text-align: center;
+}
+
+.prepped-workspace {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1.65fr);
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.prepped-list {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.prepped-list-item {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  padding: 13px 14px;
+  border-color: rgb(26 66 52 / 0.12);
+  background: rgb(255 255 255 / 0.76);
+  text-align: left;
+}
+
+.prepped-list-item.is-active {
+  border-color: var(--purple);
+  background: rgb(95 43 216 / 0.07);
+}
+
+.prepped-detail {
+  min-height: 380px;
+  padding: 22px;
+  border: 1px solid rgb(26 66 52 / 0.14);
+  border-radius: 18px;
+  background: rgb(255 255 255 / 0.86);
+}
+
+.prepped-detail-heading,
+.prepped-document-heading {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.prepped-detail-heading h3,
+.prepped-document h4 {
+  margin: 0;
+}
+
+.prepped-document-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 22px 0;
+}
+
+.prepped-document {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid rgb(26 66 52 / 0.13);
+  border-radius: 14px;
+}
+
+.prepped-filename,
+.prepped-session {
+  overflow-wrap: anywhere;
+}
+
+.prepped-error,
+.status-failed,
+.status-interrupted {
+  color: #a83d2d;
+}
+
+.status-ready {
+  color: #137347;
+}
+
+.status-partially_complete {
+  color: #8b5c00;
+}
+
+.prepped-detail-actions {
+  align-items: center;
+}
+
+.prepped-detail-actions .success {
+  margin-left: auto;
+  background: linear-gradient(135deg, var(--green), #17a65b);
+  color: #07321d;
+}
+
+.prepped-detail-actions .success:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+@media (max-width: 760px) {
+  .autoprep-shell,
+  .prepped-shell {
+    width: min(100% - 20px, 1120px);
+  }
+
+  .autoprep-role {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .autoprep-role-status {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .prepped-workspace,
+  .prepped-document-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .prepped-detail-actions .success {
+    margin-left: 0;
+  }
+}

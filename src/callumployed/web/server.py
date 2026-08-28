@@ -34,11 +34,21 @@ from pypdf import PdfReader
 
 from callumployed.agents.cover_letter import (
     ApplicantProfile,
+    CoverLetterDraft,
+    build_cover_letter_prompt,
     generate_cover_letter,
     strip_cover_letter_dash_punctuation,
 )
-from callumployed.agents.resume_feedback import evaluate_resume_feedback
-from callumployed.agents.resume_tweaker import generate_resume_tweak
+from callumployed.agents.resume_feedback import (
+    ResumeFeedbackResponse,
+    build_resume_feedback_prompt,
+    evaluate_resume_feedback,
+)
+from callumployed.agents.resume_tweaker import (
+    ResumeTweakDraft,
+    build_resume_tweak_prompt,
+    generate_resume_tweak,
+)
 from callumployed.agents.role_chat import generate_role_chat, parse_role_chat_messages
 from callumployed.central.client import CentralStoreClient, CentralStoreError
 from callumployed.central.config import (
@@ -107,12 +117,33 @@ from callumployed.data.repositories import (
     set_location_filter,
     set_require_software_keywords,
     set_role_status,
+    set_role_status_if_changed,
     should_include_graduate_degree_roles,
     should_include_hardware_roles,
     should_require_software_keywords,
     should_use_internship_mode,
     update_company,
     upsert_master_resume,
+)
+from callumployed.services.autoprep import (
+    AutoprepConflictError,
+    AutoprepCoordinator,
+    enqueue_autoprep_jobs,
+    ensure_autoprep_schema,
+    finish_autoprep_worker,
+    get_autoprep_job,
+    get_autoprep_resume_latex,
+    get_role_autoprep_job,
+    list_autoprep_jobs,
+    list_interested_autoprep_roles,
+    mark_autoprep_document,
+    recover_interrupted_autoprep_jobs,
+    retry_autoprep_document,
+)
+from callumployed.services.hermes_generation import (
+    HermesGenerationInterrupted,
+    HermesSessionRunner,
+    parse_json_response,
 )
 from callumployed.services.material_index import (
     build_material_index,
@@ -145,6 +176,8 @@ COVER_LETTER_MODEL_OPTIONS = (
     ("gpt-4.1-mini", "GPT-4.1 mini"),
 )
 SUPPORTED_COVER_LETTER_MODELS = frozenset(value for value, _label in COVER_LETTER_MODEL_OPTIONS)
+AUTOPREP_SESSION_RUNNER = HermesSessionRunner(cwd=Path(__file__).resolve().parents[3])
+AUTOPREP_COORDINATOR: AutoprepCoordinator | None = None
 APPLICANT_PROFILE_TEXT_CONFIG_KEYS = {
     APPLICANT_EMAIL_CONFIG_KEY,
     APPLICANT_INSTITUTION_CONFIG_KEY,
@@ -496,6 +529,12 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             if parsed_url.path == "/api/experience-notes":
                 self._send_json(build_experience_notes_payload())
                 return
+            if parsed_url.path == "/api/autoprep/interested":
+                self._send_json(build_autoprep_interested_payload())
+                return
+            if parsed_url.path == "/api/autoprep/jobs":
+                self._send_json(build_prepped_roles_payload())
+                return
             path_parts = [part for part in PurePosixPath(parsed_url.path).parts if part != "/"]
             if (
                 len(path_parts) == 4
@@ -552,6 +591,30 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:
             parsed_url = urlparse(self.path)
             path_parts = [part for part in PurePosixPath(parsed_url.path).parts if part != "/"]
+            if path_parts == ["api", "autoprep", "jobs"]:
+                self._enqueue_autoprep()
+                return
+            if (
+                len(path_parts) == 6
+                and path_parts[:3] == ["api", "autoprep", "roles"]
+                and path_parts[4] == "retry"
+            ):
+                self._retry_autoprep_document(path_parts[3], path_parts[5])
+                return
+            if (
+                len(path_parts) == 5
+                and path_parts[:3] == ["api", "autoprep", "roles"]
+                and path_parts[4] == "open-folder"
+            ):
+                self._open_autoprep_folder(path_parts[3])
+                return
+            if (
+                len(path_parts) == 5
+                and path_parts[:3] == ["api", "autoprep", "roles"]
+                and path_parts[4] == "applied"
+            ):
+                self._mark_autoprep_applied(path_parts[3])
+                return
             if (
                 len(path_parts) == 4
                 and path_parts[0] == "api"
@@ -746,6 +809,119 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 self.send_error(HTTPStatus.BAD_REQUEST, "JSON body must be an object")
                 return None
             return payload
+
+        def _enqueue_autoprep(self) -> None:
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            role_ids_value = payload.get("role_ids")
+            idempotency_key = payload.get("idempotency_key")
+            if not isinstance(role_ids_value, list) or not all(
+                isinstance(role_id, int) for role_id in role_ids_value
+            ):
+                self.send_error(HTTPStatus.BAD_REQUEST, "role_ids must be a list of integers")
+                return
+            if not isinstance(idempotency_key, str):
+                self.send_error(HTTPStatus.BAD_REQUEST, "idempotency_key is required")
+                return
+            try:
+                with db.connect() as connection:
+                    ensure_autoprep_schema(connection)
+                    jobs = enqueue_autoprep_jobs(
+                        connection,
+                        role_ids_value,
+                        idempotency_key=idempotency_key,
+                    )
+            except AutoprepConflictError as error:
+                self._send_json_with_status({"error": str(error)}, HTTPStatus.CONFLICT)
+                return
+            except ValueError as error:
+                self._send_json_with_status({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            _wake_autoprep_coordinator()
+            self._send_json_with_status({"accepted": True, "jobs": jobs}, HTTPStatus.ACCEPTED)
+
+        def _retry_autoprep_document(self, role_id_text: str, document_kind: str) -> None:
+            try:
+                role_id = int(role_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
+                return
+            if document_kind not in {"resume", "cover-letter"}:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid document kind")
+                return
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            idempotency_key = payload.get("idempotency_key")
+            if not isinstance(idempotency_key, str):
+                self.send_error(HTTPStatus.BAD_REQUEST, "idempotency_key is required")
+                return
+            try:
+                with db.connect() as connection:
+                    ensure_autoprep_schema(connection)
+                    job = retry_autoprep_document(
+                        connection,
+                        role_id,
+                        "cover_letter" if document_kind == "cover-letter" else "resume",
+                        idempotency_key=idempotency_key,
+                    )
+            except AutoprepConflictError as error:
+                self._send_json_with_status({"error": str(error)}, HTTPStatus.CONFLICT)
+                return
+            except ValueError as error:
+                self._send_json_with_status({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            _wake_autoprep_coordinator()
+            self._send_json_with_status({"accepted": True, "job": job}, HTTPStatus.ACCEPTED)
+
+        def _open_autoprep_folder(self, role_id_text: str) -> None:
+            try:
+                role_id = int(role_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
+                return
+            with db.connect() as connection:
+                ensure_autoprep_schema(connection)
+                job = get_role_autoprep_job(connection, role_id)
+            if job is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "Autoprep role not found")
+                return
+            directory_value = job.get("artifact_directory")
+            if not isinstance(directory_value, str) or not Path(directory_value).is_dir():
+                self.send_error(HTTPStatus.NOT_FOUND, "Documents folder is not available")
+                return
+            subprocess.Popen(["open", directory_value])
+            self._send_json({"opened": True, "path": directory_value})
+
+        def _mark_autoprep_applied(self, role_id_text: str) -> None:
+            try:
+                role_id = int(role_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
+                return
+            try:
+                with db.connect() as connection:
+                    ensure_autoprep_schema(connection)
+                    job = get_role_autoprep_job(connection, role_id)
+                    if job is None:
+                        raise LookupError
+                    if job["overall_status"] != "ready":
+                        self._send_json_with_status(
+                            {"error": "Both documents must be ready before marking Applied."},
+                            HTTPStatus.CONFLICT,
+                        )
+                        return
+                    role = set_role_status_if_changed(
+                        connection,
+                        role_id,
+                        RoleStatus.APPLIED,
+                        summary="Marked Applied from Prepped Roles.",
+                    )
+            except LookupError:
+                self.send_error(HTTPStatus.NOT_FOUND, "Autoprep role not found")
+                return
+            self._send_json({"applied": True, "role": _role_payload(role)})
 
         def _update_role_status(self, role_id_text: str) -> None:
             try:
@@ -2524,6 +2700,378 @@ def build_application_materials_payload() -> dict[str, Any]:
     return _application_materials_payload(resume, examples, notes)
 
 
+def build_autoprep_interested_payload() -> dict[str, Any]:
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        ensure_autoprep_schema(connection)
+        roles = list_interested_autoprep_roles(connection)
+    for role in roles:
+        role_id = role.get("id")
+        role["manual_prep_started"] = bool(
+            isinstance(role_id, int) and _role_has_prep_started(role_id)
+        )
+        role["selectable"] = role.get("preparation_status") is None
+    return {"roles": roles}
+
+
+def build_prepped_roles_payload() -> dict[str, Any]:
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        ensure_autoprep_schema(connection)
+        jobs = list_autoprep_jobs(connection)
+    return {"jobs": jobs}
+
+
+def _wake_autoprep_coordinator() -> None:
+    if AUTOPREP_COORDINATOR is not None:
+        AUTOPREP_COORDINATOR.wake()
+
+
+def _process_autoprep_job(job_id: int) -> None:
+    with db.connect() as connection:
+        ensure_autoprep_schema(connection)
+        job = get_autoprep_job(connection, job_id)
+        role = get_role(connection, int(job["role_id"]))
+        company = get_company(connection, role.company_id)
+        resume = get_master_resume(connection)
+    if resume is None:
+        raise RuntimeError("No master resume is stored.")
+    role_payload = role.model_dump(mode="json")
+    role_payload["company_name"] = company.name
+
+    if job["resume_status"] == "queued":
+        try:
+            _prepare_autoprep_resume(job_id, role, role_payload, resume)
+        except HermesGenerationInterrupted as error:
+            with db.connect() as connection:
+                mark_autoprep_document(
+                    connection,
+                    job_id,
+                    "resume",
+                    "interrupted",
+                    error=_autoprep_error(error),
+                )
+        except Exception as error:  # noqa: BLE001 - keep cover-letter work independent.
+            LOGGER.exception("Autoprep resume failed for role %s", role.id)
+            with db.connect() as connection:
+                mark_autoprep_document(
+                    connection,
+                    job_id,
+                    "resume",
+                    "failed",
+                    error=_autoprep_error(error),
+                )
+
+    with db.connect() as connection:
+        job = get_autoprep_job(connection, job_id)
+    if job["cover_letter_status"] == "queued":
+        try:
+            _prepare_autoprep_cover_letter(job_id, role_payload, resume)
+        except HermesGenerationInterrupted as error:
+            with db.connect() as connection:
+                mark_autoprep_document(
+                    connection,
+                    job_id,
+                    "cover_letter",
+                    "interrupted",
+                    error=_autoprep_error(error),
+                )
+        except Exception as error:  # noqa: BLE001 - preserve a completed resume.
+            LOGGER.exception("Autoprep cover letter failed for role %s", role.id)
+            with db.connect() as connection:
+                mark_autoprep_document(
+                    connection,
+                    job_id,
+                    "cover_letter",
+                    "failed",
+                    error=_autoprep_error(error),
+                )
+    with db.connect() as connection:
+        finish_autoprep_worker(connection, job_id)
+
+
+def _prepare_autoprep_resume(
+    job_id: int,
+    role: Role,
+    role_payload: dict[str, Any],
+    resume: MasterResume,
+) -> None:
+    with db.connect() as connection:
+        knowledge_base = list_resume_feedback_knowledge(
+            connection,
+            role=role_payload,
+            resume_content=resume.content,
+        )
+        experience_notes = list_experience_notes(connection)
+        mark_autoprep_document(connection, job_id, "resume", "generating_tweaks")
+    experience_context = _generation_experience_context(
+        experience_notes,
+        role=role_payload,
+        tweaks=None,
+    )
+    model = LlmSettings().model
+    feedback_result = AUTOPREP_SESSION_RUNNER.start(
+        build_resume_feedback_prompt(
+            role=role_payload,
+            resume_content=resume.content,
+            knowledge_base=knowledge_base,
+            other_experience_context=experience_context,
+        ),
+        model=model,
+        source="callumployed-autoprep-resume",
+    )
+    with db.connect() as connection:
+        mark_autoprep_document(
+            connection,
+            job_id,
+            "resume",
+            "generating_tweaks",
+            session_id=feedback_result.session_id,
+        )
+    feedback = ResumeFeedbackResponse.model_validate(parse_json_response(feedback_result.content))
+    tweak_prompts: list[str] = []
+    with db.connect() as connection:
+        for feedback_index, item in enumerate(feedback.feedback_items):
+            feedback_payload = item.model_dump(mode="json")
+            tweak_prompt = _feedback_tweak_prompt(feedback_payload)
+            if not tweak_prompt:
+                continue
+            tweak_prompts.append(tweak_prompt)
+            record_resume_feedback_history(
+                connection,
+                role=role,
+                feedback_index=feedback_index,
+                feedback=feedback_payload,
+                response="accepted",
+                comment="Automatically accepted by Autoprep.",
+            )
+    tweaks = "\n".join(f"- {prompt}" for prompt in tweak_prompts)
+    if not tweaks:
+        tweaks = (
+            "The fit analysis found no supported content changes. Preserve the source resume "
+            "exactly and do not invent any claims."
+        )
+    with db.connect() as connection:
+        mark_autoprep_document(
+            connection,
+            job_id,
+            "resume",
+            "regenerating",
+            session_id=feedback_result.session_id,
+        )
+    revision_result = AUTOPREP_SESSION_RUNNER.resume(
+        feedback_result.session_id,
+        build_resume_tweak_prompt(
+            role=role_payload,
+            resume_content=resume.content,
+            tweaks=tweaks,
+            other_experience_context=experience_context,
+        ),
+        model=model,
+    )
+    draft = ResumeTweakDraft.model_validate(parse_json_response(revision_result.content))
+    generated = save_role_resume(role_payload, resume, draft.latex)
+    source_pdf = _required_generated_pdf(generated, "resume")
+    artifact_directory, artifact_path = _copy_autoprep_pdf(
+        role_payload,
+        source_pdf,
+        kind="resume",
+    )
+    with db.connect() as connection:
+        mark_autoprep_document(
+            connection,
+            job_id,
+            "resume",
+            "ready",
+            session_id=revision_result.session_id,
+            artifact_path=str(artifact_path),
+            artifact_directory=str(artifact_directory),
+            resume_latex=draft.latex,
+        )
+
+
+def _prepare_autoprep_cover_letter(
+    job_id: int,
+    role_payload: dict[str, Any],
+    resume: MasterResume,
+) -> None:
+    tailored_resume_latex: str | None = None
+    with db.connect() as connection:
+        experience_notes = list_experience_notes(connection)
+        applicant_profile = _load_applicant_profile(connection)
+        tailored_resume_latex = get_autoprep_resume_latex(connection, job_id)
+        cover_letter_model = _clean_cover_letter_model(
+            get_config_value(connection, COVER_LETTER_MODEL_CONFIG_KEY)
+            or DEFAULT_COVER_LETTER_MODEL
+        )
+        mark_autoprep_document(connection, job_id, "cover_letter", "generating")
+    role_id = int(role_payload["id"])
+    saved_resume = (
+        {"latex": tailored_resume_latex, "format": "latex"}
+        if tailored_resume_latex
+        else _saved_role_resume(role_payload, resume)
+    )
+    resume_content = str(saved_resume.get("latex") or resume.content)
+    experience_context = _generation_experience_context(
+        experience_notes,
+        role=role_payload,
+        tweaks=None,
+    )
+    examples = _cover_letter_examples_for_prompt(
+        role_payload,
+        resume_content,
+        experience_context,
+    )
+    result = AUTOPREP_SESSION_RUNNER.start(
+        build_cover_letter_prompt(
+            applicant_profile=applicant_profile,
+            role=role_payload,
+            resume_content=resume_content,
+            other_experience_context=experience_context,
+            cover_letter_examples=examples,
+        ),
+        model=cover_letter_model,
+        source="callumployed-autoprep-cover-letter",
+    )
+    with db.connect() as connection:
+        mark_autoprep_document(
+            connection,
+            job_id,
+            "cover_letter",
+            "generating",
+            session_id=result.session_id,
+        )
+    draft = CoverLetterDraft.model_validate(parse_json_response(result.content))
+    generated = _write_role_cover_letter(
+        role_payload,
+        _normalize_cover_letter_latex(strip_cover_letter_dash_punctuation(draft.latex)),
+        source="ai_cover_letter",
+        example_ids=draft.example_ids,
+        tweaks=None,
+    )
+    source_pdf = _required_generated_pdf(generated, "cover letter")
+    page_count = len(PdfReader(str(source_pdf)).pages)
+    if page_count != 1:
+        correction = AUTOPREP_SESSION_RUNNER.resume(
+            result.session_id,
+            (
+                f"The generated cover letter compiled to {page_count} pages. Return the same "
+                "JSON schema with a complete revised LaTeX document that fits exactly one page. "
+                "Preserve truthful role tailoring and the established 225-275 word constraint."
+            ),
+            model=cover_letter_model,
+        )
+        draft = CoverLetterDraft.model_validate(parse_json_response(correction.content))
+        generated = _write_role_cover_letter(
+            role_payload,
+            _normalize_cover_letter_latex(strip_cover_letter_dash_punctuation(draft.latex)),
+            source="ai_cover_letter",
+            example_ids=draft.example_ids,
+            tweaks="Condensed automatically to the one-page requirement.",
+        )
+        source_pdf = _required_generated_pdf(generated, "cover letter")
+        if len(PdfReader(str(source_pdf)).pages) != 1:
+            raise RuntimeError("Generated cover letter did not fit exactly one PDF page.")
+        result = correction
+    artifact_directory, artifact_path = _copy_autoprep_pdf(
+        role_payload,
+        source_pdf,
+        kind="cover-letter",
+    )
+    with db.connect() as connection:
+        mark_autoprep_document(
+            connection,
+            job_id,
+            "cover_letter",
+            "ready",
+            session_id=result.session_id,
+            artifact_path=str(artifact_path),
+            artifact_directory=str(artifact_directory),
+        )
+    LOGGER.info("Autoprep cover letter completed for role %s", role_id)
+
+
+def _cover_letter_examples_for_prompt(
+    role: dict[str, Any],
+    resume_content: str,
+    experience_context: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    experience_text = " ".join(str(item.get("content") or "") for item in experience_context)
+    queries = [
+        " ".join(
+            [
+                str(role.get("title") or ""),
+                str(role.get("description") or ""),
+                resume_content,
+                experience_text,
+            ]
+        ),
+        " ".join(
+            [
+                str(role.get("title") or ""),
+                str(role.get("company_name") or ""),
+                str(role.get("location") or ""),
+            ]
+        ),
+    ]
+    examples_by_id: dict[int, dict[str, object]] = {}
+    with db.connect() as connection:
+        for query in queries:
+            for example in list_cover_letter_example_knowledge(connection, query=query, limit=3):
+                example_id = example.get("id")
+                if isinstance(example_id, int):
+                    examples_by_id[example_id] = example
+    return list(examples_by_id.values())
+
+
+def _required_generated_pdf(generated: dict[str, Any], label: str) -> Path:
+    pdf_value = generated.get("pdf_path")
+    if not isinstance(pdf_value, str):
+        raise RuntimeError(f"Generated {label} did not include a PDF.")
+    pdf_path = Path(pdf_value)
+    if not pdf_path.is_file() or pdf_path.stat().st_size <= 0:
+        raise RuntimeError(f"Generated {label} PDF could not be verified.")
+    return pdf_path
+
+
+def _copy_autoprep_pdf(
+    role: dict[str, Any],
+    source_pdf: Path,
+    *,
+    kind: str,
+) -> tuple[Path, Path]:
+    role_id = role.get("id")
+    if not isinstance(role_id, int):
+        raise RuntimeError("Autoprep role did not include an ID.")
+    company = _safe_filename(str(role.get("company_name") or "company"))
+    title = _safe_filename(str(role.get("title") or "role"))
+    directory = (
+        user_data_path("callumployed", appauthor=False)
+        / "prepared-applications"
+        / f"{company}-{title}-role-{role_id}"
+    )
+    directory.mkdir(parents=True, exist_ok=True)
+    suffix = "resume" if kind == "resume" else "cover-letter"
+    target = directory / f"{company}-{title}-role-{role_id}-{suffix}.pdf"
+    with tempfile.NamedTemporaryFile(dir=directory, suffix=".pdf", delete=False) as temporary:
+        temporary_path = Path(temporary.name)
+    try:
+        shutil.copyfile(source_pdf, temporary_path)
+        if temporary_path.stat().st_size <= 0:
+            raise RuntimeError("Prepared PDF copy was empty.")
+        temporary_path.replace(target)
+        if not target.is_file() or target.stat().st_size <= 0 or not PdfReader(str(target)).pages:
+            raise RuntimeError("Prepared PDF could not be verified after its atomic write.")
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    return directory, target
+
+
+def _autoprep_error(error: Exception) -> str:
+    detail = " ".join(str(error).strip().split())
+    return (detail or "Autoprep generation failed.")[-1000:]
+
+
 def build_prep_analysis(
     role: dict[str, Any],
     resume: MasterResume | None,
@@ -4208,12 +4756,23 @@ def _shutdown_server(server: BaseServer) -> None:
 
 
 def run_server(host: str, port: int) -> None:
+    global AUTOPREP_COORDINATOR
     db.ensure_initialized()
+    with db.connect() as connection:
+        ensure_autoprep_schema(connection)
+        interrupted_count = recover_interrupted_autoprep_jobs(connection)
+    if interrupted_count:
+        LOGGER.warning("Marked %s unfinished Autoprep jobs interrupted", interrupted_count)
+    AUTOPREP_COORDINATOR = AutoprepCoordinator(_process_autoprep_job, max_workers=2)
+    AUTOPREP_COORDINATOR.start()
     handler = create_handler()
     server = LocalThreadingHTTPServer((host, port), handler)
     try:
         server.serve_forever()
     finally:
+        AUTOPREP_COORDINATOR.stop_claiming()
+        AUTOPREP_SESSION_RUNNER.stop()
+        AUTOPREP_COORDINATOR.wait_for_workers()
         _close_server(server)
 
 
