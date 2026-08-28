@@ -129,7 +129,14 @@ APPLICANT_DEGREE_CONFIG_KEY = "applicant_degree"
 COVER_LETTER_MODEL_CONFIG_KEY = "cover_letter_model"
 SCAN_HEADLESS_CONFIG_KEY = "scan_headless"
 DEFAULT_COVER_LETTER_MODEL = "gpt-4.1-mini"
-DEFAULT_SCAN_HEADLESS = True
+DEFAULT_SCAN_HEADLESS = False
+COVER_LETTER_MODEL_OPTIONS = (
+    ("gpt-5.6-terra", "Terra"),
+    ("gpt-5.6-luna", "Luna"),
+    ("gpt-5.6-sol", "Sol"),
+    ("gpt-4.1-mini", "GPT-4.1 mini"),
+)
+SUPPORTED_COVER_LETTER_MODELS = frozenset(value for value, _label in COVER_LETTER_MODEL_OPTIONS)
 APPLICANT_PROFILE_TEXT_CONFIG_KEYS = {
     APPLICANT_EMAIL_CONFIG_KEY,
     APPLICANT_INSTITUTION_CONFIG_KEY,
@@ -1918,10 +1925,13 @@ def build_config_payload() -> dict[str, Any]:
             get_config_value(connection, APPLICANT_INSTITUTION_CONFIG_KEY) or ""
         )
         applicant_degree = get_config_value(connection, APPLICANT_DEGREE_CONFIG_KEY) or ""
-        cover_letter_model = (
-            get_config_value(connection, COVER_LETTER_MODEL_CONFIG_KEY)
-            or DEFAULT_COVER_LETTER_MODEL
-        )
+        try:
+            cover_letter_model = _clean_cover_letter_model(
+                get_config_value(connection, COVER_LETTER_MODEL_CONFIG_KEY)
+                or DEFAULT_COVER_LETTER_MODEL
+            )
+        except ValueError:
+            cover_letter_model = DEFAULT_COVER_LETTER_MODEL
         scan_headless = _config_bool(
             get_config_value(connection, SCAN_HEADLESS_CONFIG_KEY),
             default=DEFAULT_SCAN_HEADLESS,
@@ -2000,12 +2010,15 @@ def build_config_payload() -> dict[str, Any]:
             {
                 "key": COVER_LETTER_MODEL_CONFIG_KEY,
                 "label": "cover letter model",
-                "description": "model identifier used only for cover letter generation",
-                "control": "text",
-                "autocomplete": "off",
+                "description": "model used only for cover letter generation",
+                "control": "select",
                 "value": cover_letter_model,
                 "default": DEFAULT_COVER_LETTER_MODEL,
                 "editable": True,
+                "options": [
+                    {"value": value, "label": label}
+                    for value, label in COVER_LETTER_MODEL_OPTIONS
+                ],
             },
             {
                 "key": SCAN_HEADLESS_CONFIG_KEY,
@@ -2644,10 +2657,13 @@ def build_role_cover_letter(
             db.run_migrations(connection)
             experience_notes = list_experience_notes(connection)
             applicant_profile = _load_applicant_profile(connection)
-            cover_letter_model = (
-                get_config_value(connection, COVER_LETTER_MODEL_CONFIG_KEY)
-                or DEFAULT_COVER_LETTER_MODEL
-            )
+            try:
+                cover_letter_model = _clean_cover_letter_model(
+                    get_config_value(connection, COVER_LETTER_MODEL_CONFIG_KEY)
+                    or DEFAULT_COVER_LETTER_MODEL
+                )
+            except ValueError:
+                cover_letter_model = DEFAULT_COVER_LETTER_MODEL
         draft = asyncio.run(
             generate_cover_letter(
                 role=role,
@@ -3276,8 +3292,8 @@ def _clean_cover_letter_model(value: object) -> str:
     if not isinstance(value, str):
         raise ValueError("Cover letter model must be text")
     cleaned = value.strip()
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}", cleaned):
-        raise ValueError("Cover letter model must be a valid model identifier")
+    if cleaned not in SUPPORTED_COVER_LETTER_MODELS:
+        raise ValueError("Choose a supported cover letter model")
     return cleaned
 
 

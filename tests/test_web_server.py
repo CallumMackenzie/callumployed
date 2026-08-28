@@ -1900,6 +1900,17 @@ def test_role_resume_resource_list_hides_compile_artifacts(
     assert web_server._list_role_resume_resources(1) == [{"filename": "logo.png", "bytes": 3}]
 
 
+@pytest.mark.parametrize(
+    "model",
+    ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-4.1-mini"],
+)
+def test_cover_letter_model_accepts_only_dropdown_options(model: str) -> None:
+    assert web_server._clean_cover_letter_model(model) == model
+
+    with pytest.raises(ValueError, match="supported cover letter model"):
+        web_server._clean_cover_letter_model("other-model")
+
+
 def test_config_payload_returns_current_settings(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1973,20 +1984,25 @@ def test_config_payload_returns_current_settings(
         {
             "key": "cover_letter_model",
             "label": "cover letter model",
-            "description": "model identifier used only for cover letter generation",
-            "control": "text",
-            "autocomplete": "off",
+            "description": "model used only for cover letter generation",
+            "control": "select",
             "value": "gpt-4.1-mini",
             "default": "gpt-4.1-mini",
             "editable": True,
+            "options": [
+                {"value": "gpt-5.6-terra", "label": "Terra"},
+                {"value": "gpt-5.6-luna", "label": "Luna"},
+                {"value": "gpt-5.6-sol", "label": "Sol"},
+                {"value": "gpt-4.1-mini", "label": "GPT-4.1 mini"},
+            ],
         },
         {
             "key": "scan_headless",
             "label": "headless job scanning",
             "description": "run scan browsers without opening visible browser windows",
             "control": "toggle",
-            "value": True,
-            "default": True,
+            "value": False,
+            "default": False,
             "editable": True,
         },
         {
