@@ -598,7 +598,7 @@ def _render_index_document(
         "",
         (
             "This index summarizes project and employment-history pages for targeted "
-            "résumé and cover-letter retrieval."
+            "resume and cover-letter retrieval."
         ),
         "",
     ]

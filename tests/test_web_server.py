@@ -291,8 +291,12 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=react-ts-20260828-6" in index_markup
-        assert "/assets/build/app.js?v=react-ts-20260828-8" in index_markup
+        assert "/assets/app.css?v=react-ts-20260828-8" in index_markup
+        assert "/assets/build/app.js?v=react-ts-20260828-9" in index_markup
+        assert "résumé" not in markup
+        assert "résumé" not in app_javascript
+        assert "grid-template-columns: minmax(0, 1fr);" in app_styles
+        assert "width: auto;" in app_styles
         assert 'class="prep-role-hero"' in app_javascript
         assert 'class="prep-workspace-nav"' in app_javascript
         assert 'data-prep-section-target="prep-resume-' in app_javascript
@@ -3617,6 +3621,7 @@ def test_application_material_sources_can_be_previewed_and_removed(
     monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
     monkeypatch.setattr(web_server, "_resume_resources_root", lambda: resources)
     db.ensure_initialized()
+    legacy_pdf_note = None
     with db.connect() as connection:
         example = add_cover_letter_example(
             connection,
@@ -3628,8 +3633,15 @@ def test_application_material_sources_can_be_previewed_and_removed(
             filename="projects.md",
             content="Distinctive employment and project source.",
         )
+        legacy_pdf_note = add_experience_note(
+            connection,
+            filename="legacy-history.pdf",
+            content="%PDF-1.4 legacy binary data",
+        )
     assert example.id is not None
     assert note.id is not None
+    assert legacy_pdf_note is not None
+    assert legacy_pdf_note.id is not None
 
     server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -3642,6 +3654,12 @@ def test_application_material_sources_can_be_previewed_and_removed(
             assert json.loads(response.read())["content"] == (
                 "Distinctive employment and project source."
             )
+        with urlopen(
+            f"{base_url}/api/experience-notes/{legacy_pdf_note.id}", timeout=5
+        ) as response:
+            legacy_preview = json.loads(response.read())
+        assert legacy_preview["preview_warning"].startswith("This legacy PDF")
+        assert legacy_preview["content"] == legacy_preview["preview_warning"]
         with urlopen(f"{base_url}/api/resume-resources/portfolio.pdf", timeout=5) as response:
             assert response.headers["Content-Type"] == "application/pdf"
             assert response.read() == b"%PDF-resource"
@@ -3649,6 +3667,7 @@ def test_application_material_sources_can_be_previewed_and_removed(
         for path in (
             f"cover-letter-examples/{example.id}",
             f"experience-notes/{note.id}",
+            f"experience-notes/{legacy_pdf_note.id}",
             "resume-resources/portfolio.pdf",
         ):
             request = Request(f"{base_url}/api/{path}", method="DELETE")

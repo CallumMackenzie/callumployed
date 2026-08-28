@@ -2799,7 +2799,7 @@ async function renderPrepRole(message = "") {
       </dl>
       <nav class="prep-workspace-nav" aria-label="prep sections">
         <button type="button" data-prep-section-target="prep-resume-${current.id}">
-          <span>01</span> résumé
+          <span>01</span> resume
         </button>
         <button type="button" data-prep-section-target="prep-cover-letter-${current.id}">
           <span>02</span> cover letter
@@ -2899,7 +2899,7 @@ function renderPrepResume(role, state = {}) {
       </summary>
       <p class="prep-overview">${escapeUiText(resume.summary ?? "Saved resume for this role.")}</p>
       ${renderPrepAnalysis(role)}
-      <section class="prep-generation-controls" aria-label="résumé refinement">
+      <section class="prep-generation-controls" aria-label="resume refinement">
         <div class="prep-control-heading">
           <span>refine this version</span>
           <p>Describe a focused change, then regenerate without losing the saved source.</p>
@@ -2926,7 +2926,7 @@ function renderPrepResume(role, state = {}) {
             spellcheck="false"
           >${escapeHtml(resume.latex ?? "")}</textarea>
         </label>
-        <section class="prep-document-preview" aria-label="résumé preview">
+        <section class="prep-document-preview" aria-label="resume preview">
           <div class="prep-preview-heading">
             <span>document preview</span>
             <p>Updates automatically after the source is saved.</p>
@@ -3044,7 +3044,7 @@ function renderPrepCoverLetter(role, state = {}) {
       <section class="prep-generation-controls" aria-label="cover letter generation">
         <div class="prep-control-heading">
           <span>${draft ? "refine this version" : "create a tailored draft"}</span>
-          <p>Use the role, résumé, and saved examples to shape the letter.</p>
+          <p>Use the role, resume, and saved examples to shape the letter.</p>
         </div>
         ${
           draft
@@ -3553,7 +3553,7 @@ function autoprepJobIsActive(job) {
 
 function autoprepStatusLabel(status) {
   return ({
-    queued: "Queued", generating_resume_tweaks: "Generating résumé tweaks", regenerating_resume: "Regenerating résumé",
+    queued: "Queued", generating_resume_tweaks: "Generating resume tweaks", regenerating_resume: "Regenerating resume",
     generating_cover_letter: "Generating cover letter", partially_complete: "Partially complete", ready: "Ready",
     failed: "Failed", interrupted: "Interrupted", generating_tweaks: "Generating tweaks", regenerating: "Regenerating",
     generating: "Generating",
@@ -3604,7 +3604,7 @@ function renderPreppedDetail() {
     </details>
     ${job.notes ? `<details class="prepped-role-description"><summary>Role notes</summary><div class="prepped-description-copy">${escapeUiText(job.notes).replaceAll("\n", "<br>")}</div></details>` : ""}
     <div class="prepped-document-grid">
-      ${renderPreppedDocument(job, "resume", "Résumé")}
+      ${renderPreppedDocument(job, "resume", "Resume")}
       ${renderPreppedDocument(job, "cover-letter", "Cover letter")}
     </div>
     <div class="prepped-detail-actions">

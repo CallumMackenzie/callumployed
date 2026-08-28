@@ -864,7 +864,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
             content = material.content
             preview_warning = None
-            if material_type == "cover-letter-examples" and content.lstrip().startswith("%PDF-"):
+            if content.lstrip().startswith("%PDF-"):
                 preview_warning = (
                     "This legacy PDF was stored before readable-text extraction was added. "
                     "Remove it and upload the PDF again to preview and use its extracted text."

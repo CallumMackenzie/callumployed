@@ -4476,16 +4476,28 @@ body.prepped-open {
 
 .examples-list .material-source-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  width: 100%;
+  grid-template-columns: minmax(0, 1fr);
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  gap: 8px;
   padding: 8px;
 }
 
 .material-source-copy {
   display: flex;
+  flex-wrap: wrap;
   min-width: 0;
   align-items: center;
   gap: 7px;
+}
+
+.material-source-copy > span {
+  min-width: 0;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
 }
 
 .material-source-actions,
