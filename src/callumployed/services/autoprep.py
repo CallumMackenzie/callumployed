@@ -529,7 +529,9 @@ def retry_autoprep_document(
         # A document can fail while the same role worker is still preparing the
         # other document. Do not make that role claimable a second time until
         # the original worker has finished and made the partial state stable.
-        if job["worker_state"] != "idle":
+        # A queued worker has not been claimed yet, so a second failed sibling
+        # may safely join the same pending role run.
+        if job["worker_state"] not in {"idle", "queued"}:
             connection.commit()
             return job
         current_status = str(job[f"{prefix}_status"])

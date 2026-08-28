@@ -47,16 +47,7 @@ const prepHeading = document.querySelector("#prep-heading");
 const prepProgress = document.querySelector("#prep-progress");
 const prepCard = document.querySelector("#prep-card");
 const closePrepButton = document.querySelector("#close-prep");
-const autoprepInterestedButton = document.querySelector("#autoprep-interested");
 const preppedRolesButton = document.querySelector("#prepped-roles");
-const autoprepView = document.querySelector("#autoprep-view");
-const closeAutoprepButton = document.querySelector("#close-autoprep");
-const autoprepSelectAllButton = document.querySelector("#autoprep-select-all");
-const autoprepDeselectAllButton = document.querySelector("#autoprep-deselect-all");
-const autoprepSelectionCount = document.querySelector("#autoprep-selection-count");
-const autoprepStatus = document.querySelector("#autoprep-status");
-const autoprepList = document.querySelector("#autoprep-list");
-const autoprepSelectedButton = document.querySelector("#autoprep-selected");
 const preppedView = document.querySelector("#prepped-view");
 const closePreppedButton = document.querySelector("#close-prepped");
 const preppedSummary = document.querySelector("#prepped-summary");
@@ -148,9 +139,6 @@ let prepCoverLetterByRoleId = new Map();
 let prepRoleChatByRoleId = new Map();
 let prepResumeSaveStateByRoleId = new Map();
 let prepCoverLetterSaveStateByRoleId = new Map();
-let autoprepRoles = [];
-let autoprepSelectedRoleIds = new Set();
-let autoprepSubmitting = false;
 let preppedJobs = [];
 let selectedPreppedRoleId = null;
 let preppedPoll = null;
@@ -3512,92 +3500,6 @@ function setWorkspaceHash(hash) {
   window.history.pushState({}, "", hash || `${window.location.pathname}${window.location.search}`);
 }
 
-async function openAutoprepView() {
-  // Interested roles are now queued automatically server-side; retain no manual entry path.
-  if (!autoprepInterestedButton) return;
-  autoprepSelectedButton.textContent = "Autoprep Selected";
-  autoprepView.hidden = false;
-  document.body.classList.add("autoprep-open");
-  setWorkspaceHash("#autoprep-interested");
-  autoprepStatus.textContent = "loading Interested roles...";
-  try {
-    const response = await fetch("/api/autoprep/interested");
-    if (!response.ok) throw new Error("Interested roles request failed");
-    autoprepRoles = (await response.json()).roles ?? [];
-    const selectableIds = new Set(autoprepRoles.filter((role) => role.selectable).map((role) => Number(role.id)));
-    autoprepSelectedRoleIds = new Set([...autoprepSelectedRoleIds].filter((roleId) => selectableIds.has(roleId)));
-    autoprepStatus.textContent = "";
-    renderAutoprepRoles();
-  } catch {
-    autoprepStatus.textContent = "could not load Interested roles.";
-    autoprepList.innerHTML = "";
-  }
-}
-
-function closeAutoprepView({clearHash = true} = {}) {
-  autoprepView.hidden = true;
-  document.body.classList.remove("autoprep-open");
-  if (clearHash && window.location.hash === "#autoprep-interested") setWorkspaceHash("");
-}
-
-function renderAutoprepRoles() {
-  if (autoprepRoles.length === 0) {
-    autoprepList.innerHTML = '<div class="autoprep-empty"><h3>no Interested roles.</h3><p>Mark roles Interested on the homepage before using Autoprep.</p></div>';
-    updateAutoprepSelection();
-    return;
-  }
-  autoprepList.innerHTML = autoprepRoles.map((role) => {
-    const roleId = Number(role.id);
-    const status = role.preparation_status
-      ? autoprepStatusLabel(role.preparation_status)
-      : role.manual_prep_started ? "Manual preparation started" : "Not started";
-    const meta = [role.location, role.date_added ? `added ${formatCompactDate(role.date_added)}` : ""]
-      .filter(Boolean).map(escapeUiText).join(" · ");
-    return `
-      <label class="autoprep-role${role.selectable ? "" : " is-unavailable"}">
-        <input type="checkbox" data-autoprep-role="${roleId}" ${autoprepSelectedRoleIds.has(roleId) ? "checked" : ""} ${role.selectable ? "" : "disabled"} />
-        <span class="autoprep-role-copy"><strong>${escapeUiText(role.company_name)}</strong><span>${escapeUiText(role.title)}</span><small>${meta}</small></span>
-        <span class="autoprep-role-status">${escapeHtml(status)}</span>
-      </label>`;
-  }).join("");
-  updateAutoprepSelection();
-}
-
-function updateAutoprepSelection() {
-  const count = autoprepSelectedRoleIds.size;
-  autoprepSelectionCount.textContent = `${count} selected`;
-  autoprepSelectedButton.disabled = count === 0 || autoprepSubmitting;
-  autoprepSelectAllButton.disabled = autoprepSubmitting || !autoprepRoles.some((role) => role.selectable);
-  autoprepDeselectAllButton.disabled = autoprepSubmitting || count === 0;
-}
-
-async function submitAutoprepSelection() {
-  if (autoprepSubmitting || autoprepSelectedRoleIds.size === 0) return;
-  autoprepSubmitting = true;
-  autoprepSelectedButton.disabled = true;
-  autoprepSelectedButton.textContent = "Queuing selected roles...";
-  autoprepStatus.textContent = "creating durable preparation jobs...";
-  autoprepList.querySelectorAll("input").forEach((input) => { input.disabled = true; });
-  try {
-    const response = await fetch("/api/autoprep/jobs", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({role_ids: [...autoprepSelectedRoleIds], idempotency_key: autoprepActionKey("autoprep")}),
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || "Autoprep queue request failed");
-    preppedJobs = payload.jobs ?? [];
-    selectedPreppedRoleId = preppedJobs[0]?.role_id ?? null;
-    closeAutoprepView({clearHash: false});
-    openPreppedView({seedJobs: preppedJobs});
-  } catch (error) {
-    autoprepStatus.textContent = error.message || "could not queue selected roles.";
-    autoprepSubmitting = false;
-    autoprepSelectedButton.textContent = "Autoprep Selected";
-    renderAutoprepRoles();
-  }
-}
-
 async function openPreppedView({seedJobs = null} = {}) {
   preppedView.hidden = false;
   document.body.classList.add("prepped-open");
@@ -3820,38 +3722,9 @@ closeReviewButton.addEventListener("click", closeReviewView);
 
 prepInterestedButton.addEventListener("click", openPrepView);
 
-autoprepInterestedButton?.addEventListener("click", openAutoprepView);
-
 preppedRolesButton.addEventListener("click", () => openPreppedView());
 
-closeAutoprepButton.addEventListener("click", closeAutoprepView);
-
 closePreppedButton.addEventListener("click", closePreppedView);
-
-autoprepSelectAllButton.addEventListener("click", () => {
-  if (autoprepSubmitting) return;
-  autoprepSelectedRoleIds = new Set(
-    autoprepRoles.filter((role) => role.selectable).map((role) => Number(role.id)),
-  );
-  renderAutoprepRoles();
-});
-
-autoprepDeselectAllButton.addEventListener("click", () => {
-  if (autoprepSubmitting) return;
-  autoprepSelectedRoleIds.clear();
-  renderAutoprepRoles();
-});
-
-autoprepList.addEventListener("change", (event) => {
-  const checkbox = event.target.closest("[data-autoprep-role]");
-  if (!checkbox || autoprepSubmitting) return;
-  const roleId = Number(checkbox.dataset.autoprepRole);
-  if (checkbox.checked) autoprepSelectedRoleIds.add(roleId);
-  else autoprepSelectedRoleIds.delete(roleId);
-  updateAutoprepSelection();
-});
-
-autoprepSelectedButton.addEventListener("click", submitAutoprepSelection);
 
 preppedList.addEventListener("click", (event) => {
   const roleButton = event.target.closest("[data-prepped-role]");
@@ -4219,7 +4092,6 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !searchDialog.hidden) closeSearchDialog();
   if (event.key === "Escape" && !reviewView.hidden) closeReviewView();
   if (event.key === "Escape" && !prepView.hidden) closePrepView();
-  if (event.key === "Escape" && !autoprepView.hidden) closeAutoprepView();
   if (event.key === "Escape" && !preppedView.hidden) closePreppedView();
   if (event.key === "Escape" && !settingsView.hidden) closeSettingsView();
   if (event.key === "Escape" && !metricsView.hidden) closeMetricsView();
@@ -4416,17 +4288,10 @@ clearRecommendationHistoryButton.addEventListener("click", clearRecommendationHi
 appUpdateButton.addEventListener("click", updateApp);
 
 function syncWorkspaceRoute() {
-  if (window.location.hash === "#autoprep-interested") {
-    closePreppedView({clearHash: false});
-    openAutoprepView();
-    return;
-  }
   if (window.location.hash === "#prepped-roles") {
-    closeAutoprepView({clearHash: false});
     openPreppedView();
     return;
   }
-  closeAutoprepView({clearHash: false});
   closePreppedView({clearHash: false});
 }
 
@@ -4434,7 +4299,7 @@ window.addEventListener("popstate", syncWorkspaceRoute);
 
 loadInitialTrackerData();
 
-if (["#autoprep-interested", "#prepped-roles"].includes(window.location.hash)) {
+if (window.location.hash === "#prepped-roles") {
   syncWorkspaceRoute();
 }
 

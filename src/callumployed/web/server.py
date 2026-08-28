@@ -1134,6 +1134,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             role: Role | None = None
             try:
                 with db.connect() as connection:
+                    previous_role = get_role(connection, role_id)
                     role = set_role_status(
                         connection,
                         role_id,
@@ -1147,6 +1148,23 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                             [role_id],
                             idempotency_key=f"interested-role-{role_id}",
                         )[0]
+                        if (
+                            previous_role.role_status is not RoleStatus.INTERESTED
+                            and autoprep_job["worker_state"] == "idle"
+                        ):
+                            for document_kind in ("resume", "cover_letter"):
+                                status_key = f"{document_kind}_status"
+                                if autoprep_job[status_key] not in {"failed", "interrupted"}:
+                                    continue
+                                attempt = int(autoprep_job[f"{document_kind}_attempt"])
+                                autoprep_job = retry_autoprep_document(
+                                    connection,
+                                    role_id,
+                                    document_kind,
+                                    idempotency_key=(
+                                        f"interested-role-{role_id}-{document_kind}-{attempt}"
+                                    ),
+                                )
             except LookupError:
                 self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
                 return
@@ -3064,6 +3082,7 @@ def _prepare_autoprep_cover_letter(
             str((previous_cover_letter or {}).get("latex") or "") or None
         ),
         allow_local_fallback=False,
+        required_page_count=1,
     )
     source_pdf = _required_generated_pdf(generated, "cover letter")
     page_count = len(PdfReader(str(source_pdf)).pages)
@@ -3324,6 +3343,7 @@ def build_role_cover_letter(
     tweaks: str | None = None,
     previous_cover_letter_latex: str | None = None,
     allow_local_fallback: bool = True,
+    required_page_count: int | None = None,
 ) -> dict[str, Any]:
     """Generate with the configured LangChain provider and role-local Turso retrieval."""
     role_id = role.get("id")
@@ -3425,6 +3445,7 @@ def build_role_cover_letter(
         source=source,
         example_ids=example_ids,
         tweaks=tweaks,
+        required_page_count=required_page_count,
     )
 
 
@@ -3452,11 +3473,40 @@ def save_role_resume(role: dict[str, Any], resume: MasterResume, latex: str) -> 
     role_id = role.get("id")
     if not isinstance(role_id, int):
         raise RuntimeError("Role did not include an ID")
-    resume_path = _ensure_role_resume_copy(role_id, resume)
-    resume_path.write_text(latex)
+    resume_path = _role_resume_tex_path(role_id)
+    resume_path.parent.mkdir(parents=True, exist_ok=True)
+    compiler = shutil.which("tectonic") or shutil.which("latexmk") or shutil.which("pdflatex")
+    if compiler is None:
+        raise RuntimeError("No LaTeX compiler found. Install tectonic, latexmk, or pdflatex.")
+
+    with tempfile.TemporaryDirectory(
+        prefix=f".callumployed-resume-{role_id}-",
+        dir=resume_path.parent,
+    ) as temp_dir:
+        candidate_path = Path(temp_dir) / "resume.tex"
+        candidate_path.write_text(latex)
+        _copy_resume_resources_to_directory(candidate_path.parent)
+        candidate_pdf = _compile_role_resume_pdf(
+            role=role,
+            role_id=role_id,
+            compiler=compiler,
+            resume_path=candidate_path,
+            copy_to_downloads=False,
+        )
+        if not candidate_pdf.is_file() or not PdfReader(str(candidate_pdf)).pages:
+            raise RuntimeError("Generated role resume PDF could not be verified.")
+
+        staged_tex = resume_path.with_name(f".{resume_path.name}.candidate")
+        staged_pdf = resume_path.with_name(f".{resume_path.stem}.pdf.candidate")
+        staged_tex.write_text(latex)
+        shutil.copyfile(candidate_pdf, staged_pdf)
+        try:
+            staged_tex.replace(resume_path)
+            staged_pdf.replace(resume_path.with_suffix(".pdf"))
+        finally:
+            staged_tex.unlink(missing_ok=True)
+            staged_pdf.unlink(missing_ok=True)
     _sync_resume_resources_to_role(role_id)
-    with suppress(RuntimeError):
-        _generate_role_resume_pdf(role, resume, copy_to_downloads=False)
     return _saved_role_resume(role, resume)
 
 
@@ -3530,6 +3580,7 @@ def _write_role_cover_letter(
     source: str,
     example_ids: list[int],
     tweaks: str | None,
+    required_page_count: int | None = None,
 ) -> dict[str, Any]:
     role_id = role.get("id")
     if not isinstance(role_id, int):
@@ -3542,8 +3593,31 @@ def _write_role_cover_letter(
 
     cover_letter_path = _role_cover_letter_tex_path(role_id)
     cover_letter_path.parent.mkdir(parents=True, exist_ok=True)
-    cover_letter_path.write_text(latex)
-    pdf_path, pdf_base64 = _generate_cover_letter_pdf_preview(cover_letter_path)
+    with tempfile.TemporaryDirectory(
+        prefix=f".callumployed-cover-letter-{role_id}-",
+        dir=cover_letter_path.parent,
+    ) as temp_dir:
+        candidate_path = Path(temp_dir) / "cover-letter.tex"
+        candidate_path.write_text(latex)
+        candidate_pdf, pdf_base64 = _generate_cover_letter_pdf_preview(candidate_path)
+        page_count = len(PdfReader(str(candidate_pdf)).pages)
+        if required_page_count is not None and page_count != required_page_count:
+            raise RuntimeError(
+                "Generated cover letter did not fit exactly "
+                f"{required_page_count} PDF page ({page_count} pages)."
+            )
+
+        staged_tex = cover_letter_path.with_name(f".{cover_letter_path.name}.candidate")
+        staged_pdf = cover_letter_path.with_name(f".{cover_letter_path.stem}.pdf.candidate")
+        staged_tex.write_text(latex)
+        shutil.copyfile(candidate_pdf, staged_pdf)
+        try:
+            staged_tex.replace(cover_letter_path)
+            staged_pdf.replace(cover_letter_path.with_suffix(".pdf"))
+        finally:
+            staged_tex.unlink(missing_ok=True)
+            staged_pdf.unlink(missing_ok=True)
+    pdf_path = cover_letter_path.with_suffix(".pdf")
     return {
         "role_id": role_id,
         "source": source,

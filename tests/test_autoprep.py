@@ -173,6 +173,34 @@ def test_partial_failure_preserves_resume_and_retries_only_cover_letter(tmp_path
         assert replay["cover_letter_attempt"] == retried["cover_letter_attempt"] == 2
 
 
+def test_failed_sibling_documents_can_join_one_queued_retry(tmp_path: Path) -> None:
+    database = tmp_path / "autoprep-transition-retry.sqlite3"
+    with db.connect(database) as connection:
+        db.run_migrations(connection)
+        ensure_autoprep_schema(connection)
+        role_id = _interested_role(connection)
+        [job] = enqueue_autoprep_jobs(connection, [role_id], idempotency_key="attempt")
+        assert claim_next_autoprep_job(connection) is not None
+        mark_autoprep_document(connection, job["id"], "resume", "failed", error="failed")
+        mark_autoprep_document(
+            connection, job["id"], "cover_letter", "failed", error="failed"
+        )
+        finish_autoprep_worker(connection, job["id"])
+
+        retry_autoprep_document(
+            connection, role_id, "resume", idempotency_key="transition-resume-1"
+        )
+        retried = retry_autoprep_document(
+            connection, role_id, "cover_letter", idempotency_key="transition-cover-1"
+        )
+
+        assert retried["worker_state"] == "queued"
+        assert retried["resume_status"] == "queued"
+        assert retried["cover_letter_status"] == "queued"
+        assert retried["resume_attempt"] == 2
+        assert retried["cover_letter_attempt"] == 2
+
+
 def test_ready_document_can_be_regenerated_with_persisted_comments(tmp_path: Path) -> None:
     database = tmp_path / "autoprep-regeneration.sqlite3"
     resume_pdf = tmp_path / "resume.pdf"
@@ -584,6 +612,7 @@ def test_autoprep_worker_uses_direct_generation_and_preserves_document_artifacts
     assert stored_resume_latex[1] is None and stored_resume_latex[2] is None
     assert resume_calls and cover_calls
     assert cover_calls[0]["allow_local_fallback"] is False
+    assert cover_calls[0]["required_page_count"] == 1
     assert Path(completed["resume_artifact_path"]).is_file()
     assert Path(completed["cover_letter_artifact_path"]).is_file()
 

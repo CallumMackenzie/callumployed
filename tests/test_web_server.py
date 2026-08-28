@@ -208,6 +208,11 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="company-create-form"' in markup
         assert 'id="companies-list"' in markup
         assert 'id="prep-interested"' in markup
+        assert 'id="autoprep-view"' not in markup
+        assert 'id="autoprep-selected"' not in markup
+        assert 'id="autoprep-interested"' not in app_javascript
+        assert 'function submitAutoprepSelection' not in app_javascript
+        assert 'body: JSON.stringify({role_ids:' not in app_javascript
         assert 'id="role-add-form"' in markup
         assert "Add Explicit Role" in markup
         assert 'id="role-url-input"' in markup
@@ -278,7 +283,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
         assert "/assets/app.css?v=react-ts-20260828-6" in index_markup
-        assert "/assets/build/app.js?v=react-ts-20260828-7" in index_markup
+        assert "/assets/build/app.js?v=react-ts-20260828-8" in index_markup
         assert 'class="prep-role-hero"' in app_javascript
         assert 'class="prep-workspace-nav"' in app_javascript
         assert 'data-prep-section-target="prep-resume-' in app_javascript
