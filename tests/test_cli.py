@@ -1216,6 +1216,14 @@ def test_scan_history_and_show_optionally_includes_link_candidates(
 
     database = tmp_path / "scan-history.sqlite3"
     env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+
+    async def classify_no_ambiguous_links(*_args: object) -> list[object]:
+        return []
+
+    monkeypatch.setattr(
+        "callumployed.services.scan_workflow.build_posting_link_agent_classifier",
+        lambda **_kwargs: classify_no_ambiguous_links,
+    )
     monkeypatch.setattr(
         "callumployed.services.scan_workflow.render_careers_page",
         fake_render_careers_page,
