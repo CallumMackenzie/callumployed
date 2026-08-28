@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import unicodedata
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -1129,6 +1130,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             try:
                 with db.connect() as connection:
                     role = get_role(connection, role_id)
+                    company = get_company(connection, role.company_id)
                     resume = get_master_resume(connection)
             except LookupError:
                 self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
@@ -1137,7 +1139,9 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 self.send_error(HTTPStatus.BAD_REQUEST, "No master resume stored")
                 return
             try:
-                pdf_path = _generate_role_resume_pdf(role.model_dump(mode="json"), resume)
+                role_payload = role.model_dump(mode="json")
+                role_payload["company_name"] = company.name
+                pdf_path = _generate_role_resume_pdf(role_payload, resume)
             except RuntimeError as error:
                 self._send_json_with_status(
                     {"error": str(error)},
@@ -1289,6 +1293,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             try:
                 with db.connect() as connection:
                     role = get_role(connection, role_id)
+                    company = get_company(connection, role.company_id)
                     resume = get_master_resume(connection)
             except LookupError:
                 self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
@@ -1296,8 +1301,10 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             if resume is None:
                 self.send_error(HTTPStatus.BAD_REQUEST, "No master resume stored")
                 return
+            role_payload = role.model_dump(mode="json")
+            role_payload["company_name"] = company.name
             resume_payload = _saved_role_resume(
-                role.model_dump(mode="json"),
+                role_payload,
                 resume,
                 ensure_copy=True,
             )
@@ -1307,7 +1314,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
             self._send_pdf_file(
                 Path(pdf_path_text),
-                filename=_role_material_pdf_filename(role_id, kind="resume"),
+                filename=_role_material_pdf_filename(role_payload, kind="resume"),
             )
 
         def _generate_cover_letter(self, role_id_text: str) -> None:
@@ -1406,7 +1413,8 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
             try:
                 with db.connect() as connection:
-                    get_role(connection, role_id)
+                    role = get_role(connection, role_id)
+                    company = get_company(connection, role.company_id)
             except LookupError:
                 self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
                 return
@@ -1431,7 +1439,13 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
             self._send_pdf_file(
                 pdf_path,
-                filename=_role_material_pdf_filename(role_id, kind="cover_letter"),
+                filename=_role_material_pdf_filename(
+                    {
+                        **role.model_dump(mode="json"),
+                        "company_name": company.name,
+                    },
+                    kind="cover_letter",
+                ),
             )
 
         def _upload_resume_resource(self, role_id_text: str | None = None) -> None:
@@ -3647,7 +3661,7 @@ def _compile_role_resume_pdf(
         return generated_pdf
 
     downloads_dir = Path.home() / "Downloads"
-    target_path = downloads_dir / _role_material_pdf_filename(role_id, kind="resume")
+    target_path = downloads_dir / _role_material_pdf_filename(role, kind="resume")
     shutil.copyfile(generated_pdf, target_path)
     return target_path
 
@@ -3679,14 +3693,27 @@ def _write_tectonic_resume_input(resume_path: Path) -> Path:
 
 
 def _safe_filename(value: str) -> str:
-    cleaned = "".join(character.lower() if character.isalnum() else "-" for character in value)
+    normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode()
+    cleaned = "".join(
+        character.lower() if character.isalnum() else "-" for character in normalized
+    )
     parts = [part for part in cleaned.split("-") if part]
     return "-".join(parts[:10]) or "role"
 
 
-def _role_material_pdf_filename(role_id: int, *, kind: str) -> str:
-    suffix = "Resume" if kind == "resume" else "CL"
-    return f"{_applicant_pdf_filename_prefix()}{suffix}{role_id}.pdf"
+def _role_material_pdf_filename(role: dict[str, Any], *, kind: str) -> str:
+    company_name = role.get("company_name")
+    role_title = role.get("title")
+    role_id = role.get("id")
+    context_parts = [
+        _safe_filename(value)
+        for value in (company_name, role_title)
+        if isinstance(value, str) and value.strip()
+    ]
+    if not context_parts:
+        context_parts.append(f"role-{role_id}" if isinstance(role_id, int) else "role")
+    suffix = "resume" if kind == "resume" else "cover-letter"
+    return "-".join([_applicant_pdf_filename_prefix(), *context_parts, suffix]) + ".pdf"
 
 
 def _applicant_pdf_filename_prefix() -> str:

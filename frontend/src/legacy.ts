@@ -2801,7 +2801,7 @@ function renderPrepResume(role, state = {}) {
       ${
         resume.pdf_base64
           ? `
-            <iframe class="prep-cover-pdf" title="resume PDF preview" src="data:application/pdf;base64,${escapeHtml(resume.pdf_base64)}"></iframe>
+            <iframe class="prep-cover-pdf" title="resume PDF preview" src="${escapeHtml(pdfUrl)}"></iframe>
           `
           : '<p class="prep-cover-path">PDF preview unavailable.</p>'
       }
@@ -2932,7 +2932,7 @@ function renderPrepCoverLetter(role, state = {}) {
             ${
               draft.pdf_base64
                 ? `
-                  <iframe class="prep-cover-pdf" title="cover letter PDF preview" src="data:application/pdf;base64,${escapeHtml(draft.pdf_base64)}"></iframe>
+                  <iframe class="prep-cover-pdf" title="cover letter PDF preview" src="${escapeHtml(pdfUrl)}"></iframe>
                 `
                 : '<p class="prep-cover-path">PDF preview unavailable.</p>'
             }
@@ -3228,14 +3228,15 @@ function updatePrepPdfPreview(kind, roleId, payload) {
   const panel = editor?.closest(".prep-panel");
   const iframe = panel?.querySelector(".prep-cover-pdf");
   const link = panel?.querySelector(".prep-cover-pdf-link");
+  const pdfUrl =
+    kind === "resume"
+      ? `/api/roles/${encodeURIComponent(roleId)}/resume.pdf`
+      : `/api/roles/${encodeURIComponent(roleId)}/cover-letter.pdf`;
   if (iframe) {
-    iframe.src = `data:application/pdf;base64,${payload.pdf_base64}`;
+    iframe.src = `${pdfUrl}?v=${Date.now()}`;
   }
   if (link) {
-    link.href =
-      kind === "resume"
-        ? `/api/roles/${encodeURIComponent(roleId)}/resume.pdf`
-        : `/api/roles/${encodeURIComponent(roleId)}/cover-letter.pdf`;
+    link.href = pdfUrl;
   }
 }
 

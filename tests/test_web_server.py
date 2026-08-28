@@ -281,7 +281,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
         assert "/assets/app.css?v=react-ts-20260827-4" in index_markup
-        assert "/assets/build/app.js?v=react-ts-20260827-4" in index_markup
+        assert "/assets/build/app.js?v=react-ts-20260828-5" in index_markup
         assert 'fetch("/api/central/resolve-companies", { method: "POST" })' in app_javascript
         assert "const companySync = syncCompaniesOnPageLoad().catch(() => {});" in app_javascript
         assert "await companySync;" in app_javascript
@@ -296,6 +296,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'setting.input_type ?? "text"' in app_javascript
         assert 'setting.autocomplete ?? "name"' in app_javascript
         assert 'aria-label="disinterested role actions"' in app_javascript
+        assert 'src="${escapeHtml(pdfUrl)}"' in app_javascript
+        assert "data:application/pdf;base64" not in app_javascript
         assert "scanFailuresOpenButton.hidden = failures.length === 0;" in app_javascript
         assert 'scanFailuresOpenButton.addEventListener("click", openScanFailuresDialog);' in (
             app_javascript
@@ -1098,15 +1100,40 @@ def test_cover_letter_pdf_endpoint_serves_saved_role_pdf(
 
         assert response.status == 200
         assert response.headers["Content-Type"] == "application/pdf"
-        assert response.headers["Content-Disposition"].startswith("inline;")
-        assert 'filename="CallumMackenzieCL1.pdf"' in response.headers[
-            "Content-Disposition"
-        ]
+        disposition = response.headers["Content-Disposition"]
+        assert disposition.startswith("inline;")
+        assert (
+            'filename="CallumMackenzie-acme-backend-intern-cover-letter.pdf"'
+            in disposition
+        )
         assert body == b"%PDF saved cover letter"
     finally:
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+def test_role_material_pdf_filename_includes_safe_job_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        web_server,
+        "_applicant_pdf_filename_prefix",
+        lambda: "CallumMackenzie",
+    )
+
+    filename = web_server._role_material_pdf_filename(
+        {
+            "id": 7,
+            "company_name": "München / R&D",
+            "title": "ML Engineer — Safety/Trust",
+        },
+        kind="cover_letter",
+    )
+
+    assert filename == (
+        "CallumMackenzie-munchen-r-d-ml-engineer-safety-trust-cover-letter.pdf"
+    )
 
 
 def test_cover_letter_latex_normalizer_adds_compact_one_page_layout() -> None:
@@ -1494,7 +1521,7 @@ def test_role_resume_endpoint_loads_and_saves_editable_latex(
 
         assert response.status == 200
         assert response.headers["Content-Disposition"].startswith("inline;")
-        assert 'filename="CallumMackenzieResume1.pdf"' in response.headers[
+        assert 'filename="CallumMackenzie-acme-backend-intern-resume.pdf"' in response.headers[
             "Content-Disposition"
         ]
         assert body == b"role resume pdf"
@@ -1879,7 +1906,7 @@ def test_resume_pdf_uses_temporary_resume_when_role_has_no_custom_copy(
         web_server.set_config_value(connection, "applicant_last_name", "Mackenzie")
 
     pdf_path = web_server._generate_role_resume_pdf(
-        {"id": 1, "title": "Backend Intern"},
+        {"id": 1, "title": "Backend Intern", "company_name": "Acme"},
         web_server.MasterResume(
             filename="resume.tex",
             content="\\documentclass{article}\\begin{document}hi\\end{document}",
@@ -1887,7 +1914,7 @@ def test_resume_pdf_uses_temporary_resume_when_role_has_no_custom_copy(
         ),
     )
 
-    assert pdf_path == downloads / "CallumMackenzieResume1.pdf"
+    assert pdf_path == downloads / "CallumMackenzie-acme-backend-intern-resume.pdf"
     assert pdf_path.read_bytes() == b"pdf"
     assert not (resume_root / "role-1" / "resume.tex").exists()
 
