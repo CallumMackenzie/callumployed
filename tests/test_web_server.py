@@ -193,6 +193,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-status-bar"' in markup
         assert 'id="scan-status-text"' in markup
         assert markup.index('id="scan-summary"') < markup.index('id="scan-status-text"')
+        assert 'window.confirm("Cancel the running scan?")' not in app_javascript
         assert 'id="settings-open"' in markup
         assert 'aria-label="open settings"' in markup
         assert 'id="settings-view"' in markup

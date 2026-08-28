@@ -2060,7 +2060,6 @@ materialsToggle.addEventListener("click", () => {
 
 scanAllButton.addEventListener("click", () => {
   if (scanStatusData?.scanning) {
-    if (!window.confirm("Cancel the running scan?")) return;
     cancelScanAll();
     return;
   }
