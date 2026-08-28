@@ -18,6 +18,26 @@ class CoverLetterDraft(CoverLetterModel):
     example_ids: list[int] = []
 
 
+class ApplicantProfile(CoverLetterModel):
+    first_name: str = ""
+    last_name: str = ""
+    email: str = ""
+    institution: str = ""
+    degree: str = ""
+
+    @property
+    def full_name(self) -> str:
+        configured_name = " ".join(
+            part for part in (self.first_name, self.last_name) if part
+        ).strip()
+        return configured_name or "Applicant"
+
+    @property
+    def latex_sender_block(self) -> str:
+        lines = [self.full_name, self.institution, self.degree, self.email]
+        return "\\\\\n".join(_escape_latex_profile_value(line) for line in lines if line)
+
+
 class CoverLetterSearchTool(Protocol):
     def __call__(self, query: str, *, limit: int = 3) -> list[dict[str, object]]: ...
 
@@ -80,9 +100,9 @@ the retrieved examples:
 - use a compact article-based letter layout when needed; avoid LaTeX letter
   class spacing if it risks spilling past one page
 - keep the sender/contact header left-aligned at the top of the page
-- the sender/contact header must contain only: Callum Mackenzie, University of
-  British Columbia, BSc Computer Science \\& Statistics, and
-  callum@camackenzie.com
+- the sender/contact header must contain only the non-empty name, institution,
+  degree, and email values in applicant_profile; copy those identity values
+  exactly and never infer identity details from examples, the resume, or prior drafts
 - do not include the user's personal website, GitHub, LinkedIn, phone number,
   or extra links in the sender/contact header
 - use proper LaTeX line breaks (`\\`) for stacked header/contact/signature
@@ -116,10 +136,7 @@ recipient lines, greeting if needed, and body paragraphs:
 \\setlength{\\parindent}{0pt}
 \\pagestyle{empty}
 \\begin{document}
-Callum Mackenzie\\\\
-University of British Columbia\\\\
-BSc Computer Science \\& Statistics\\\\
-callum@camackenzie.com\\\\[12pt]
+<applicant_profile.latex_sender_block>\\\\[12pt]
 <recipient/company lines>\\\\[12pt]
 
 Dear Hiring Team,
@@ -127,7 +144,7 @@ Dear Hiring Team,
 <three short body paragraphs>
 
 Sincerely,\\\\[12pt]
-Callum Mackenzie
+<applicant_profile.signature_name>
 \\end{document}
 
 Do not include resume-only packages or commands such as `fancyhdr`, `titlesec`,
@@ -160,6 +177,7 @@ class CoverLetterAgent:
         *,
         role: dict[str, Any],
         resume_content: str,
+        applicant_profile: ApplicantProfile | None = None,
         other_experience_context: list[dict[str, Any]] | None = None,
         tweaks: str | None = None,
         previous_cover_letter_latex: str | None = None,
@@ -198,6 +216,7 @@ class CoverLetterAgent:
         )
         result = await model.ainvoke(
             build_cover_letter_prompt(
+                applicant_profile=applicant_profile or ApplicantProfile(),
                 role=role,
                 resume_content=resume_content,
                 other_experience_context=other_experience_context,
@@ -225,8 +244,24 @@ def strip_cover_letter_dash_punctuation(text: str) -> str:
     return content
 
 
+def _escape_latex_profile_value(value: str) -> str:
+    escaped = value.replace("\\", r"\textbackslash{}")
+    for character, replacement in (
+        ("&", r"\&"),
+        ("%", r"\%"),
+        ("$", r"\$"),
+        ("#", r"\#"),
+        ("_", r"\_"),
+        ("{", r"\{"),
+        ("}", r"\}"),
+    ):
+        escaped = escaped.replace(character, replacement)
+    return escaped
+
+
 def build_cover_letter_prompt(
     *,
+    applicant_profile: ApplicantProfile,
     role: dict[str, Any],
     resume_content: str,
     other_experience_context: list[dict[str, Any]] | None = None,
@@ -235,6 +270,12 @@ def build_cover_letter_prompt(
     previous_cover_letter_latex: str | None = None,
 ) -> str:
     payload = {
+        "applicant_profile": {
+            **applicant_profile.model_dump(),
+            "full_name": applicant_profile.full_name,
+            "signature_name": applicant_profile.full_name,
+            "latex_sender_block": applicant_profile.latex_sender_block,
+        },
         "job_context": {
             "id": role.get("id"),
             "company_id": role.get("company_id"),
@@ -273,6 +314,7 @@ async def generate_cover_letter(
     role: dict[str, Any],
     resume_content: str,
     search_tool: CoverLetterSearchTool,
+    applicant_profile: ApplicantProfile | None = None,
     other_experience_context: list[dict[str, Any]] | None = None,
     tweaks: str | None = None,
     previous_cover_letter_latex: str | None = None,
@@ -286,6 +328,7 @@ async def generate_cover_letter(
     ).generate(
         role=role,
         resume_content=resume_content,
+        applicant_profile=applicant_profile,
         other_experience_context=other_experience_context,
         tweaks=tweaks,
         previous_cover_letter_latex=previous_cover_letter_latex,

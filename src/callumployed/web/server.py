@@ -29,6 +29,7 @@ from zipfile import BadZipFile, ZipFile
 from platformdirs import user_data_path
 
 from callumployed.agents.cover_letter import (
+    ApplicantProfile,
     generate_cover_letter,
     strip_cover_letter_dash_punctuation,
 )
@@ -2534,6 +2535,9 @@ def build_role_cover_letter(
     if not isinstance(role_id, int):
         raise RuntimeError("Role did not include an ID")
 
+    applicant_profile = ApplicantProfile()
+    experience_notes: list[ExperienceNote] = []
+
     def search_cover_letters(query: str, *, limit: int = 3) -> list[dict[str, object]]:
         with db.connect() as connection:
             db.run_migrations(connection)
@@ -2548,11 +2552,13 @@ def build_role_cover_letter(
         with db.connect() as connection:
             db.run_migrations(connection)
             experience_notes = list_experience_notes(connection)
+            applicant_profile = _load_applicant_profile(connection)
         draft = asyncio.run(
             generate_cover_letter(
                 role=role,
                 resume_content=resume.content,
                 search_tool=search_cover_letters,
+                applicant_profile=applicant_profile,
                 other_experience_context=[
                     _experience_note_context(note) for note in experience_notes
                 ],
@@ -2564,7 +2570,16 @@ def build_role_cover_letter(
         example_ids = draft.example_ids
         source = "ai_cover_letter"
     except Exception:  # noqa: BLE001 - prep should degrade when the LLM is unavailable.
-        latex = _normalize_cover_letter_latex(_fallback_cover_letter_latex(role, resume))
+        latex = _normalize_cover_letter_latex(
+            _fallback_cover_letter_latex(
+                role,
+                resume,
+                applicant_profile=applicant_profile,
+                other_experience_context=[
+                    _experience_note_context(note) for note in experience_notes
+                ],
+            )
+        )
         example_ids = []
         source = "local_cover_letter_fallback"
 
@@ -2574,6 +2589,16 @@ def build_role_cover_letter(
         source=source,
         example_ids=example_ids,
         tweaks=tweaks,
+    )
+
+
+def _load_applicant_profile(connection: Any) -> ApplicantProfile:
+    return ApplicantProfile(
+        first_name=get_config_value(connection, APPLICANT_FIRST_NAME_CONFIG_KEY) or "",
+        last_name=get_config_value(connection, APPLICANT_LAST_NAME_CONFIG_KEY) or "",
+        email=get_config_value(connection, APPLICANT_EMAIL_CONFIG_KEY) or "",
+        institution=get_config_value(connection, APPLICANT_INSTITUTION_CONFIG_KEY) or "",
+        degree=get_config_value(connection, APPLICANT_DEGREE_CONFIG_KEY) or "",
     )
 
 
@@ -2758,7 +2783,10 @@ def _remove_cover_letter_website_header_lines(latex: str) -> str:
     lines: list[str] = []
     for line in latex.splitlines():
         normalized = line.lower()
-        has_personal_site = "camackenzie.com" in normalized
+        has_personal_site = any(
+            marker in normalized
+            for marker in ("http://", "https://", r"\url{", r"\href{http")
+        )
         is_email = "@" in normalized or "mailto:" in normalized
         if has_personal_site and not is_email:
             if "[12pt]" in line and lines and lines[-1].rstrip().endswith("\\\\"):
@@ -2825,8 +2853,9 @@ def _repair_single_cover_letter_line_breaks(latex: str) -> str:
 
 def _normalize_cover_letter_signature(latex: str) -> str:
     return re.sub(
-        r"\\signature\{.*?(?=\\setlength\{\\parskip\}|\\begin\{document\})",
-        lambda _match: "\\signature{Callum Mackenzie}\n",
+        r"\\signature\{(?P<name>[^{}]*)\}.*?"
+        r"(?=\\setlength\{\\parskip\}|\\begin\{document\})",
+        lambda match: f"\\signature{{{match.group('name').strip()}}}\n",
         latex,
         count=1,
         flags=re.DOTALL,
@@ -3064,11 +3093,20 @@ def _cover_letter_display_summary(
     return f"Drafted cover letter for {role_label} using resume and job description."
 
 
-def _fallback_cover_letter_latex(role: dict[str, Any], resume: MasterResume) -> str:
+def _fallback_cover_letter_latex(
+    role: dict[str, Any],
+    resume: MasterResume,
+    *,
+    applicant_profile: ApplicantProfile,
+    other_experience_context: list[dict[str, Any]] | None = None,
+) -> str:
     title = str(role.get("title") or "this role")
     company = str(role.get("company_name") or "your team")
     description = str(role.get("description") or "")
-    resume_terms = sorted(_prep_keywords(resume.content))
+    experience_text = " ".join(
+        str(item.get("content") or "") for item in other_experience_context or []
+    )
+    resume_terms = sorted(_prep_keywords(" ".join([resume.content, experience_text])))
     job_terms = sorted(_prep_keywords(" ".join([title, description])))
     matched_terms = ", ".join(sorted(set(resume_terms) & set(job_terms))[:5])
     match_sentence = (
@@ -3080,13 +3118,14 @@ def _fallback_cover_letter_latex(role: dict[str, Any], resume: MasterResume) -> 
         "\\documentclass[11pt]{letter}\n"
         "\\usepackage[margin=1in]{geometry}\n"
         "\\begin{document}\n"
+        f"{applicant_profile.latex_sender_block}\\\\[12pt]\n"
         f"\\begin{{letter}}{{{company}}}\n"
         "\\opening{Dear Hiring Team,}\n\n"
         f"I am excited to apply for the {title} position at {company}. "
         f"{match_sentence} "
         "I would welcome the opportunity to contribute to the team and tailor my "
         "experience to the needs of this posting.\n\n"
-        "\\closing{Sincerely,\\\\Callum Mackenzie}\n"
+        f"\\closing{{Sincerely,\\\\{applicant_profile.full_name}}}\n"
         "\\end{letter}\n"
         "\\end{document}\n"
     )

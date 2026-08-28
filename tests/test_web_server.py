@@ -15,6 +15,7 @@ import pytest
 from typer.testing import CliRunner
 
 import callumployed.web.server as web_server
+from callumployed.agents.cover_letter import ApplicantProfile
 from callumployed.central.config import DEFAULT_CENTRAL_API_URL
 from callumployed.cli import app
 from callumployed.data import db
@@ -657,6 +658,7 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         captured["tweaks"] = kwargs.get("tweaks")
         captured["previous_cover_letter_latex"] = kwargs.get("previous_cover_letter_latex")
         captured["other_experience_context"] = kwargs.get("other_experience_context")
+        captured["applicant_profile"] = kwargs.get("applicant_profile")
 
         class Draft:
             latex = "\\documentclass{letter}\\begin{document}Dear Acme\\end{document}"
@@ -695,6 +697,11 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
             filename="projects.md",
             content="Built a BLE sensor network for motion analysis.",
         )
+        web_server.set_config_value(connection, "applicant_first_name", "Jake")
+        web_server.set_config_value(connection, "applicant_last_name", "Yeo")
+        web_server.set_config_value(connection, "applicant_email", "jake@example.com")
+        web_server.set_config_value(connection, "applicant_institution", "University of Victoria")
+        web_server.set_config_value(connection, "applicant_degree", "Software Engineering")
     db.ensure_initialized()
 
     server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
@@ -745,6 +752,15 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
                 "updated_at": captured["other_experience_context"][0]["updated_at"],
             }
         ]
+        applicant_profile = captured["applicant_profile"]
+        assert isinstance(applicant_profile, ApplicantProfile)
+        assert applicant_profile.model_dump() == {
+            "first_name": "Jake",
+            "last_name": "Yeo",
+            "email": "jake@example.com",
+            "institution": "University of Victoria",
+            "degree": "Software Engineering",
+        }
         saved_latex = (resume_root / "role-1" / "cover-letter.tex").read_text()
         assert "Dear Acme" in saved_latex
         assert "\\setlength{\\parskip}{0.85em}" in saved_latex
@@ -1040,6 +1056,57 @@ def test_cover_letter_latex_normalizer_left_aligns_sender_header() -> None:
     assert "\\noindent\\begin{tabular}{@{}l@{}}" in normalized
     assert "Callum Mackenzie\\\\\ncallum@camackenzie.com" in normalized
     assert normalized.index("\\end{tabular}") < normalized.index("\\begin{letter}")
+
+
+def test_cover_letter_latex_normalizer_preserves_configured_signature() -> None:
+    normalized = web_server._normalize_cover_letter_latex(
+        "\\documentclass[11pt]{letter}\n"
+        "\\signature{Jake Yeo}\n"
+        "\\begin{document}\n"
+        "\\begin{letter}{Hiring Team}\n"
+        "Hello\n"
+        "\\end{letter}\n"
+        "\\end{document}"
+    )
+
+    assert "\\signature{Jake Yeo}" in normalized
+    assert "Callum Mackenzie" not in normalized
+
+
+def test_fallback_cover_letter_uses_profile_and_experience_notes() -> None:
+    latex = web_server._fallback_cover_letter_latex(
+        {
+            "title": "Backend Kubernetes Intern",
+            "company_name": "Acme",
+            "description": "Build Kubernetes infrastructure",
+        },
+        web_server.MasterResume(
+            filename="resume.tex",
+            content="Python backend experience",
+            content_sha256="abc",
+        ),
+        applicant_profile=ApplicantProfile(
+            first_name="Jake",
+            last_name="Yeo",
+            email="jake@example.com",
+            institution="University of Victoria",
+            degree="Software Engineering",
+        ),
+        other_experience_context=[
+            {
+                "filename": "projects.md",
+                "content": "Built and operated a Kubernetes scheduler.",
+                "updated_at": "2026-08-27T00:00:00Z",
+            }
+        ],
+    )
+
+    assert "Jake Yeo" in latex
+    assert "jake@example.com" in latex
+    assert "University of Victoria" in latex
+    assert "Software Engineering" in latex
+    assert "kubernetes" in latex.lower()
+    assert "Callum Mackenzie" not in latex
 
 
 def test_cover_letter_latex_normalizer_escapes_header_ampersands() -> None:

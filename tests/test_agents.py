@@ -5,7 +5,11 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from callumployed.agents.cover_letter import CoverLetterAgent, build_cover_letter_prompt
+from callumployed.agents.cover_letter import (
+    ApplicantProfile,
+    CoverLetterAgent,
+    build_cover_letter_prompt,
+)
 from callumployed.agents.posting_link_classifier import (
     PostingLinkClassificationBatch,
     PostingLinkClassificationDecision,
@@ -131,6 +135,13 @@ def test_resume_feedback_prompt_includes_other_experience_context() -> None:
 
 def test_cover_letter_prompt_includes_resume_job_and_tool_results() -> None:
     prompt = build_cover_letter_prompt(
+        applicant_profile=ApplicantProfile(
+            first_name="Jake",
+            last_name="Yeo",
+            email="jake@example.com",
+            institution="University of Victoria",
+            degree="Bachelor of Software Engineering",
+        ),
         role={
             "id": 1,
             "company_name": "Acme",
@@ -175,7 +186,13 @@ def test_cover_letter_prompt_includes_resume_job_and_tool_results() -> None:
     assert "1in margins" in prompt
     assert "sender block, recipient/date block" in prompt
     assert "sender/contact header must contain only" in prompt
-    assert "callum@camackenzie.com" in prompt
+    assert "applicant_profile" in prompt
+    assert "Jake Yeo" in prompt
+    assert "jake@example.com" in prompt
+    assert "University of Victoria" in prompt
+    assert "Bachelor of Software Engineering" in prompt
+    assert "Callum Mackenzie" not in prompt
+    assert "callum@camackenzie.com" not in prompt
     assert "do not include the user's personal website, GitHub, LinkedIn" in prompt
     assert "Integrate the context deliberately" in prompt
     assert "tailor every body paragraph to the specific position" in prompt
@@ -197,6 +214,14 @@ def test_cover_letter_prompt_includes_resume_job_and_tool_results() -> None:
     assert "previous_cover_letter_context" in prompt
     assert "revise this prior draft according to regeneration_tweaks" in prompt
     assert "Old draft" in prompt
+
+
+def test_applicant_profile_omits_unset_optional_sender_lines() -> None:
+    profile = ApplicantProfile(first_name="Jake", institution="R&D University")
+
+    assert profile.full_name == "Jake"
+    assert profile.latex_sender_block == "Jake\\\\\nR\\&D University"
+    assert "\\\\\n\\\\" not in profile.latex_sender_block
 
 
 def test_resume_tweak_prompt_includes_existing_resume_and_tweaks() -> None:
