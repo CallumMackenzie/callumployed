@@ -125,6 +125,42 @@ def test_profile_manager_clones_template_and_builds_brave_command(
     ]
 
 
+def test_profile_manager_omits_headless_flag_when_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+
+    def launcher(command: list[str]) -> subprocess.Popen[bytes]:
+        commands.append(command)
+        return _fake_process()
+
+    manager = BrowserProfileManager(
+        root=tmp_path / "manager",
+        launcher=launcher,
+        headless=False,
+    )
+    manager._wait_for_cdp = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+    monkeypatch.setattr("callumployed.webscraping.profile_manager._find_free_port", lambda: 9331)
+    manager.create_pool(
+        "tesla",
+        template_path=_template(tmp_path),
+        size=1,
+        browser_executable="/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    )
+
+    lease = manager.acquire("tesla")
+    lease.close()
+
+    assert commands == [
+        [
+            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+            "--remote-debugging-port=9331",
+            f"--user-data-dir={lease.record.path}",
+        ]
+    ]
+
+
 def test_render_with_pool_discards_only_blocked_profiles(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

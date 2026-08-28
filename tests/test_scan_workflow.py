@@ -199,17 +199,19 @@ def test_render_page_node_falls_back_when_profile_manager_is_unconfigured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager_calls: list[str] = []
-    direct_render_calls: list[str] = []
+    direct_render_calls: list[tuple[str, object]] = []
     monkeypatch.setenv("CALLUMPLOYED_BROWSER_BACKEND", "local")
 
     async def fake_render_careers_page(
         url: str,
-        **_render_options: object,
+        **render_options: object,
     ) -> RenderedPageState:
-        direct_render_calls.append(url)
+        direct_render_calls.append((url, render_options.get("headless")))
         return _page(url)
 
     class FakeProfileManager:
+        headless = False
+
         async def render(
             self,
             render: object,
@@ -233,7 +235,7 @@ def test_render_page_node_falls_back_when_profile_manager_is_unconfigured(
     )
 
     assert manager_calls == ["https://example.com/careers"]
-    assert direct_render_calls == ["https://example.com/careers"]
+    assert direct_render_calls == [("https://example.com/careers", False)]
     assert state["page"].final_url == "https://example.com/careers"
 
 

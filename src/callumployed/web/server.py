@@ -61,6 +61,7 @@ from callumployed.data.models import (
     ScanStatus,
 )
 from callumployed.data.repositories import (
+    LOCATION_FILTER_VALUES,
     REVIEW_LATER_EVENT_TYPE,
     add_company,
     add_company_career_page,
@@ -1629,6 +1630,44 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 self.send_error(HTTPStatus.BAD_REQUEST, "Invalid config value type")
                 return
 
+            try:
+                validated_payload = dict(payload)
+                if APPLICANT_FIRST_NAME_CONFIG_KEY in payload:
+                    validated_payload[APPLICANT_FIRST_NAME_CONFIG_KEY] = (
+                        _clean_applicant_name_part(payload[APPLICANT_FIRST_NAME_CONFIG_KEY])
+                    )
+                if APPLICANT_LAST_NAME_CONFIG_KEY in payload:
+                    validated_payload[APPLICANT_LAST_NAME_CONFIG_KEY] = (
+                        _clean_applicant_name_part(payload[APPLICANT_LAST_NAME_CONFIG_KEY])
+                    )
+                for key in APPLICANT_PROFILE_TEXT_CONFIG_KEYS:
+                    if key in payload:
+                        validated_payload[key] = _clean_applicant_profile_text(
+                            key,
+                            payload[key],
+                        )
+                if COVER_LETTER_MODEL_CONFIG_KEY in payload:
+                    validated_payload[COVER_LETTER_MODEL_CONFIG_KEY] = (
+                        _clean_cover_letter_model(payload[COVER_LETTER_MODEL_CONFIG_KEY])
+                    )
+                if "location_filter" in payload:
+                    location_filter = payload["location_filter"].strip().lower().replace("-", "_")
+                    if location_filter not in LOCATION_FILTER_VALUES:
+                        expected_values = ", ".join(sorted(LOCATION_FILTER_VALUES))
+                        raise ValueError(
+                            f"location_filter must be one of: {expected_values}"
+                        )
+                    validated_payload["location_filter"] = location_filter
+                if "central_api_url" in payload:
+                    central_api_url = payload["central_api_url"].strip().rstrip("/")
+                    if not central_api_url:
+                        raise ValueError("central API URL cannot be empty")
+                    validated_payload["central_api_url"] = central_api_url
+            except ValueError as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+
+            payload = validated_payload
             try:
                 with db.connect() as connection:
                     db.run_migrations(connection)

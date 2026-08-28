@@ -3777,8 +3777,34 @@ settingsForm.addEventListener("change", (event) => {
   saveSetting(control);
 });
 
-settingsForm.addEventListener("submit", (event) => {
+settingsForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  const submitButton = settingsForm.querySelector('button[type="submit"]');
+  const controls = settingsForm.querySelectorAll("[data-setting-key]");
+  const payload = {};
+  controls.forEach((control) => {
+    const key = control.dataset.settingKey;
+    if (!key) return;
+    payload[key] = control.type === "checkbox" ? control.checked : control.value;
+  });
+
+  submitButton.disabled = true;
+  submitButton.textContent = "saving...";
+  try {
+    settingsStatus.textContent = "saving settings...";
+    await requestJson("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    await loadSettings();
+  } catch (error) {
+    settingsStatus.textContent = "could not save settings.";
+    settingsStatus.classList.remove("is-empty");
+  } finally {
+    submitButton.disabled = false;
+    submitButton.textContent = "save settings";
+  }
 });
 
 centralApiUrlInput.addEventListener("input", () => {

@@ -33,5 +33,5 @@ class LlmSettings(BaseSettings):
     )
 
     provider: str = Field(default="openai")
-    model: str = Field(default="gpt-4.1-mini")
+    model: str = Field(default="gpt-5.6-terra")
     openai_api_key: SecretStr | None = Field(default=None, validation_alias="OPENAI_API_KEY")

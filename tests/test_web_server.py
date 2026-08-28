@@ -233,6 +233,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'aria-label="applicant profile"' in markup
         assert 'id="settings-profile-options"' in markup
         assert '<button type="submit">save settings</button>' in markup
+        assert 'settingsForm.querySelectorAll("[data-setting-key]")' in app_javascript
+        assert 'body: JSON.stringify(payload)' in app_javascript
         assert 'id="settings-options"' in markup
         assert 'aria-label="filters"' in markup
         assert 'aria-label="config"' in markup
@@ -2116,6 +2118,52 @@ def test_config_endpoint_updates_settings(
             "scan_headless": False,
         }
         assert web_server._configured_browser_profile_manager().headless is False
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_config_endpoint_validates_full_payload_before_persisting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "web-config-atomic.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        initial_request = Request(
+            f"{base_url}/api/config",
+            data=json.dumps({"cover_letter_model": "gpt-4.1-mini"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(initial_request, timeout=5):
+            pass
+
+        invalid_request = Request(
+            f"{base_url}/api/config",
+            data=json.dumps(
+                {
+                    "cover_letter_model": "gpt-5.6-sol",
+                    "applicant_email": "not-an-email",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(HTTPError) as error:
+            urlopen(invalid_request, timeout=5)
+        assert error.value.code == 400
+
+        with urlopen(f"{base_url}/api/config", timeout=5) as response:
+            config = json.loads(response.read().decode())
+        settings = {setting["key"]: setting["value"] for setting in config["settings"]}
+        assert settings["cover_letter_model"] == "gpt-4.1-mini"
+        assert settings["applicant_email"] == ""
     finally:
         server.shutdown()
         thread.join(timeout=5)
