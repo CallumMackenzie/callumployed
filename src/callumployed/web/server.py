@@ -160,9 +160,16 @@ APPLICANT_EMAIL_CONFIG_KEY = "applicant_email"
 APPLICANT_INSTITUTION_CONFIG_KEY = "applicant_institution"
 APPLICANT_DEGREE_CONFIG_KEY = "applicant_degree"
 COVER_LETTER_MODEL_CONFIG_KEY = "cover_letter_model"
+LLM_PROVIDER_CONFIG_KEY = "llm_provider"
 SCAN_HEADLESS_CONFIG_KEY = "scan_headless"
+DEFAULT_LLM_PROVIDER = "openai"
 DEFAULT_COVER_LETTER_MODEL = "gpt-4.1-mini"
 DEFAULT_SCAN_HEADLESS = False
+LLM_PROVIDER_OPTIONS = (
+    ("openai", "OpenAI API key"),
+    ("codex", "Codex subscription (local CLI)"),
+)
+SUPPORTED_LLM_PROVIDERS = frozenset(value for value, _label in LLM_PROVIDER_OPTIONS)
 COVER_LETTER_MODEL_OPTIONS = (
     ("gpt-5.6-terra", "Terra"),
     ("gpt-5.6-luna", "Luna"),
@@ -2042,6 +2049,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 APPLICANT_LAST_NAME_CONFIG_KEY,
                 *APPLICANT_PROFILE_TEXT_CONFIG_KEYS,
                 COVER_LETTER_MODEL_CONFIG_KEY,
+                LLM_PROVIDER_CONFIG_KEY,
                 SCAN_HEADLESS_CONFIG_KEY,
                 "central_api_url",
                 "central_passkey",
@@ -2094,6 +2102,10 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 if COVER_LETTER_MODEL_CONFIG_KEY in payload:
                     validated_payload[COVER_LETTER_MODEL_CONFIG_KEY] = _clean_cover_letter_model(
                         payload[COVER_LETTER_MODEL_CONFIG_KEY]
+                    )
+                if LLM_PROVIDER_CONFIG_KEY in payload:
+                    validated_payload[LLM_PROVIDER_CONFIG_KEY] = _clean_llm_provider(
+                        payload[LLM_PROVIDER_CONFIG_KEY]
                     )
                 if "location_filter" in payload:
                     location_filter = payload["location_filter"].strip().lower().replace("-", "_")
@@ -2163,6 +2175,12 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                             connection,
                             COVER_LETTER_MODEL_CONFIG_KEY,
                             _clean_cover_letter_model(payload[COVER_LETTER_MODEL_CONFIG_KEY]),
+                        )
+                    if LLM_PROVIDER_CONFIG_KEY in payload:
+                        set_config_value(
+                            connection,
+                            LLM_PROVIDER_CONFIG_KEY,
+                            _clean_llm_provider(payload[LLM_PROVIDER_CONFIG_KEY]),
                         )
                     if SCAN_HEADLESS_CONFIG_KEY in payload:
                         set_config_value(
@@ -2332,11 +2350,24 @@ def build_scan_status_payload() -> dict[str, Any]:
 
 
 def build_config_payload() -> dict[str, Any]:
+    configured_llm_provider = LlmSettings().provider
+    try:
+        configured_llm_provider = _clean_llm_provider(configured_llm_provider)
+    except ValueError:
+        configured_llm_provider = DEFAULT_LLM_PROVIDER
+    llm_provider = configured_llm_provider
     cover_letter_model = DEFAULT_COVER_LETTER_MODEL
     scan_headless = DEFAULT_SCAN_HEADLESS
     with db.connect() as connection:
         db.run_migrations(connection)
         values = list_config_values(connection)
+        try:
+            llm_provider = _clean_llm_provider(
+                get_config_value(connection, LLM_PROVIDER_CONFIG_KEY)
+                or configured_llm_provider
+            )
+        except ValueError:
+            llm_provider = DEFAULT_LLM_PROVIDER
         include_graduate_degree_roles = should_include_graduate_degree_roles(connection)
         include_hardware_roles = should_include_hardware_roles(connection)
         require_software_keywords = should_require_software_keywords(connection)
@@ -2440,6 +2471,21 @@ def build_config_payload() -> dict[str, Any]:
                 "value": applicant_degree,
                 "default": "",
                 "editable": True,
+            },
+            {
+                "key": LLM_PROVIDER_CONFIG_KEY,
+                "label": "AI provider",
+                "description": (
+                    "Codex uses the local Codex subscription; OpenAI uses this installation's "
+                    "API key"
+                ),
+                "control": "select",
+                "value": llm_provider,
+                "default": DEFAULT_LLM_PROVIDER,
+                "editable": True,
+                "options": [
+                    {"value": value, "label": label} for value, label in LLM_PROVIDER_OPTIONS
+                ],
             },
             {
                 "key": COVER_LETTER_MODEL_CONFIG_KEY,
@@ -3355,6 +3401,7 @@ def build_role_cover_letter(
     experience_context: list[dict[str, object]] = []
     role_context: list[dict[str, object]] = []
     cover_letter_model = DEFAULT_COVER_LETTER_MODEL
+    llm_settings = LlmSettings(model=cover_letter_model)
     role_for_prompt = dict(role)
     role_for_prompt.pop("description", None)
 
@@ -3403,6 +3450,10 @@ def build_role_cover_letter(
                 )
             except ValueError:
                 cover_letter_model = DEFAULT_COVER_LETTER_MODEL
+            llm_settings = _llm_settings_for_generation(
+                connection,
+                model=cover_letter_model,
+            )
         experience_context = _generation_experience_context(
             experience_notes,
             role=role_for_prompt,
@@ -3418,7 +3469,7 @@ def build_role_cover_letter(
                 role_context=role_context,
                 tweaks=tweaks,
                 previous_cover_letter_latex=previous_cover_letter_latex,
-                settings=LlmSettings(model=cover_letter_model),
+                settings=llm_settings,
             )
         )
         latex = _normalize_cover_letter_latex(draft.latex)
@@ -3522,10 +3573,12 @@ def build_role_resume(
         raise RuntimeError("Role did not include an ID")
     source_latex = previous_latex or _ensure_role_resume_copy(role_id, resume).read_text()
     experience_notes: list[ExperienceNote] = []
+    llm_settings = LlmSettings()
     try:
         with db.connect() as connection:
             db.run_migrations(connection)
             experience_notes = list_experience_notes(connection)
+            llm_settings = _llm_settings_for_generation(connection)
         draft = asyncio.run(
             generate_resume_tweak(
                 role=role,
@@ -3536,6 +3589,7 @@ def build_role_resume(
                     role=role,
                     tweaks=tweaks,
                 ),
+                settings=llm_settings,
             )
         )
     except Exception as error:  # noqa: BLE001 - surface a concise UI failure.
@@ -4073,6 +4127,32 @@ def _config_bool(value: str | None, *, default: bool) -> bool:
     if value is None:
         return default
     return value.lower() in {"1", "true", "yes", "on"}
+
+
+def _llm_settings_for_generation(
+    connection: Any,
+    *,
+    model: str | None = None,
+) -> LlmSettings:
+    environment_settings = LlmSettings()
+    provider = _clean_llm_provider(
+        get_config_value(connection, LLM_PROVIDER_CONFIG_KEY)
+        or environment_settings.provider
+    )
+    return LlmSettings(
+        provider=provider,
+        model=model or environment_settings.model,
+        codex_model=environment_settings.codex_model,
+        openai_api_key=environment_settings.openai_api_key,
+    )
+
+
+def _clean_llm_provider(value: object) -> str:
+    provider = str(value or "").strip().lower()
+    if provider not in SUPPORTED_LLM_PROVIDERS:
+        expected = ", ".join(sorted(SUPPORTED_LLM_PROVIDERS))
+        raise ValueError(f"llm_provider must be one of: {expected}")
+    return provider
 
 
 def _clean_cover_letter_model(value: object) -> str:

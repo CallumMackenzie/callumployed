@@ -1973,12 +1973,42 @@ def test_cover_letter_model_accepts_only_dropdown_options(model: str) -> None:
         web_server._clean_cover_letter_model("other-model")
 
 
+@pytest.mark.parametrize("provider", ["openai", "codex"])
+def test_llm_provider_accepts_only_settings_options(provider: str) -> None:
+    assert web_server._clean_llm_provider(provider) == provider
+
+    with pytest.raises(ValueError, match="llm_provider must be one of"):
+        web_server._clean_llm_provider("hermes")
+
+
+def test_persisted_llm_provider_overrides_environment_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "provider-config.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setenv("CALLUMPLOYED_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-api-key")
+
+    with web_server.db.connect() as connection:
+        web_server.db.run_migrations(connection)
+        defaults = web_server._llm_settings_for_generation(connection)
+        web_server.set_config_value(connection, "llm_provider", "codex")
+        selected = web_server._llm_settings_for_generation(connection)
+
+    assert defaults.provider == "openai"
+    assert defaults.openai_api_key is not None
+    assert selected.provider == "codex"
+    assert selected.openai_api_key is not None
+
+
 def test_config_payload_returns_current_settings(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database = tmp_path / "web-config.sqlite3"
     monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setenv("CALLUMPLOYED_LLM_PROVIDER", "openai")
     monkeypatch.setattr(web_server, "get_central_passkey", lambda: None)
 
     defaults = build_config_payload()
@@ -2042,6 +2072,21 @@ def test_config_payload_returns_current_settings(
             "value": "",
             "default": "",
             "editable": True,
+        },
+        {
+            "key": "llm_provider",
+            "label": "AI provider",
+            "description": (
+                "Codex uses the local Codex subscription; OpenAI uses this installation's API key"
+            ),
+            "control": "select",
+            "value": "openai",
+            "default": "openai",
+            "editable": True,
+            "options": [
+                {"value": "openai", "label": "OpenAI API key"},
+                {"value": "codex", "label": "Codex subscription (local CLI)"},
+            ],
         },
         {
             "key": "cover_letter_model",
@@ -2130,6 +2175,7 @@ def test_config_endpoint_updates_settings(
 ) -> None:
     database = tmp_path / "web-config-endpoint.sqlite3"
     monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setenv("CALLUMPLOYED_LLM_PROVIDER", "openai")
     monkeypatch.setattr(web_server, "get_central_passkey", lambda: None)
     server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -2152,6 +2198,7 @@ def test_config_endpoint_updates_settings(
                     "applicant_institution": "University of Victoria",
                     "applicant_degree": "Bachelor of Engineering in Software Engineering",
                     "cover_letter_model": "gpt-5.6-terra",
+                    "llm_provider": "codex",
                     "scan_headless": False,
                     "require_software_keywords": False,
                     "internship_mode": False,
@@ -2174,6 +2221,7 @@ def test_config_endpoint_updates_settings(
             "applicant_institution": "University of Victoria",
             "applicant_last_name": "Mackenzie",
             "cover_letter_model": "gpt-5.6-terra",
+            "llm_provider": "codex",
             "include_graduate_degree_roles": "true",
             "internship_mode": "false",
             "location_filter": "north_america",
@@ -2188,6 +2236,7 @@ def test_config_endpoint_updates_settings(
             "applicant_institution": "University of Victoria",
             "applicant_last_name": "Mackenzie",
             "cover_letter_model": "gpt-5.6-terra",
+            "llm_provider": "codex",
             "include_graduate_degree_roles": True,
             "include_hardware_roles": False,
             "require_software_keywords": False,
