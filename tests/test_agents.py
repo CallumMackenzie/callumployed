@@ -698,7 +698,10 @@ def test_posting_link_classifier_agent_uses_settings_and_validates_response() ->
         assert settings.model == "gpt-5.6-terra"
         return FakeStructuredModel()
 
-    agent = PostingLinkClassifierAgent(chat_model_factory=fake_model_factory)
+    agent = PostingLinkClassifierAgent(
+        settings=LlmSettings(provider="openai", model="gpt-5.6-terra"),
+        chat_model_factory=fake_model_factory,
+    )
     response = asyncio.run(agent.classify(batch))
 
     assert calls
@@ -824,6 +827,15 @@ def test_llm_settings_reads_provider_and_model_from_dotenv(
     assert settings.provider == "openai"
     assert settings.model == "gpt-test-model"
     assert settings.openai_api_key is not None
+
+
+def test_build_chat_model_supports_codex_without_changing_openai_configuration() -> None:
+    model = build_chat_model(
+        LlmSettings(provider="codex", codex_model="gpt-5.3-codex")
+    )
+
+    assert model.__class__.__name__ == "CodexStructuredChatModel"
+    assert model.model == "gpt-5.3-codex"
 
 
 def test_build_chat_model_rejects_unsupported_provider() -> None:

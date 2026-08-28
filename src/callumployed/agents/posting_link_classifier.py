@@ -328,4 +328,8 @@ def build_chat_model(settings: LlmSettings) -> Any:
         if settings.openai_api_key is None:
             return ChatOpenAI(model=settings.model)
         return ChatOpenAI(model=settings.model, api_key=settings.openai_api_key)
+    if provider == "codex":
+        from callumployed.agents.codex_chat_model import CodexStructuredChatModel
+
+        return CodexStructuredChatModel(model=settings.codex_model)
     raise ValueError(f"unsupported LLM provider: {settings.provider}")

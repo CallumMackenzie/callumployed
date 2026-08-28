@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 from zipfile import ZipFile
 
 import pytest
+from pypdf import PdfWriter
 from typer.testing import CliRunner
 
 import callumployed.web.server as web_server
@@ -52,6 +53,14 @@ from callumployed.web.server import (
 )
 
 runner = CliRunner()
+
+
+def _valid_pdf_bytes() -> bytes:
+    output = BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    writer.write(output)
+    return output.getvalue()
 
 
 def test_local_server_enables_address_reuse_before_binding() -> None:
@@ -756,7 +765,7 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
 
     def fake_run(command: object, **kwargs: object) -> object:
         cwd = Path(kwargs["cwd"])
-        (cwd / "cover-letter.pdf").write_bytes(b"cover pdf")
+        (cwd / "cover-letter.pdf").write_bytes(_valid_pdf_bytes())
 
         class Completed:
             returncode = 0
@@ -904,7 +913,7 @@ def test_cover_letter_save_endpoint_writes_edited_latex(
 
     def fake_run(command: object, **kwargs: object) -> object:
         cwd = Path(kwargs["cwd"])
-        (cwd / "cover-letter.pdf").write_bytes(b"edited cover pdf")
+        (cwd / "cover-letter.pdf").write_bytes(_valid_pdf_bytes())
 
         class Completed:
             returncode = 0
@@ -1461,7 +1470,7 @@ def test_role_resume_endpoint_loads_and_saves_editable_latex(
 
     def fake_run(command: object, **kwargs: object) -> object:
         cwd = Path(kwargs["cwd"])
-        (cwd / "resume.pdf").write_bytes(b"role resume pdf")
+        (cwd / "resume.pdf").write_bytes(_valid_pdf_bytes())
 
         class Completed:
             returncode = 0
@@ -1501,7 +1510,7 @@ def test_role_resume_endpoint_loads_and_saves_editable_latex(
         assert response.status == 200
         assert "Python systems" in resume["latex"]
         assert resume["pdf_base64"]
-        assert base64.b64decode(resume["pdf_base64"]) == b"role resume pdf"
+        assert base64.b64decode(resume["pdf_base64"]) == _valid_pdf_bytes()
         assert (resume_root / "role-1" / "resume.tex").exists()
 
         request = Request(
@@ -1534,7 +1543,7 @@ def test_role_resume_endpoint_loads_and_saves_editable_latex(
             'filename="CallumMackenzie-acme-backend-intern-resume.pdf"'
             in response.headers["Content-Disposition"]
         )
-        assert body == b"role resume pdf"
+        assert body == _valid_pdf_bytes()
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -1558,7 +1567,7 @@ def test_role_resume_endpoint_regenerates_with_tweaks(
 
     def fake_run(command: object, **kwargs: object) -> object:
         cwd = Path(kwargs["cwd"])
-        (cwd / "resume.pdf").write_bytes(b"regenerated resume pdf")
+        (cwd / "resume.pdf").write_bytes(_valid_pdf_bytes())
 
         class Completed:
             returncode = 0
@@ -1643,7 +1652,7 @@ def test_role_resume_endpoint_regenerates_with_tweaks(
         assert resume["summary"] == "emphasized distributed systems"
         assert resume["tweaks"] == "Emphasize distributed systems."
         assert "Python distributed systems" in resume["latex"]
-        assert base64.b64decode(resume["pdf_base64"]) == b"regenerated resume pdf"
+        assert base64.b64decode(resume["pdf_base64"]) == _valid_pdf_bytes()
         assert captured["resume_content"] == "Current editor latex"
         assert captured["tweaks"] == "Emphasize distributed systems."
         indexed_context = captured["other_experience_context"]
