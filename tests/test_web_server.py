@@ -195,6 +195,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="settings-open"' in markup
         assert 'aria-label="open settings"' in markup
         assert 'id="settings-view"' in markup
+        assert 'aria-label="applicant profile"' in markup
+        assert 'id="settings-profile-options"' in markup
         assert 'id="settings-options"' in markup
         assert 'aria-label="filters"' in markup
         assert 'aria-label="config"' in markup
@@ -231,6 +233,9 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'fetch("/api/central/resolve-companies", { method: "POST" })' in app_javascript
         assert "await syncCompaniesOnPageLoad().catch(() => {});" in app_javascript
         assert "loadInitialTrackerData();" in app_javascript
+        assert "settingsProfileOptions.innerHTML" in app_javascript
+        assert 'setting.input_type ?? "text"' in app_javascript
+        assert 'setting.autocomplete ?? "name"' in app_javascript
         assert 'aria-label="disinterested role actions"' in app_javascript
     finally:
         server.shutdown()

@@ -58,6 +58,7 @@ const settingsView = document.querySelector("#settings-view");
 const settingsCloseButton = document.querySelector("#settings-close");
 const settingsStatus = document.querySelector("#settings-status");
 const settingsForm = document.querySelector("#settings-form");
+const settingsProfileOptions = document.querySelector("#settings-profile-options");
 const settingsOptions = document.querySelector("#settings-options");
 const centralStoreSummary = document.querySelector("#central-store-summary");
 const centralStoreSyncSummary = document.querySelector("#central-store-sync-summary");
@@ -758,6 +759,8 @@ function renderScanStatus(payload) {
 function renderSettings(payload, message = "") {
   settingsData = payload;
   const settings = Array.isArray(payload?.settings) ? payload.settings : [];
+  const profileSettings = settings.filter((setting) => setting.key?.startsWith("applicant_"));
+  const filterSettings = settings.filter((setting) => !setting.key?.startsWith("applicant_"));
   const central = payload?.central ?? {};
   settingsStatus.textContent = message;
   settingsStatus.classList.toggle("is-empty", !message);
@@ -768,7 +771,10 @@ function renderSettings(payload, message = "") {
       : "no saved resume feedback decisions";
   clearRecommendationHistoryButton.disabled = historyCount === 0;
   renderCentralSettings(central);
-  settingsOptions.innerHTML = settings
+  settingsProfileOptions.innerHTML = profileSettings
+    .map((setting) => renderSettingOption(setting))
+    .join("");
+  settingsOptions.innerHTML = filterSettings
     .map((setting) => renderSettingOption(setting))
     .join("");
   setSettingsDisabled(false);
@@ -820,6 +826,8 @@ function renderSettingOption(setting) {
 
 function renderTextSettingOption(setting) {
   const defaultText = setting.default ? `default: ${formatUiText(setting.default)}` : "optional";
+  const inputType = setting.input_type ?? "text";
+  const autocomplete = setting.autocomplete ?? "name";
   return `
     <label class="setting-option">
       <span class="setting-copy">
@@ -831,9 +839,9 @@ function renderTextSettingOption(setting) {
         class="setting-text-input"
         data-setting-text
         name="${escapeHtml(setting.key)}"
-        type="text"
+        type="${escapeHtml(inputType)}"
         value="${escapeHtml(setting.value ?? "")}"
-        autocomplete="name"
+        autocomplete="${escapeHtml(autocomplete)}"
       />
     </label>
   `;
