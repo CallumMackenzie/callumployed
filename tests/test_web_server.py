@@ -192,6 +192,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         markup = (static_directory / "shell.html").read_text()
         repository_root = Path(web_server.__file__).parents[3]
         app_javascript = (repository_root / "frontend" / "src" / "legacy.ts").read_text()
+        app_styles = (static_directory / "app.css").read_text()
 
         assert 'id="toggle-all"' in markup
         assert (
@@ -280,8 +281,14 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=react-ts-20260827-4" in index_markup
-        assert "/assets/build/app.js?v=react-ts-20260828-5" in index_markup
+        assert "/assets/app.css?v=react-ts-20260828-5" in index_markup
+        assert "/assets/build/app.js?v=react-ts-20260828-6" in index_markup
+        assert 'class="prep-role-hero"' in app_javascript
+        assert 'class="prep-workspace-nav"' in app_javascript
+        assert 'data-prep-section-target="prep-resume-' in app_javascript
+        assert 'class="prep-document-workspace"' in app_javascript
+        assert ".prep-role-hero" in app_styles
+        assert ".prep-document-workspace" in app_styles
         assert 'fetch("/api/central/resolve-companies", { method: "POST" })' in app_javascript
         assert "const companySync = syncCompaniesOnPageLoad().catch(() => {});" in app_javascript
         assert "await companySync;" in app_javascript

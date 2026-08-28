@@ -321,21 +321,42 @@ import{t as e}from"./preload-helper-Czpn1I53.js";var{sankey:t,sankeyLinkHorizont
       </div>
     `;return}g.innerHTML=`
     ${e?`<p class="review-message">${B(e)}</p>`:``}
-    <div class="review-title-row">
-      <p class="review-company">${H(t.company_name)}</p>
-      ${Ht(t.title,t.role_url,`review-role-title`)}
+    <section class="prep-role-hero" aria-label="role overview">
+      <div class="review-title-row">
+        <div class="prep-role-eyebrow">
+          <p class="review-company">${H(t.company_name)}</p>
+          <span>application workspace</span>
+        </div>
+        ${Ht(t.title,t.role_url,`review-role-title`)}
+      </div>
+      <dl class="review-details review-primary-details">
+        ${Y(`location`,t.location,!1,`review-location-detail`)}
+        ${Y(`last`,z(t.last_seen_at))}
+        ${Y(`updated`,z(t.updated_at))}
+      </dl>
+      <nav class="prep-workspace-nav" aria-label="prep sections">
+        <button type="button" data-prep-section-target="prep-resume-${t.id}">
+          <span>01</span> résumé
+        </button>
+        <button type="button" data-prep-section-target="prep-cover-letter-${t.id}">
+          <span>02</span> cover letter
+        </button>
+        <button type="button" data-prep-section-target="prep-description-${t.id}">
+          <span>03</span> role details
+        </button>
+        <button type="button" data-prep-section-target="prep-chat-${t.id}">
+          <span>04</span> role chat
+        </button>
+      </nav>
+    </section>
+    <div class="prep-workspace">
+      ${ti(t)}
+      ${ai(t)}
+      ${ni(t.id,t.description)}
+      ${ri(t)}
     </div>
-    <dl class="review-details review-primary-details">
-      ${Y(`location`,t.location,!1,`review-location-detail`)}
-      ${Y(`last`,z(t.last_seen_at))}
-      ${Y(`updated`,z(t.updated_at))}
-    </dl>
-    ${ti(t)}
-    ${ai(t)}
-    ${ni(t.description)}
-    ${ri(t)}
   `,U(),di(t.id).then(e=>{!e||N[0]?.id!==t.id||(F.set(t.id,e),g.querySelector(`.prep-resume`)?.replaceWith($(ti(t,{resume:e}))),U())}).catch(()=>{}),Si(t.id).then(e=>{!e||N[0]?.id!==t.id||(I.set(t.id,e),g.querySelector(`.prep-cover-letter`)?.replaceWith($(ai(t,{coverLetter:e}))),U())}).catch(()=>{})}function ti(e,t={}){let n=F.get(e.id),r=t.resume??n,i=t.tweaks??xt.get(e.id)??``,a=`/api/roles/${encodeURIComponent(e.id)}/resume.pdf`;return t.loading?`
-      <details class="prep-panel prep-resume" open>
+      <details class="prep-panel prep-resume" id="prep-resume-${e.id}" open>
         <summary class="prep-analysis-header">
           <span class="prep-accordion-icon" aria-hidden="true"></span>
           <h3>resume</h3>
@@ -349,7 +370,7 @@ import{t as e}from"./preload-helper-Czpn1I53.js";var{sankey:t,sankeyLinkHorizont
         </div>
       </details>
     `:r?`
-    <details class="prep-panel prep-resume" open>
+    <details class="prep-panel prep-resume" id="prep-resume-${e.id}" open>
       <summary class="prep-analysis-header">
         <span class="prep-accordion-icon" aria-hidden="true"></span>
         <h3>resume</h3>
@@ -360,32 +381,46 @@ import{t as e}from"./preload-helper-Czpn1I53.js";var{sankey:t,sankeyLinkHorizont
       </summary>
       <p class="prep-overview">${H(r.summary??`Saved resume for this role.`)}</p>
       ${Q(e)}
-      <label class="prep-cover-tweaks prep-resume-tweaks">
-        <span>tweaks</span>
-        <textarea
-          data-prep-resume-tweaks="${e.id}"
-          rows="4"
-          placeholder="paste or write a resume tweak prompt..."
-        >${B(i)}</textarea>
-      </label>
-      <div class="prep-cover-actions">
-        <button type="button" data-prep-resume-regenerate="${e.id}">
-          regenerate with tweaks
-        </button>
+      <section class="prep-generation-controls" aria-label="résumé refinement">
+        <div class="prep-control-heading">
+          <span>refine this version</span>
+          <p>Describe a focused change, then regenerate without losing the saved source.</p>
+        </div>
+        <label class="prep-cover-tweaks prep-resume-tweaks">
+          <span>tweak instructions</span>
+          <textarea
+            data-prep-resume-tweaks="${e.id}"
+            rows="4"
+            placeholder="paste or write a resume tweak prompt..."
+          >${B(i)}</textarea>
+        </label>
+        <div class="prep-cover-actions">
+          <button type="button" data-prep-resume-regenerate="${e.id}">
+            regenerate with tweaks
+          </button>
+        </div>
+      </section>
+      <div class="prep-document-workspace">
+        <label class="prep-cover-latex prep-document-source">
+          <span>LaTeX source</span>
+          <textarea
+            data-prep-resume-latex="${e.id}"
+            spellcheck="false"
+          >${B(r.latex??``)}</textarea>
+        </label>
+        <section class="prep-document-preview" aria-label="résumé preview">
+          <div class="prep-preview-heading">
+            <span>document preview</span>
+            <p>Updates automatically after the source is saved.</p>
+          </div>
+          ${r.pdf_base64?`
+                <iframe class="prep-cover-pdf" title="resume PDF preview" src="${B(a)}"></iframe>
+              `:`<p class="prep-cover-path">PDF preview unavailable.</p>`}
+        </section>
       </div>
-      <label class="prep-cover-latex">
-        <span>latex</span>
-        <textarea
-          data-prep-resume-latex="${e.id}"
-          spellcheck="false"
-        >${B(r.latex??``)}</textarea>
-      </label>
-      ${r.pdf_base64?`
-            <iframe class="prep-cover-pdf" title="resume PDF preview" src="${B(a)}"></iframe>
-          `:`<p class="prep-cover-path">PDF preview unavailable.</p>`}
     </details>
   `:`
-      <details class="prep-panel prep-resume" open>
+      <details class="prep-panel prep-resume" id="prep-resume-${e.id}" open>
         <summary class="prep-analysis-header">
           <span class="prep-accordion-icon" aria-hidden="true"></span>
           <h3>resume</h3>
@@ -398,16 +433,16 @@ import{t as e}from"./preload-helper-Czpn1I53.js";var{sankey:t,sankeyLinkHorizont
           <p>loading role resume...</p>
         </div>
       </details>
-    `}function ni(e){return`
-    <details class="prep-panel prep-description-panel">
+    `}function ni(e,t){return`
+    <details class="prep-panel prep-description-panel" id="prep-description-${e}">
       <summary class="prep-analysis-header">
         <span class="prep-accordion-icon" aria-hidden="true"></span>
         <h3>description</h3>
       </summary>
-      ${Hr(e)}
+      ${Hr(t)}
     </details>
   `}function ri(e,t={}){let n=t.messages??St.get(e.id)??[],r=!!t.loading;return`
-    <details class="prep-panel prep-role-chat">
+    <details class="prep-panel prep-role-chat" id="prep-chat-${e.id}">
       <summary class="prep-analysis-header">
         <span class="prep-accordion-icon" aria-hidden="true"></span>
         <h3>chat about this role</h3>
@@ -432,7 +467,7 @@ import{t as e}from"./preload-helper-Czpn1I53.js";var{sankey:t,sankeyLinkHorizont
       <p>${H(e?.content??``)}</p>
     </article>
   `}function ai(e,t={}){let n=I.get(e.id),r=t.coverLetter??n,i=t.tweaks??r?.tweaks??``,a=`/api/roles/${encodeURIComponent(e.id)}/cover-letter.pdf`;return t.loading?`
-      <details class="prep-panel prep-cover-letter" open>
+      <details class="prep-panel prep-cover-letter" id="prep-cover-letter-${e.id}" open>
         <summary class="prep-analysis-header">
           <span class="prep-accordion-icon" aria-hidden="true"></span>
           <h3>cover letter</h3>
@@ -446,7 +481,7 @@ import{t as e}from"./preload-helper-Czpn1I53.js";var{sankey:t,sankeyLinkHorizont
         </div>
       </details>
     `:`
-    <details class="prep-panel prep-cover-letter" open>
+    <details class="prep-panel prep-cover-letter" id="prep-cover-letter-${e.id}" open>
       <summary class="prep-analysis-header">
         <span class="prep-accordion-icon" aria-hidden="true"></span>
         <h3>cover letter</h3>
@@ -456,30 +491,46 @@ import{t as e}from"./preload-helper-Czpn1I53.js";var{sankey:t,sankeyLinkHorizont
         </div>
       </summary>
       ${r?`<p class="prep-overview">${H(r.summary??`cover letter generated`)}</p>`:`<p class="prep-overview">generate a LaTeX cover letter from the resume, posting, and stored examples.</p>`}
-      <div class="prep-cover-actions">
-        <button type="button" data-prep-cover-letter="${e.id}">
-          ${r?`regenerate`:`generate`}
-        </button>
-      </div>
+      <section class="prep-generation-controls" aria-label="cover letter generation">
+        <div class="prep-control-heading">
+          <span>${r?`refine this version`:`create a tailored draft`}</span>
+          <p>Use the role, résumé, and saved examples to shape the letter.</p>
+        </div>
+        ${r?`
+              <label class="prep-cover-tweaks">
+                <span>tweak instructions</span>
+                <textarea
+                  data-prep-cover-letter-tweaks="${e.id}"
+                  rows="3"
+                  placeholder="make it warmer, cut a paragraph, emphasize systems work..."
+                >${B(i)}</textarea>
+              </label>
+            `:``}
+        <div class="prep-cover-actions">
+          <button type="button" data-prep-cover-letter="${e.id}">
+            ${r?`regenerate`:`generate cover letter`}
+          </button>
+        </div>
+      </section>
       ${r?`
-            <label class="prep-cover-tweaks">
-              <span>tweaks</span>
-              <textarea
-                data-prep-cover-letter-tweaks="${e.id}"
-                rows="3"
-                placeholder="make it warmer, cut a paragraph, emphasize systems work..."
-              >${B(i)}</textarea>
-            </label>
-            <label class="prep-cover-latex">
-              <span>latex</span>
-              <textarea
-                data-prep-cover-letter-latex="${e.id}"
-                spellcheck="false"
-              >${B(r.latex??``)}</textarea>
-            </label>
-            ${r.pdf_base64?`
-                  <iframe class="prep-cover-pdf" title="cover letter PDF preview" src="${B(a)}"></iframe>
-                `:`<p class="prep-cover-path">PDF preview unavailable.</p>`}
+            <div class="prep-document-workspace">
+              <label class="prep-cover-latex prep-document-source">
+                <span>LaTeX source</span>
+                <textarea
+                  data-prep-cover-letter-latex="${e.id}"
+                  spellcheck="false"
+                >${B(r.latex??``)}</textarea>
+              </label>
+              <section class="prep-document-preview" aria-label="cover letter preview">
+                <div class="prep-preview-heading">
+                  <span>document preview</span>
+                  <p>Updates automatically after the source is saved.</p>
+                </div>
+                ${r.pdf_base64?`
+                      <iframe class="prep-cover-pdf" title="cover letter PDF preview" src="${B(a)}"></iframe>
+                    `:`<p class="prep-cover-path">PDF preview unavailable.</p>`}
+              </section>
+            </div>
           `:``}
     </details>
   `}function Q(e,t={}){let n=P.get(e.id);if(!t.loading&&!t.error&&!t.analysis&&n)return Q(e,{analysis:n});if(!t.loading&&!t.error&&!t.analysis)return`
@@ -559,4 +610,4 @@ import{t as e}from"./preload-helper-Czpn1I53.js";var{sankey:t,sankeyLinkHorizont
         <p class="prep-proposed-label">feedback only</p>
         <p>not enough information to turn this into a safe resume tweak.</p>
       </div>
-    `}async function si(e,t={}){if(!t.force&&P.has(e))return P.get(e);let n=await fetch(`/api/roles/${encodeURIComponent(e)}/prep-analysis`);if(!n.ok)throw Error(`Prep analysis request failed`);let r=await n.json();return r.analysis.resources=r.resources??[],P.set(e,r.analysis),r.analysis}function $(e){let t=document.createElement(`template`);return t.innerHTML=e.trim(),t.content.firstElementChild}async function ci(e){let t=N[0];if(!t)return;let n=h.querySelectorAll(`.review-action`);if(n.forEach(e=>{e.disabled=!0}),e===`later`){try{await Ci(t.id),t.review_later_count=Number(t.review_later_count??0)+1,N.length>1?(N.push(N.shift()),Z(`moved to the back of the prep queue.`)):Z(`only one role is in the prep queue.`)}catch{Z(`could not postpone prep. try again.`)}return}if(e===`applied`)try{let e=await wi(t.id,`applied`);N.shift(),Z(`moved to applied.`),Tr(e,document.querySelector(`.job[data-role-id="${CSS.escape(String(t.id))}"]`))}catch{n.forEach(e=>{e.disabled=!1}),Z(`could not move that role. try again.`)}}async function li(e,t,n,r){let i=await fetch(`/api/roles/${encodeURIComponent(e)}/prep-feedback`,{method:`POST`,headers:{"Content-Type":`application/json`},body:JSON.stringify({feedback_index:t,feedback_item:n,comment:r})});if(!i.ok)throw Error(`Prep feedback update failed`);return i.json()}async function ui(e,t,n,r){let i=await fetch(`/api/roles/${encodeURIComponent(e)}/prep-feedback-ignore`,{method:`POST`,headers:{"Content-Type":`application/json`},body:JSON.stringify({feedback_index:t,feedback_item:n,comment:r})});if(!i.ok)throw Error(`Prep feedback ignore failed`);return i.json()}async function di(e,{force:t=!1}={}){if(!t&&F.has(e))return F.get(e);let n=await fetch(`/api/roles/${encodeURIComponent(e)}/resume`);if(!n.ok)throw Error(`Resume request failed`);let r=await n.json();return r.resume&&F.set(e,r.resume),r.resume}async function fi(e,t){let n=await fetch(`/api/roles/${encodeURIComponent(e)}/resume/save`,{method:`POST`,headers:{"Content-Type":`application/json`},body:JSON.stringify({latex:t})});if(!n.ok)throw Error(`Resume save failed`);return n.json()}async function pi(e,t,n){let r=await fetch(`/api/roles/${encodeURIComponent(e)}/resume`,{method:`POST`,headers:{"Content-Type":`application/json`},body:JSON.stringify({tweaks:t,previous_latex:n})});if(!r.ok)throw Error(`Resume generation failed`);return r.json()}async function mi(e,t){let n=await fetch(`/api/roles/${encodeURIComponent(e)}/chat`,{method:`POST`,headers:{"Content-Type":`application/json`},body:JSON.stringify({messages:t})});if(!n.ok)throw Error(`Role chat failed`);return n.json()}function hi(e,t,n=ht){let r=Ct.get(e)??{timer:null,saving:!1,version:0,latex:``};r.version+=1,r.latex=t,r.timer&&clearTimeout(r.timer),r.timer=setTimeout(()=>{r.timer=null,gi(e)},n),Ct.set(e,r)}async function gi(e){let t=Ct.get(e);if(!t||t.saving)return;t.saving=!0;let n=t.version,r=t.latex;try{let i=await fi(e,r);t.version===n&&(F.set(e,i.resume),_i(`resume`,e,i.resume))}catch{}finally{t.saving=!1,t.version!==n&&hi(e,t.latex,0)}}function _i(e,t,n){if(!n?.pdf_base64)return;let r=e===`resume`?`[data-prep-resume-latex="${t}"]`:`[data-prep-cover-letter-latex="${t}"]`,i=g.querySelector(r)?.closest(`.prep-panel`),a=i?.querySelector(`.prep-cover-pdf`),o=i?.querySelector(`.prep-cover-pdf-link`),s=e===`resume`?`/api/roles/${encodeURIComponent(t)}/resume.pdf`:`/api/roles/${encodeURIComponent(t)}/cover-letter.pdf`;a&&(a.src=`${s}?v=${Date.now()}`),o&&(o.href=s)}async function vi(e,t=``,n=``){let r=await fetch(`/api/roles/${encodeURIComponent(e)}/cover-letter`,{method:`POST`,headers:{"Content-Type":`application/json`},body:JSON.stringify({tweaks:t,previous_latex:n})});if(!r.ok)throw Error(`Cover letter generation failed`);return r.json()}async function yi(e,t){let n=await fetch(`/api/roles/${encodeURIComponent(e)}/cover-letter/save`,{method:`POST`,headers:{"Content-Type":`application/json`},body:JSON.stringify({latex:t})});if(!n.ok)throw Error(`Cover letter save failed`);return n.json()}function bi(e,t,n=``,r=ht){let i=wt.get(e)??{timer:null,saving:!1,version:0,latex:``,tweaks:``};i.version+=1,i.latex=t,i.tweaks=n,i.timer&&clearTimeout(i.timer),i.timer=setTimeout(()=>{i.timer=null,xi(e)},r),wt.set(e,i)}async function xi(e){let t=wt.get(e);if(!t||t.saving)return;t.saving=!0;let n=t.version,r=t.latex,i=t.tweaks;try{let a=await yi(e,r);t.version===n&&(I.set(e,{...a.cover_letter,tweaks:i}),_i(`coverLetter`,e,a.cover_letter))}catch{}finally{t.saving=!1,t.version!==n&&bi(e,t.latex,t.tweaks,0)}}async function Si(e){if(I.has(e))return I.get(e);let t=await fetch(`/api/roles/${encodeURIComponent(e)}/cover-letter`);if(!t.ok)throw Error(`Cover letter request failed`);let n=await t.json();return n.cover_letter&&I.set(e,n.cover_letter),n.cover_letter}async function Ci(e){let t=await fetch(`/api/roles/${encodeURIComponent(e)}/review-later`,{method:`POST`});if(!t.ok)throw Error(`Review later update failed`);return(await t.json()).role}async function wi(e,t){let n=await fetch(`/api/roles/${encodeURIComponent(e)}/status`,{method:`POST`,headers:{"Content-Type":`application/json`},body:JSON.stringify({status:t})});if(!n.ok)throw Error(`Status update failed`);return(await n.json()).role}_e.addEventListener(`click`,Ir),Se.addEventListener(`click`,Lr),ve.addEventListener(`click`,Rr),Te.addEventListener(`click`,zr),m.addEventListener(`click`,e=>{let t=e.target.closest(`[data-review-action]`);t&&ei(t.dataset.reviewAction)}),h.addEventListener(`click`,e=>{e.target.closest(`.prep-summary-action`)&&e.stopPropagation()}),h.addEventListener(`input`,e=>{let t=e.target.closest(`[data-prep-resume-tweaks]`);if(t){let e=Number(t.dataset.prepResumeTweaks);Number.isFinite(e)&&xt.set(e,t.value);return}let n=e.target.closest(`[data-prep-resume-latex]`);if(n){let e=Number(n.dataset.prepResumeLatex);if(!Number.isFinite(e))return;hi(e,n.value);return}let r=e.target.closest(`[data-prep-cover-letter-latex]`);if(!r)return;let i=Number(r.dataset.prepCoverLetterLatex);if(!Number.isFinite(i))return;let a=r.closest(`.prep-cover-letter`)?.querySelector(`[data-prep-cover-letter-tweaks="${i}"]`)?.value??``;bi(i,r.value,a)}),h.addEventListener(`scroll`,e=>{e.target.closest(`[data-prep-resume-latex], [data-prep-cover-letter-latex]`)},!0),h.addEventListener(`focusout`,e=>{let t=e.target.closest(`[data-prep-resume-latex]`);if(t){let e=Number(t.dataset.prepResumeLatex);if(!Number.isFinite(e))return;hi(e,t.value,0);return}let n=e.target.closest(`[data-prep-cover-letter-latex]`);if(!n)return;let r=Number(n.dataset.prepCoverLetterLatex);if(!Number.isFinite(r))return;let i=n.closest(`.prep-cover-letter`)?.querySelector(`[data-prep-cover-letter-tweaks="${r}"]`)?.value??``;bi(r,n.value,i,0)}),h.addEventListener(`submit`,async e=>{let t=e.target.closest(`[data-prep-role-chat-form]`);if(!t||!N[0])return;e.preventDefault();let n=Number(t.dataset.prepRoleChatForm);if(!Number.isFinite(n))return;let r=t.querySelector(`[data-prep-role-chat-input="${n}"]`),i=r?.value?.trim()??``;if(!i){r?.focus();return}let a=[...St.get(n)??[],{role:`user`,content:i}];St.set(n,a),g.querySelector(`.prep-role-chat`)?.replaceWith($(ri(N[0],{messages:a,loading:!0})));try{let e=await mi(n,a),t=[...a,e.message];St.set(n,t),g.querySelector(`.prep-role-chat`)?.replaceWith($(ri(N[0],{messages:t})))}catch{let e=[...a,{role:`assistant`,content:`could not answer right now.`}];St.set(n,e),g.querySelector(`.prep-role-chat`)?.replaceWith($(ri(N[0],{messages:e})))}}),h.addEventListener(`click`,async e=>{if(e.target.closest(`[data-prep-analysis]`)&&N[0]){let e=N[0].id;g.querySelector(`.prep-analysis`)?.replaceWith($(Q(N[0],{loading:!0})));try{let t=await si(e,{force:!0});if(N[0]?.id!==e)return;g.querySelector(`.prep-analysis`)?.replaceWith($(Q(N[0],{analysis:t})))}catch{g.querySelector(`.prep-analysis`)?.replaceWith($(Q(N[0],{error:!0})))}return}if(e.target.closest(`[data-prep-resume-regenerate]`)&&N[0]){let e=N[0].id,t=g.querySelector(`.prep-resume`),n=t?.querySelector(`[data-prep-resume-tweaks="${e}"]`)?.value??``,r=t?.querySelector(`[data-prep-resume-latex="${e}"]`)?.value??``;if(!n.trim()){t?.querySelector(`[data-prep-resume-tweaks="${e}"]`)?.focus();return}xt.set(e,n),t?.replaceWith($(ti(N[0],{loading:!0})));try{let t=await pi(e,n,r);F.set(e,t.resume),g.querySelector(`.prep-resume`)?.replaceWith($(ti(N[0],{resume:t.resume}))),U()}catch{g.querySelector(`.prep-resume`)?.replaceWith($(ti(N[0],{resume:F.get(e),tweaks:n}))),U()}return}if(e.target.closest(`[data-prep-cover-letter]`)&&N[0]){let e=N[0].id,t=g.querySelector(`.prep-cover-letter`),n=t?.querySelector(`[data-prep-cover-letter-tweaks="${e}"]`)?.value??``,r=n.trim()?t?.querySelector(`[data-prep-cover-letter-latex="${e}"]`)?.value??``:``;t?.replaceWith($(ai(N[0],{loading:!0})));try{let t=await vi(e,n,r);I.set(e,t.cover_letter),g.querySelector(`.prep-cover-letter`)?.replaceWith($(ai(N[0],{coverLetter:t.cover_letter}))),U()}catch{g.querySelector(`.prep-cover-letter`)?.replaceWith($(ai(N[0],{coverLetter:I.get(e),tweaks:n}))),U()}return}let t=e.target.closest(`[data-prep-action]`);if(t){ci(t.dataset.prepAction);return}let n=e.target.closest(`[data-prep-feedback]`);if(!n||!N[0])return;let r=N[0].id,i=P.get(r),a=Array.isArray(i?.feedback_items)?i.feedback_items.length:0,o=bt.get(r)??0;if(n.dataset.prepFeedback===`accept`||n.dataset.prepFeedback===`ignore`){let e=i?.feedback_items?.[o];if(!e)return;let t=g.querySelector(`[data-prep-feedback-comment]`)?.value??``,a=n.dataset.prepFeedback,s=a;n.disabled=!0,n.textContent=a===`accept`?`adding...`:`ignoring...`;try{if(a===`accept`){let n=await li(r,o,e,t),a=document.querySelector(`.job[data-role-id="${CSS.escape(String(r))}"]`);n.role&&(N[0]=n.role,Tr(n.role,a)),Ei(r,n.tweak_prompt??e.tweak_prompt??``),Ti(r,o,i)}else await ui(r,o,e,t),Ti(r,o,i)}catch{n.disabled=!1,n.textContent=s}return}let s=n.dataset.prepFeedback===`next`?1:-1;bt.set(r,Math.max(0,Math.min(o+s,a-1))),g.querySelector(`.prep-analysis`)?.replaceWith($(Q(N[0],{analysis:i})))});function Ti(e,t,n){let r=n.feedback_items.filter((e,n)=>n!==t),i=Math.min(t,Math.max(r.length-1,0)),a={...n,feedback_items:r,verdict:r.length===0?`ready_to_apply`:n.verdict};bt.set(e,i),P.set(e,a),g.querySelector(`.prep-analysis`)?.replaceWith($(Q(N[0],{analysis:a})))}function Ei(e,t){let n=String(t||``).trim();if(!n)return;let r=xt.get(e)?.trim()??``,i=r?`${r}\n\n${n}`:n;xt.set(e,i);let a=g.querySelector(`[data-prep-resume-tweaks="${e}"]`);a&&(a.value=i,a.focus())}document.addEventListener(`keydown`,e=>{e.key===`Escape`&&!ke.hidden&&mn(),e.key===`Escape`&&!o.hidden&&It(),e.key===`Escape`&&!m.hidden&&Lr(),e.key===`Escape`&&!h.hidden&&zr(),e.key===`Escape`&&!Le.hidden&&xn(),e.key===`Escape`&&!Ye.hidden&&kn(),e.key===`Escape`&&!tt.hidden&&Rn(),e.key===`Escape`&&!ot.hidden&&$n()}),Oe.addEventListener(`click`,pn),je.addEventListener(`click`,mn),Ae.addEventListener(`click`,mn);function Di(){return Array.from(document.querySelectorAll(`.pane-toggle`))}function Oi(){return Di().some(e=>e.getAttribute(`aria-expanded`)===`true`)}function ki(){Ne.textContent=Oi()?`collapse all`:`expand all`}function Ai(){document.querySelectorAll(`.pane-toggle`).forEach(e=>{e.setAttribute(`aria-expanded`,`true`),e.querySelector(`.chevron`).textContent=`v`,e.parentElement.querySelector(`.pane-body`).hidden=!1})}function ji(){document.querySelectorAll(`.job[open]`).forEach(e=>{e.open=!1}),document.querySelectorAll(`.pane-toggle`).forEach(e=>{e.setAttribute(`aria-expanded`,`false`),e.querySelector(`.chevron`).textContent=`>`,e.parentElement.querySelector(`.pane-body`).hidden=!0})}Ne.addEventListener(`click`,()=>{Oi()?ji():Ai(),ki()}),Pe.addEventListener(`click`,()=>{yt=!yt,Pe.textContent=yt?`show empty`:`hide empty`,D&&Qt(D.statuses)}),Ie.addEventListener(`click`,bn),Re.addEventListener(`click`,xn),Je.addEventListener(`click`,On),Xe.addEventListener(`click`,kn),et.addEventListener(`click`,Ln),nt.addEventListener(`click`,Rn),Ee.addEventListener(`click`,Qn),st.addEventListener(`click`,$n),ct.addEventListener(`submit`,e=>{e.preventDefault(),nr(ct).catch(()=>{T.textContent=`could not add company.`})}),lt.addEventListener(`submit`,e=>{e.preventDefault(),sr(lt).catch(()=>{pt.textContent=`could not add role.`})}),E.addEventListener(`submit`,e=>{let t=e.target.closest(`[data-company-link-form]`);t&&(e.preventDefault(),rr(t).catch(()=>{T.textContent=`could not add link.`}))}),E.addEventListener(`input`,e=>{let t=e.target.closest(`[data-company-notes]`);t&&ur(t.dataset.companyNotes)}),E.addEventListener(`change`,e=>{let t=e.target.closest(`[data-company-tier]`);if(!t)return;let n=t.closest(`.company-panel`);n&&fr(n,t.value),window.clearTimeout(Nt.get(t.dataset.companyTier)),dr(t.dataset.companyTier).catch(()=>{lr(`could not save company.`)})}),E.addEventListener(`click`,e=>{let t=e.target.closest(`[data-delete-company]`);if(t){let e=cr(t.dataset.deleteCompany),n=e?.name?V(e.name):`this company`;if(!window.confirm(`Deactivate ${n}? It will be hidden from company counts and skipped during scans.`))return;t.disabled=!0,ar(t.dataset.deleteCompany).catch(()=>{T.textContent=`could not deactivate company.`,t.disabled=!1});return}let n=e.target.closest(`[data-delete-career-page]`);if(!n)return;let r=n.closest(`.company-link-row`)?.querySelector(`.company-link-text`)?.textContent?.trim();window.confirm(`Delete ${r||`this career link`}?`)&&(n.disabled=!0,ir(n.dataset.deleteCareerPage).catch(()=>{T.textContent=`could not delete link.`,n.disabled=!1}))}),ze.addEventListener(`change`,e=>{let t=e.target.closest(`input[type="checkbox"], select, input[data-setting-text]`);t&&Bn(t)}),ze.addEventListener(`submit`,async e=>{e.preventDefault();let t=ze.querySelector(`button[type="submit"]`),n=ze.querySelectorAll(`input[type="checkbox"][name], select[name], input[data-setting-text][name]`),r={};n.forEach(e=>{let t=e.name;t&&(r[t]=e.type===`checkbox`?e.checked:e.value)}),t.disabled=!0,t.textContent=`saving...`;try{b.textContent=`saving settings...`;let e=await fetch(`/api/config`,{method:`POST`,headers:{"Content-Type":`application/json`},body:JSON.stringify(r)});if(!e.ok)throw Error(`Config update failed`);G(await e.json(),`settings saved.`)}catch{b.textContent=`could not save settings.`,b.classList.remove(`is-empty`)}finally{t.disabled=!1,t.textContent=`save settings`}}),x.addEventListener(`input`,()=>{S.disabled=!x.value.trim()}),Ge.addEventListener(`click`,Hn),S.addEventListener(`click`,Un),qe.addEventListener(`click`,Vn),at.addEventListener(`click`,Kn),Gn(),vr({applyDefaultCollapsed:!0}).catch(()=>{Gt(null,`could not load resume.`),Kt([],`could not load cover letter examples.`),W()}),mr().then(()=>{hr()}).catch(()=>{y.textContent=`could not load scan status`});
+    `}async function si(e,t={}){if(!t.force&&P.has(e))return P.get(e);let n=await fetch(`/api/roles/${encodeURIComponent(e)}/prep-analysis`);if(!n.ok)throw Error(`Prep analysis request failed`);let r=await n.json();return r.analysis.resources=r.resources??[],P.set(e,r.analysis),r.analysis}function $(e){let t=document.createElement(`template`);return t.innerHTML=e.trim(),t.content.firstElementChild}async function ci(e){let t=N[0];if(!t)return;let n=h.querySelectorAll(`.review-action`);if(n.forEach(e=>{e.disabled=!0}),e===`later`){try{await Ci(t.id),t.review_later_count=Number(t.review_later_count??0)+1,N.length>1?(N.push(N.shift()),Z(`moved to the back of the prep queue.`)):Z(`only one role is in the prep queue.`)}catch{Z(`could not postpone prep. try again.`)}return}if(e===`applied`)try{let e=await wi(t.id,`applied`);N.shift(),Z(`moved to applied.`),Tr(e,document.querySelector(`.job[data-role-id="${CSS.escape(String(t.id))}"]`))}catch{n.forEach(e=>{e.disabled=!1}),Z(`could not move that role. try again.`)}}async function li(e,t,n,r){let i=await fetch(`/api/roles/${encodeURIComponent(e)}/prep-feedback`,{method:`POST`,headers:{"Content-Type":`application/json`},body:JSON.stringify({feedback_index:t,feedback_item:n,comment:r})});if(!i.ok)throw Error(`Prep feedback update failed`);return i.json()}async function ui(e,t,n,r){let i=await fetch(`/api/roles/${encodeURIComponent(e)}/prep-feedback-ignore`,{method:`POST`,headers:{"Content-Type":`application/json`},body:JSON.stringify({feedback_index:t,feedback_item:n,comment:r})});if(!i.ok)throw Error(`Prep feedback ignore failed`);return i.json()}async function di(e,{force:t=!1}={}){if(!t&&F.has(e))return F.get(e);let n=await fetch(`/api/roles/${encodeURIComponent(e)}/resume`);if(!n.ok)throw Error(`Resume request failed`);let r=await n.json();return r.resume&&F.set(e,r.resume),r.resume}async function fi(e,t){let n=await fetch(`/api/roles/${encodeURIComponent(e)}/resume/save`,{method:`POST`,headers:{"Content-Type":`application/json`},body:JSON.stringify({latex:t})});if(!n.ok)throw Error(`Resume save failed`);return n.json()}async function pi(e,t,n){let r=await fetch(`/api/roles/${encodeURIComponent(e)}/resume`,{method:`POST`,headers:{"Content-Type":`application/json`},body:JSON.stringify({tweaks:t,previous_latex:n})});if(!r.ok)throw Error(`Resume generation failed`);return r.json()}async function mi(e,t){let n=await fetch(`/api/roles/${encodeURIComponent(e)}/chat`,{method:`POST`,headers:{"Content-Type":`application/json`},body:JSON.stringify({messages:t})});if(!n.ok)throw Error(`Role chat failed`);return n.json()}function hi(e,t,n=ht){let r=Ct.get(e)??{timer:null,saving:!1,version:0,latex:``};r.version+=1,r.latex=t,r.timer&&clearTimeout(r.timer),r.timer=setTimeout(()=>{r.timer=null,gi(e)},n),Ct.set(e,r)}async function gi(e){let t=Ct.get(e);if(!t||t.saving)return;t.saving=!0;let n=t.version,r=t.latex;try{let i=await fi(e,r);t.version===n&&(F.set(e,i.resume),_i(`resume`,e,i.resume))}catch{}finally{t.saving=!1,t.version!==n&&hi(e,t.latex,0)}}function _i(e,t,n){if(!n?.pdf_base64)return;let r=e===`resume`?`[data-prep-resume-latex="${t}"]`:`[data-prep-cover-letter-latex="${t}"]`,i=g.querySelector(r)?.closest(`.prep-panel`),a=i?.querySelector(`.prep-cover-pdf`),o=i?.querySelector(`.prep-cover-pdf-link`),s=e===`resume`?`/api/roles/${encodeURIComponent(t)}/resume.pdf`:`/api/roles/${encodeURIComponent(t)}/cover-letter.pdf`;a&&(a.src=`${s}?v=${Date.now()}`),o&&(o.href=s)}async function vi(e,t=``,n=``){let r=await fetch(`/api/roles/${encodeURIComponent(e)}/cover-letter`,{method:`POST`,headers:{"Content-Type":`application/json`},body:JSON.stringify({tweaks:t,previous_latex:n})});if(!r.ok)throw Error(`Cover letter generation failed`);return r.json()}async function yi(e,t){let n=await fetch(`/api/roles/${encodeURIComponent(e)}/cover-letter/save`,{method:`POST`,headers:{"Content-Type":`application/json`},body:JSON.stringify({latex:t})});if(!n.ok)throw Error(`Cover letter save failed`);return n.json()}function bi(e,t,n=``,r=ht){let i=wt.get(e)??{timer:null,saving:!1,version:0,latex:``,tweaks:``};i.version+=1,i.latex=t,i.tweaks=n,i.timer&&clearTimeout(i.timer),i.timer=setTimeout(()=>{i.timer=null,xi(e)},r),wt.set(e,i)}async function xi(e){let t=wt.get(e);if(!t||t.saving)return;t.saving=!0;let n=t.version,r=t.latex,i=t.tweaks;try{let a=await yi(e,r);t.version===n&&(I.set(e,{...a.cover_letter,tweaks:i}),_i(`coverLetter`,e,a.cover_letter))}catch{}finally{t.saving=!1,t.version!==n&&bi(e,t.latex,t.tweaks,0)}}async function Si(e){if(I.has(e))return I.get(e);let t=await fetch(`/api/roles/${encodeURIComponent(e)}/cover-letter`);if(!t.ok)throw Error(`Cover letter request failed`);let n=await t.json();return n.cover_letter&&I.set(e,n.cover_letter),n.cover_letter}async function Ci(e){let t=await fetch(`/api/roles/${encodeURIComponent(e)}/review-later`,{method:`POST`});if(!t.ok)throw Error(`Review later update failed`);return(await t.json()).role}async function wi(e,t){let n=await fetch(`/api/roles/${encodeURIComponent(e)}/status`,{method:`POST`,headers:{"Content-Type":`application/json`},body:JSON.stringify({status:t})});if(!n.ok)throw Error(`Status update failed`);return(await n.json()).role}_e.addEventListener(`click`,Ir),Se.addEventListener(`click`,Lr),ve.addEventListener(`click`,Rr),Te.addEventListener(`click`,zr),m.addEventListener(`click`,e=>{let t=e.target.closest(`[data-review-action]`);t&&ei(t.dataset.reviewAction)}),h.addEventListener(`click`,e=>{e.target.closest(`.prep-summary-action`)&&e.stopPropagation()}),h.addEventListener(`input`,e=>{let t=e.target.closest(`[data-prep-resume-tweaks]`);if(t){let e=Number(t.dataset.prepResumeTweaks);Number.isFinite(e)&&xt.set(e,t.value);return}let n=e.target.closest(`[data-prep-resume-latex]`);if(n){let e=Number(n.dataset.prepResumeLatex);if(!Number.isFinite(e))return;hi(e,n.value);return}let r=e.target.closest(`[data-prep-cover-letter-latex]`);if(!r)return;let i=Number(r.dataset.prepCoverLetterLatex);if(!Number.isFinite(i))return;let a=r.closest(`.prep-cover-letter`)?.querySelector(`[data-prep-cover-letter-tweaks="${i}"]`)?.value??``;bi(i,r.value,a)}),h.addEventListener(`scroll`,e=>{e.target.closest(`[data-prep-resume-latex], [data-prep-cover-letter-latex]`)},!0),h.addEventListener(`focusout`,e=>{let t=e.target.closest(`[data-prep-resume-latex]`);if(t){let e=Number(t.dataset.prepResumeLatex);if(!Number.isFinite(e))return;hi(e,t.value,0);return}let n=e.target.closest(`[data-prep-cover-letter-latex]`);if(!n)return;let r=Number(n.dataset.prepCoverLetterLatex);if(!Number.isFinite(r))return;let i=n.closest(`.prep-cover-letter`)?.querySelector(`[data-prep-cover-letter-tweaks="${r}"]`)?.value??``;bi(r,n.value,i,0)}),h.addEventListener(`submit`,async e=>{let t=e.target.closest(`[data-prep-role-chat-form]`);if(!t||!N[0])return;e.preventDefault();let n=Number(t.dataset.prepRoleChatForm);if(!Number.isFinite(n))return;let r=t.querySelector(`[data-prep-role-chat-input="${n}"]`),i=r?.value?.trim()??``;if(!i){r?.focus();return}let a=[...St.get(n)??[],{role:`user`,content:i}];St.set(n,a),g.querySelector(`.prep-role-chat`)?.replaceWith($(ri(N[0],{messages:a,loading:!0})));try{let e=await mi(n,a),t=[...a,e.message];St.set(n,t),g.querySelector(`.prep-role-chat`)?.replaceWith($(ri(N[0],{messages:t})))}catch{let e=[...a,{role:`assistant`,content:`could not answer right now.`}];St.set(n,e),g.querySelector(`.prep-role-chat`)?.replaceWith($(ri(N[0],{messages:e})))}}),h.addEventListener(`click`,async e=>{let t=e.target.closest(`[data-prep-section-target]`);if(t){let e=t.dataset.prepSectionTarget,n=e?document.getElementById(e):null;if(n instanceof HTMLDetailsElement){n.open=!0,n.scrollIntoView({behavior:`smooth`,block:`start`});let e=n.querySelector(`summary`);e?.setAttribute(`tabindex`,`-1`),e?.focus({preventScroll:!0})}return}if(e.target.closest(`[data-prep-analysis]`)&&N[0]){let e=N[0].id;g.querySelector(`.prep-analysis`)?.replaceWith($(Q(N[0],{loading:!0})));try{let t=await si(e,{force:!0});if(N[0]?.id!==e)return;g.querySelector(`.prep-analysis`)?.replaceWith($(Q(N[0],{analysis:t})))}catch{g.querySelector(`.prep-analysis`)?.replaceWith($(Q(N[0],{error:!0})))}return}if(e.target.closest(`[data-prep-resume-regenerate]`)&&N[0]){let e=N[0].id,t=g.querySelector(`.prep-resume`),n=t?.querySelector(`[data-prep-resume-tweaks="${e}"]`)?.value??``,r=t?.querySelector(`[data-prep-resume-latex="${e}"]`)?.value??``;if(!n.trim()){t?.querySelector(`[data-prep-resume-tweaks="${e}"]`)?.focus();return}xt.set(e,n),t?.replaceWith($(ti(N[0],{loading:!0})));try{let t=await pi(e,n,r);F.set(e,t.resume),g.querySelector(`.prep-resume`)?.replaceWith($(ti(N[0],{resume:t.resume}))),U()}catch{g.querySelector(`.prep-resume`)?.replaceWith($(ti(N[0],{resume:F.get(e),tweaks:n}))),U()}return}if(e.target.closest(`[data-prep-cover-letter]`)&&N[0]){let e=N[0].id,t=g.querySelector(`.prep-cover-letter`),n=t?.querySelector(`[data-prep-cover-letter-tweaks="${e}"]`)?.value??``,r=n.trim()?t?.querySelector(`[data-prep-cover-letter-latex="${e}"]`)?.value??``:``;t?.replaceWith($(ai(N[0],{loading:!0})));try{let t=await vi(e,n,r);I.set(e,t.cover_letter),g.querySelector(`.prep-cover-letter`)?.replaceWith($(ai(N[0],{coverLetter:t.cover_letter}))),U()}catch{g.querySelector(`.prep-cover-letter`)?.replaceWith($(ai(N[0],{coverLetter:I.get(e),tweaks:n}))),U()}return}let n=e.target.closest(`[data-prep-action]`);if(n){ci(n.dataset.prepAction);return}let r=e.target.closest(`[data-prep-feedback]`);if(!r||!N[0])return;let i=N[0].id,a=P.get(i),o=Array.isArray(a?.feedback_items)?a.feedback_items.length:0,s=bt.get(i)??0;if(r.dataset.prepFeedback===`accept`||r.dataset.prepFeedback===`ignore`){let e=a?.feedback_items?.[s];if(!e)return;let t=g.querySelector(`[data-prep-feedback-comment]`)?.value??``,n=r.dataset.prepFeedback,o=n;r.disabled=!0,r.textContent=n===`accept`?`adding...`:`ignoring...`;try{if(n===`accept`){let n=await li(i,s,e,t),r=document.querySelector(`.job[data-role-id="${CSS.escape(String(i))}"]`);n.role&&(N[0]=n.role,Tr(n.role,r)),Ei(i,n.tweak_prompt??e.tweak_prompt??``),Ti(i,s,a)}else await ui(i,s,e,t),Ti(i,s,a)}catch{r.disabled=!1,r.textContent=o}return}let c=r.dataset.prepFeedback===`next`?1:-1;bt.set(i,Math.max(0,Math.min(s+c,o-1))),g.querySelector(`.prep-analysis`)?.replaceWith($(Q(N[0],{analysis:a})))});function Ti(e,t,n){let r=n.feedback_items.filter((e,n)=>n!==t),i=Math.min(t,Math.max(r.length-1,0)),a={...n,feedback_items:r,verdict:r.length===0?`ready_to_apply`:n.verdict};bt.set(e,i),P.set(e,a),g.querySelector(`.prep-analysis`)?.replaceWith($(Q(N[0],{analysis:a})))}function Ei(e,t){let n=String(t||``).trim();if(!n)return;let r=xt.get(e)?.trim()??``,i=r?`${r}\n\n${n}`:n;xt.set(e,i);let a=g.querySelector(`[data-prep-resume-tweaks="${e}"]`);a&&(a.value=i,a.focus())}document.addEventListener(`keydown`,e=>{e.key===`Escape`&&!ke.hidden&&mn(),e.key===`Escape`&&!o.hidden&&It(),e.key===`Escape`&&!m.hidden&&Lr(),e.key===`Escape`&&!h.hidden&&zr(),e.key===`Escape`&&!Le.hidden&&xn(),e.key===`Escape`&&!Ye.hidden&&kn(),e.key===`Escape`&&!tt.hidden&&Rn(),e.key===`Escape`&&!ot.hidden&&$n()}),Oe.addEventListener(`click`,pn),je.addEventListener(`click`,mn),Ae.addEventListener(`click`,mn);function Di(){return Array.from(document.querySelectorAll(`.pane-toggle`))}function Oi(){return Di().some(e=>e.getAttribute(`aria-expanded`)===`true`)}function ki(){Ne.textContent=Oi()?`collapse all`:`expand all`}function Ai(){document.querySelectorAll(`.pane-toggle`).forEach(e=>{e.setAttribute(`aria-expanded`,`true`),e.querySelector(`.chevron`).textContent=`v`,e.parentElement.querySelector(`.pane-body`).hidden=!1})}function ji(){document.querySelectorAll(`.job[open]`).forEach(e=>{e.open=!1}),document.querySelectorAll(`.pane-toggle`).forEach(e=>{e.setAttribute(`aria-expanded`,`false`),e.querySelector(`.chevron`).textContent=`>`,e.parentElement.querySelector(`.pane-body`).hidden=!0})}Ne.addEventListener(`click`,()=>{Oi()?ji():Ai(),ki()}),Pe.addEventListener(`click`,()=>{yt=!yt,Pe.textContent=yt?`show empty`:`hide empty`,D&&Qt(D.statuses)}),Ie.addEventListener(`click`,bn),Re.addEventListener(`click`,xn),Je.addEventListener(`click`,On),Xe.addEventListener(`click`,kn),et.addEventListener(`click`,Ln),nt.addEventListener(`click`,Rn),Ee.addEventListener(`click`,Qn),st.addEventListener(`click`,$n),ct.addEventListener(`submit`,e=>{e.preventDefault(),nr(ct).catch(()=>{T.textContent=`could not add company.`})}),lt.addEventListener(`submit`,e=>{e.preventDefault(),sr(lt).catch(()=>{pt.textContent=`could not add role.`})}),E.addEventListener(`submit`,e=>{let t=e.target.closest(`[data-company-link-form]`);t&&(e.preventDefault(),rr(t).catch(()=>{T.textContent=`could not add link.`}))}),E.addEventListener(`input`,e=>{let t=e.target.closest(`[data-company-notes]`);t&&ur(t.dataset.companyNotes)}),E.addEventListener(`change`,e=>{let t=e.target.closest(`[data-company-tier]`);if(!t)return;let n=t.closest(`.company-panel`);n&&fr(n,t.value),window.clearTimeout(Nt.get(t.dataset.companyTier)),dr(t.dataset.companyTier).catch(()=>{lr(`could not save company.`)})}),E.addEventListener(`click`,e=>{let t=e.target.closest(`[data-delete-company]`);if(t){let e=cr(t.dataset.deleteCompany),n=e?.name?V(e.name):`this company`;if(!window.confirm(`Deactivate ${n}? It will be hidden from company counts and skipped during scans.`))return;t.disabled=!0,ar(t.dataset.deleteCompany).catch(()=>{T.textContent=`could not deactivate company.`,t.disabled=!1});return}let n=e.target.closest(`[data-delete-career-page]`);if(!n)return;let r=n.closest(`.company-link-row`)?.querySelector(`.company-link-text`)?.textContent?.trim();window.confirm(`Delete ${r||`this career link`}?`)&&(n.disabled=!0,ir(n.dataset.deleteCareerPage).catch(()=>{T.textContent=`could not delete link.`,n.disabled=!1}))}),ze.addEventListener(`change`,e=>{let t=e.target.closest(`input[type="checkbox"], select, input[data-setting-text]`);t&&Bn(t)}),ze.addEventListener(`submit`,async e=>{e.preventDefault();let t=ze.querySelector(`button[type="submit"]`),n=ze.querySelectorAll(`input[type="checkbox"][name], select[name], input[data-setting-text][name]`),r={};n.forEach(e=>{let t=e.name;t&&(r[t]=e.type===`checkbox`?e.checked:e.value)}),t.disabled=!0,t.textContent=`saving...`;try{b.textContent=`saving settings...`;let e=await fetch(`/api/config`,{method:`POST`,headers:{"Content-Type":`application/json`},body:JSON.stringify(r)});if(!e.ok)throw Error(`Config update failed`);G(await e.json(),`settings saved.`)}catch{b.textContent=`could not save settings.`,b.classList.remove(`is-empty`)}finally{t.disabled=!1,t.textContent=`save settings`}}),x.addEventListener(`input`,()=>{S.disabled=!x.value.trim()}),Ge.addEventListener(`click`,Hn),S.addEventListener(`click`,Un),qe.addEventListener(`click`,Vn),at.addEventListener(`click`,Kn),Gn(),vr({applyDefaultCollapsed:!0}).catch(()=>{Gt(null,`could not load resume.`),Kt([],`could not load cover letter examples.`),W()}),mr().then(()=>{hr()}).catch(()=>{y.textContent=`could not load scan status`});

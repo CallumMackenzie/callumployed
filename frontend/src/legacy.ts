@@ -2684,19 +2684,40 @@ async function renderPrepRole(message = "") {
 
   prepCard.innerHTML = `
     ${message ? `<p class="review-message">${escapeHtml(message)}</p>` : ""}
-    <div class="review-title-row">
-      <p class="review-company">${escapeUiText(current.company_name)}</p>
-      ${renderRoleTitle(current.title, current.role_url, "review-role-title")}
+    <section class="prep-role-hero" aria-label="role overview">
+      <div class="review-title-row">
+        <div class="prep-role-eyebrow">
+          <p class="review-company">${escapeUiText(current.company_name)}</p>
+          <span>application workspace</span>
+        </div>
+        ${renderRoleTitle(current.title, current.role_url, "review-role-title")}
+      </div>
+      <dl class="review-details review-primary-details">
+        ${renderReviewDetail("location", current.location, false, "review-location-detail")}
+        ${renderReviewDetail("last", formatCompactDate(current.last_seen_at))}
+        ${renderReviewDetail("updated", formatCompactDate(current.updated_at))}
+      </dl>
+      <nav class="prep-workspace-nav" aria-label="prep sections">
+        <button type="button" data-prep-section-target="prep-resume-${current.id}">
+          <span>01</span> résumé
+        </button>
+        <button type="button" data-prep-section-target="prep-cover-letter-${current.id}">
+          <span>02</span> cover letter
+        </button>
+        <button type="button" data-prep-section-target="prep-description-${current.id}">
+          <span>03</span> role details
+        </button>
+        <button type="button" data-prep-section-target="prep-chat-${current.id}">
+          <span>04</span> role chat
+        </button>
+      </nav>
+    </section>
+    <div class="prep-workspace">
+      ${renderPrepResume(current)}
+      ${renderPrepCoverLetter(current)}
+      ${renderPrepDescription(current.id, current.description)}
+      ${renderPrepRoleChat(current)}
     </div>
-    <dl class="review-details review-primary-details">
-      ${renderReviewDetail("location", current.location, false, "review-location-detail")}
-      ${renderReviewDetail("last", formatCompactDate(current.last_seen_at))}
-      ${renderReviewDetail("updated", formatCompactDate(current.updated_at))}
-    </dl>
-    ${renderPrepResume(current)}
-    ${renderPrepCoverLetter(current)}
-    ${renderPrepDescription(current.description)}
-    ${renderPrepRoleChat(current)}
   `;
   enhancePrepLatexEditors();
 
@@ -2730,7 +2751,7 @@ function renderPrepResume(role, state = {}) {
   const pdfUrl = `/api/roles/${encodeURIComponent(role.id)}/resume.pdf`;
   if (state.loading) {
     return `
-      <details class="prep-panel prep-resume" open>
+      <details class="prep-panel prep-resume" id="prep-resume-${role.id}" open>
         <summary class="prep-analysis-header">
           <span class="prep-accordion-icon" aria-hidden="true"></span>
           <h3>resume</h3>
@@ -2747,7 +2768,7 @@ function renderPrepResume(role, state = {}) {
   }
   if (!resume) {
     return `
-      <details class="prep-panel prep-resume" open>
+      <details class="prep-panel prep-resume" id="prep-resume-${role.id}" open>
         <summary class="prep-analysis-header">
           <span class="prep-accordion-icon" aria-hidden="true"></span>
           <h3>resume</h3>
@@ -2763,7 +2784,7 @@ function renderPrepResume(role, state = {}) {
     `;
   }
   return `
-    <details class="prep-panel prep-resume" open>
+    <details class="prep-panel prep-resume" id="prep-resume-${role.id}" open>
       <summary class="prep-analysis-header">
         <span class="prep-accordion-icon" aria-hidden="true"></span>
         <h3>resume</h3>
@@ -2778,40 +2799,54 @@ function renderPrepResume(role, state = {}) {
       </summary>
       <p class="prep-overview">${escapeUiText(resume.summary ?? "Saved resume for this role.")}</p>
       ${renderPrepAnalysis(role)}
-      <label class="prep-cover-tweaks prep-resume-tweaks">
-        <span>tweaks</span>
-        <textarea
-          data-prep-resume-tweaks="${role.id}"
-          rows="4"
-          placeholder="paste or write a resume tweak prompt..."
-        >${escapeHtml(tweaks)}</textarea>
-      </label>
-      <div class="prep-cover-actions">
-        <button type="button" data-prep-resume-regenerate="${role.id}">
-          regenerate with tweaks
-        </button>
+      <section class="prep-generation-controls" aria-label="résumé refinement">
+        <div class="prep-control-heading">
+          <span>refine this version</span>
+          <p>Describe a focused change, then regenerate without losing the saved source.</p>
+        </div>
+        <label class="prep-cover-tweaks prep-resume-tweaks">
+          <span>tweak instructions</span>
+          <textarea
+            data-prep-resume-tweaks="${role.id}"
+            rows="4"
+            placeholder="paste or write a resume tweak prompt..."
+          >${escapeHtml(tweaks)}</textarea>
+        </label>
+        <div class="prep-cover-actions">
+          <button type="button" data-prep-resume-regenerate="${role.id}">
+            regenerate with tweaks
+          </button>
+        </div>
+      </section>
+      <div class="prep-document-workspace">
+        <label class="prep-cover-latex prep-document-source">
+          <span>LaTeX source</span>
+          <textarea
+            data-prep-resume-latex="${role.id}"
+            spellcheck="false"
+          >${escapeHtml(resume.latex ?? "")}</textarea>
+        </label>
+        <section class="prep-document-preview" aria-label="résumé preview">
+          <div class="prep-preview-heading">
+            <span>document preview</span>
+            <p>Updates automatically after the source is saved.</p>
+          </div>
+          ${
+            resume.pdf_base64
+              ? `
+                <iframe class="prep-cover-pdf" title="resume PDF preview" src="${escapeHtml(pdfUrl)}"></iframe>
+              `
+              : '<p class="prep-cover-path">PDF preview unavailable.</p>'
+          }
+        </section>
       </div>
-      <label class="prep-cover-latex">
-        <span>latex</span>
-        <textarea
-          data-prep-resume-latex="${role.id}"
-          spellcheck="false"
-        >${escapeHtml(resume.latex ?? "")}</textarea>
-      </label>
-      ${
-        resume.pdf_base64
-          ? `
-            <iframe class="prep-cover-pdf" title="resume PDF preview" src="${escapeHtml(pdfUrl)}"></iframe>
-          `
-          : '<p class="prep-cover-path">PDF preview unavailable.</p>'
-      }
     </details>
   `;
 }
 
-function renderPrepDescription(description) {
+function renderPrepDescription(roleId, description) {
   return `
-    <details class="prep-panel prep-description-panel">
+    <details class="prep-panel prep-description-panel" id="prep-description-${roleId}">
       <summary class="prep-analysis-header">
         <span class="prep-accordion-icon" aria-hidden="true"></span>
         <h3>description</h3>
@@ -2825,7 +2860,7 @@ function renderPrepRoleChat(role, state = {}) {
   const messages = state.messages ?? prepRoleChatByRoleId.get(role.id) ?? [];
   const loading = Boolean(state.loading);
   return `
-    <details class="prep-panel prep-role-chat">
+    <details class="prep-panel prep-role-chat" id="prep-chat-${role.id}">
       <summary class="prep-analysis-header">
         <span class="prep-accordion-icon" aria-hidden="true"></span>
         <h3>chat about this role</h3>
@@ -2872,7 +2907,7 @@ function renderPrepCoverLetter(role, state = {}) {
   const pdfUrl = `/api/roles/${encodeURIComponent(role.id)}/cover-letter.pdf`;
   if (state.loading) {
     return `
-      <details class="prep-panel prep-cover-letter" open>
+      <details class="prep-panel prep-cover-letter" id="prep-cover-letter-${role.id}" open>
         <summary class="prep-analysis-header">
           <span class="prep-accordion-icon" aria-hidden="true"></span>
           <h3>cover letter</h3>
@@ -2888,7 +2923,7 @@ function renderPrepCoverLetter(role, state = {}) {
     `;
   }
   return `
-    <details class="prep-panel prep-cover-letter" open>
+    <details class="prep-panel prep-cover-letter" id="prep-cover-letter-${role.id}" open>
       <summary class="prep-analysis-header">
         <span class="prep-accordion-icon" aria-hidden="true"></span>
         <h3>cover letter</h3>
@@ -2906,36 +2941,56 @@ function renderPrepCoverLetter(role, state = {}) {
           ? `<p class="prep-overview">${escapeUiText(draft.summary ?? "cover letter generated")}</p>`
           : '<p class="prep-overview">generate a LaTeX cover letter from the resume, posting, and stored examples.</p>'
       }
-      <div class="prep-cover-actions">
-        <button type="button" data-prep-cover-letter="${role.id}">
-          ${draft ? "regenerate" : "generate"}
-        </button>
-      </div>
+      <section class="prep-generation-controls" aria-label="cover letter generation">
+        <div class="prep-control-heading">
+          <span>${draft ? "refine this version" : "create a tailored draft"}</span>
+          <p>Use the role, résumé, and saved examples to shape the letter.</p>
+        </div>
+        ${
+          draft
+            ? `
+              <label class="prep-cover-tweaks">
+                <span>tweak instructions</span>
+                <textarea
+                  data-prep-cover-letter-tweaks="${role.id}"
+                  rows="3"
+                  placeholder="make it warmer, cut a paragraph, emphasize systems work..."
+                >${escapeHtml(tweaks)}</textarea>
+              </label>
+            `
+            : ""
+        }
+        <div class="prep-cover-actions">
+          <button type="button" data-prep-cover-letter="${role.id}">
+            ${draft ? "regenerate" : "generate cover letter"}
+          </button>
+        </div>
+      </section>
       ${
         draft
           ? `
-            <label class="prep-cover-tweaks">
-              <span>tweaks</span>
-              <textarea
-                data-prep-cover-letter-tweaks="${role.id}"
-                rows="3"
-                placeholder="make it warmer, cut a paragraph, emphasize systems work..."
-              >${escapeHtml(tweaks)}</textarea>
-            </label>
-            <label class="prep-cover-latex">
-              <span>latex</span>
-              <textarea
-                data-prep-cover-letter-latex="${role.id}"
-                spellcheck="false"
-              >${escapeHtml(draft.latex ?? "")}</textarea>
-            </label>
-            ${
-              draft.pdf_base64
-                ? `
-                  <iframe class="prep-cover-pdf" title="cover letter PDF preview" src="${escapeHtml(pdfUrl)}"></iframe>
-                `
-                : '<p class="prep-cover-path">PDF preview unavailable.</p>'
-            }
+            <div class="prep-document-workspace">
+              <label class="prep-cover-latex prep-document-source">
+                <span>LaTeX source</span>
+                <textarea
+                  data-prep-cover-letter-latex="${role.id}"
+                  spellcheck="false"
+                >${escapeHtml(draft.latex ?? "")}</textarea>
+              </label>
+              <section class="prep-document-preview" aria-label="cover letter preview">
+                <div class="prep-preview-heading">
+                  <span>document preview</span>
+                  <p>Updates automatically after the source is saved.</p>
+                </div>
+                ${
+                  draft.pdf_base64
+                    ? `
+                      <iframe class="prep-cover-pdf" title="cover letter PDF preview" src="${escapeHtml(pdfUrl)}"></iframe>
+                    `
+                    : '<p class="prep-cover-path">PDF preview unavailable.</p>'
+                }
+              </section>
+            </div>
           `
           : ""
       }
@@ -3453,6 +3508,20 @@ prepView.addEventListener("submit", async (event) => {
 });
 
 prepView.addEventListener("click", async (event) => {
+  const sectionButton = event.target.closest("[data-prep-section-target]");
+  if (sectionButton) {
+    const targetId = sectionButton.dataset.prepSectionTarget;
+    const targetPanel = targetId ? document.getElementById(targetId) : null;
+    if (targetPanel instanceof HTMLDetailsElement) {
+      targetPanel.open = true;
+      targetPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+      const summary = targetPanel.querySelector("summary");
+      summary?.setAttribute("tabindex", "-1");
+      summary?.focus({ preventScroll: true });
+    }
+    return;
+  }
+
   const analysisButton = event.target.closest("[data-prep-analysis]");
   if (analysisButton && prepQueue[0]) {
     const roleId = prepQueue[0].id;
