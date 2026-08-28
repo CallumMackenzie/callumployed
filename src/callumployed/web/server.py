@@ -7,6 +7,7 @@ import gzip
 import json
 import logging
 import mimetypes
+import os
 import re
 import shlex
 import shutil
@@ -16,6 +17,7 @@ import sys
 import tempfile
 import threading
 import unicodedata
+from collections import Counter
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -3562,6 +3564,120 @@ class GeneratedDocumentPageCountError(RuntimeError):
     pass
 
 
+class GeneratedDocumentLayoutError(RuntimeError):
+    pass
+
+
+def _pdf_page_fill_ratio(pdf_path: Path) -> float | None:
+    reader = PdfReader(str(pdf_path))
+    if len(reader.pages) != 1:
+        return None
+    page = reader.pages[0]
+    weighted_text_y_positions: list[float] = []
+
+    def collect_text_position(
+        text: str,
+        current_transform: list[float],
+        text_transform: list[float],
+        _font: Any,
+        _font_size: float,
+    ) -> None:
+        visible_text = text.strip()
+        if visible_text:
+            text_x = float(text_transform[4])
+            text_y = float(text_transform[5])
+            transformed_y = (
+                text_x * float(current_transform[1])
+                + text_y * float(current_transform[3])
+                + float(current_transform[5])
+            )
+            weighted_text_y_positions.extend([transformed_y] * len(visible_text))
+
+    page.extract_text(visitor_text=collect_text_position)
+    if len(weighted_text_y_positions) < 2:
+        return None
+    page_height = float(page.mediabox.height)
+    if page_height <= 0:
+        return None
+    ordered_positions = sorted(weighted_text_y_positions)
+    last_index = len(ordered_positions) - 1
+    lower_y = ordered_positions[int(last_index * 0.01)]
+    upper_y = ordered_positions[int(last_index * 0.99)]
+    return min(1.0, max(0.0, (upper_y - lower_y) / page_height))
+
+
+def _strip_latex_comment(line: str) -> str:
+    for index, character in enumerate(line):
+        if character != "%":
+            continue
+        backslashes = 0
+        cursor = index - 1
+        while cursor >= 0 and line[cursor] == "\\":
+            backslashes += 1
+            cursor -= 1
+        if backslashes % 2 == 0:
+            return line[:index]
+    return line
+
+
+def _material_resume_lines(latex: str) -> Counter[str]:
+    begin_marker = "\\begin{document}"
+    end_marker = "\\end{document}"
+    begin = latex.find(begin_marker)
+    end = latex.rfind(end_marker)
+    if begin < 0 or end < begin:
+        return Counter({"<malformed document body>": 1})
+    return Counter(
+        line
+        for raw_line in latex.splitlines()
+        if (line := _strip_latex_comment(raw_line).strip())
+    )
+
+
+def _missing_source_resume_content(source_latex: str, candidate_latex: str) -> list[str]:
+    source_lines = _material_resume_lines(source_latex)
+    candidate_lines = _material_resume_lines(candidate_latex)
+    malformed_marker = "<malformed document body>"
+    if malformed_marker in source_lines or malformed_marker in candidate_lines:
+        return [malformed_marker]
+    return list((source_lines - candidate_lines).elements())
+
+
+def _commit_resume_artifact_pair(
+    *,
+    staged_tex: Path,
+    staged_pdf: Path,
+    target_tex: Path,
+    target_pdf: Path,
+    backup_dir: Path,
+) -> None:
+    backup_tex = backup_dir / "previous.tex"
+    backup_pdf = backup_dir / "previous.pdf"
+    backups: list[tuple[Path, Path]] = []
+    installed: list[Path] = []
+    try:
+        for target, backup in ((target_tex, backup_tex), (target_pdf, backup_pdf)):
+            if target.exists():
+                os.replace(target, backup)
+                backups.append((target, backup))
+        os.replace(staged_tex, target_tex)
+        installed.append(target_tex)
+        os.replace(staged_pdf, target_pdf)
+        installed.append(target_pdf)
+    except Exception:
+        for target in reversed(installed):
+            target.unlink(missing_ok=True)
+        for target, backup in reversed(backups):
+            if backup.exists():
+                os.replace(backup, target)
+        raise
+    finally:
+        staged_tex.unlink(missing_ok=True)
+        staged_pdf.unlink(missing_ok=True)
+        backup_tex.unlink(missing_ok=True)
+        backup_pdf.unlink(missing_ok=True)
+
+
 def _one_page_resume_candidates(latex: str) -> list[str]:
     modest_profile = (
         "\\addtolength{\\topmargin}{-0.12in}\n"
@@ -3598,6 +3714,7 @@ def save_role_resume(
     latex: str,
     *,
     required_page_count: int | None = None,
+    minimum_page_fill_ratio: float | None = None,
 ) -> dict[str, Any]:
     role_id = role.get("id")
     if not isinstance(role_id, int):
@@ -3617,6 +3734,7 @@ def save_role_resume(
         selected_latex: str | None = None
         selected_pdf: Path | None = None
         page_counts: list[int] = []
+        page_fill_ratios: list[float | None] = []
         candidates = (
             _one_page_resume_candidates(latex)
             if required_page_count == 1
@@ -3634,13 +3752,37 @@ def save_role_resume(
             pages = PdfReader(str(candidate_pdf)).pages if candidate_pdf.is_file() else []
             page_count = len(pages)
             page_counts.append(page_count)
+            page_fill_ratio = _pdf_page_fill_ratio(candidate_pdf) if page_count == 1 else None
+            page_fill_ratios.append(page_fill_ratio)
             if page_count and (
                 required_page_count is None or page_count == required_page_count
             ):
+                if (
+                    minimum_page_fill_ratio is not None
+                    and (
+                        page_fill_ratio is None
+                        or page_fill_ratio < minimum_page_fill_ratio
+                    )
+                ):
+                    continue
                 selected_latex = candidate_latex
                 selected_pdf = candidate_pdf
                 break
         if selected_latex is None or selected_pdf is None:
+            one_page_attempted = 1 in page_counts
+            if minimum_page_fill_ratio is not None and one_page_attempted:
+                measured_fill_ratios = [
+                    ratio for ratio in page_fill_ratios if ratio is not None
+                ]
+                if not measured_fill_ratios:
+                    raise GeneratedDocumentLayoutError(
+                        "Generated resume page fill could not be measured; refusing to publish."
+                    )
+                raise GeneratedDocumentLayoutError(
+                    "Generated resume was materially underfilled "
+                    f"(page fill attempts: {[round(ratio, 3) for ratio in measured_fill_ratios]}; "
+                    f"minimum: {minimum_page_fill_ratio:.3f})."
+                )
             if required_page_count is not None:
                 raise GeneratedDocumentPageCountError(
                     "Generated resume did not fit exactly "
@@ -3648,16 +3790,17 @@ def save_role_resume(
                 )
             raise RuntimeError("Generated role resume PDF could not be verified.")
 
-        staged_tex = resume_path.with_name(f".{resume_path.name}.candidate")
-        staged_pdf = resume_path.with_name(f".{resume_path.stem}.pdf.candidate")
+        staged_tex = Path(temp_dir) / "selected.tex"
+        staged_pdf = Path(temp_dir) / "selected.pdf"
         staged_tex.write_text(selected_latex)
         shutil.copyfile(selected_pdf, staged_pdf)
-        try:
-            staged_tex.replace(resume_path)
-            staged_pdf.replace(resume_path.with_suffix(".pdf"))
-        finally:
-            staged_tex.unlink(missing_ok=True)
-            staged_pdf.unlink(missing_ok=True)
+        _commit_resume_artifact_pair(
+            staged_tex=staged_tex,
+            staged_pdf=staged_pdf,
+            target_tex=resume_path,
+            target_pdf=resume_path.with_suffix(".pdf"),
+            backup_dir=Path(temp_dir),
+        )
     _sync_resume_resources_to_role(role_id)
     return _saved_role_resume(role, resume)
 
@@ -3674,6 +3817,7 @@ def build_role_resume(
     if not isinstance(role_id, int):
         raise RuntimeError("Role did not include an ID")
     source_latex = previous_latex or _ensure_role_resume_copy(role_id, resume).read_text()
+    authoritative_latex = resume.content
     experience_notes: list[ExperienceNote] = []
     llm_settings = LlmSettings()
     with db.connect() as connection:
@@ -3700,27 +3844,82 @@ def build_role_resume(
             )
         except Exception as error:  # noqa: BLE001 - surface a concise UI failure.
             raise RuntimeError("AI resume regeneration was unavailable.") from error
+
+        missing_experience = _missing_source_resume_content(
+            authoritative_latex,
+            draft.latex,
+        )
+        if missing_experience:
+            if attempt == 2:
+                try:
+                    generated = save_role_resume(
+                        role,
+                        resume,
+                        authoritative_latex,
+                        required_page_count=required_page_count,
+                        minimum_page_fill_ratio=0.82,
+                    )
+                except Exception as error:
+                    raise RuntimeError(
+                        "The complete source resume could not fit exactly one PDF page using "
+                        "the bounded layout profiles. No experience was removed."
+                    ) from error
+                return {
+                    **generated,
+                    "summary": (
+                        "Preserved the complete source resume because the generated draft "
+                        "changed or omitted source content."
+                    ),
+                    "tweaks": tweaks,
+                }
+            candidate_source = authoritative_latex
+            candidate_tweaks = (
+                f"{tweaks}\n\n"
+                "The previous draft was rejected because it changed or removed source content. "
+                "Preserve every existing source line verbatim. You may reorder complete entries "
+                "or add source-supported material, but never delete, shorten, summarize, or "
+                "paraphrase source content. Fit one page through LaTeX layout and spacing only."
+            )
+            continue
+
         try:
             generated = save_role_resume(
                 role,
                 resume,
                 draft.latex,
                 required_page_count=required_page_count,
+                minimum_page_fill_ratio=0.82,
             )
-        except GeneratedDocumentPageCountError as error:
+        except Exception:
             if attempt == 2:
-                raise RuntimeError(
-                    "Resume generation could not produce exactly one PDF page after "
-                    "three bounded attempts. Shorten the requested content or adjust the source."
-                ) from error
-            candidate_source = draft.latex
+                try:
+                    generated = save_role_resume(
+                        role,
+                        resume,
+                        authoritative_latex,
+                        required_page_count=required_page_count,
+                        minimum_page_fill_ratio=0.82,
+                    )
+                except Exception as source_error:
+                    raise RuntimeError(
+                        "The complete source resume could not fit exactly one PDF page using "
+                        "the bounded layout profiles. No experience was removed."
+                    ) from source_error
+                return {
+                    **generated,
+                    "summary": (
+                        "Preserved the complete source resume because the tailored draft did "
+                        "not fit one page without content loss."
+                    ),
+                    "tweaks": tweaks,
+                }
+            candidate_source = authoritative_latex
             candidate_tweaks = (
                 f"{tweaks}\n\n"
-                "The compiled resume exceeded one page. Return a complete resume that fits "
-                "exactly one PDF page. Preserve contact details, education, employers, roles, "
-                "dates, and factual accuracy. Prefer concise phrasing and select only the least "
-                "role-relevant bullet-level detail when necessary; never truncate text or "
-                "invent facts."
+                "The generated resume failed compiled-artifact validation. Preserve every "
+                "existing source line verbatim. Do not delete, shorten, summarize, or paraphrase "
+                "source content. Fit exactly one PDF page through LaTeX margins, spacing, line "
+                "leading, and bounded legible typography only."
             )
             continue
         return {

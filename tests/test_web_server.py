@@ -15,6 +15,7 @@ from zipfile import ZipFile
 
 import pytest
 from pypdf import PdfWriter
+from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 from typer.testing import CliRunner
 
 import callumployed.web.server as web_server
@@ -55,11 +56,62 @@ from callumployed.web.server import (
 runner = CliRunner()
 
 
+def _add_positioned_text(
+    writer: PdfWriter,
+    page: object,
+    y_positions: tuple[int, ...],
+    transform: str | None = None,
+) -> None:
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    font_ref = writer._add_object(font)
+    page[NameObject("/Resources")] = DictionaryObject(  # type: ignore[index]
+        {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})}
+    )
+    stream = DecodedStreamObject()
+    commands = [
+        f"BT /F1 12 Tf 50 {y} Td (Resume content line {index}) Tj ET"
+        for index, y in enumerate(y_positions)
+    ]
+    content = "\n".join(commands)
+    if transform is not None:
+        content = f"q {transform} cm\n{content}\nQ"
+    stream.set_data(content.encode("ascii"))
+    page[NameObject("/Contents")] = writer._add_object(stream)  # type: ignore[index]
+
+
 def _valid_pdf_bytes(page_count: int = 1) -> bytes:
     output = BytesIO()
     writer = PdfWriter()
     for _ in range(page_count):
-        writer.add_blank_page(width=612, height=792)
+        page = writer.add_blank_page(width=612, height=792)
+        _add_positioned_text(writer, page, (740, 600, 450, 300, 150, 60))
+    writer.write(output)
+    return output.getvalue()
+
+
+def _blank_pdf_bytes() -> bytes:
+    output = BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    writer.write(output)
+    return output.getvalue()
+
+
+def _positioned_text_pdf_bytes(
+    y_positions: tuple[int, ...],
+    *,
+    transform: str | None = None,
+) -> bytes:
+    output = BytesIO()
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=612, height=792)
+    _add_positioned_text(writer, page, y_positions, transform)
     writer.write(output)
     return output.getvalue()
 
@@ -1606,7 +1658,8 @@ def test_role_resume_endpoint_regenerates_with_tweaks(
 
         class Draft:
             latex = (
-                "\\documentclass{article}\\begin{document}Python distributed systems\\end{document}"
+                "\\documentclass{article}\n\\begin{document}\nMaster resume\n"
+                "Python distributed systems\n\\end{document}"
             )
             summary = "emphasized distributed systems"
 
@@ -1631,7 +1684,15 @@ def test_role_resume_endpoint_regenerates_with_tweaks(
         connection.execute(
             """
             INSERT INTO master_resumes (id, filename, content, content_sha256)
-            VALUES (1, 'resume.tex', 'Master resume', 'abc')
+            VALUES (
+                1,
+                'resume.tex',
+                '\\documentclass{article}
+\\begin{document}
+Master resume
+\\end{document}',
+                'abc'
+            )
             """
         )
         note = add_experience_note(
@@ -1680,7 +1741,12 @@ def test_role_resume_endpoint_regenerates_with_tweaks(
         assert captured_calls[0]["resume_content"] == "Current editor latex"
         assert captured_calls[0]["tweaks"] == "Emphasize distributed systems."
         assert "exactly one PDF page" in str(captured_calls[1]["tweaks"])
-        assert "Python distributed systems" in str(captured_calls[1]["resume_content"])
+        assert "Do not delete, shorten, summarize, or paraphrase" in str(
+            captured_calls[1]["tweaks"]
+        )
+        assert captured_calls[1]["resume_content"] == (
+            "\\documentclass{article}\n\\begin{document}\nMaster resume\n\\end{document}"
+        )
         indexed_context = captured_calls[0]["other_experience_context"]
         assert isinstance(indexed_context, list)
         assert len(indexed_context) == 1
@@ -1694,6 +1760,283 @@ def test_role_resume_endpoint_regenerates_with_tweaks(
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+def test_save_role_resume_rejects_materially_underfilled_one_page_pdf(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resume_root = tmp_path / "prepared-resumes"
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    monkeypatch.setattr(web_server, "_resume_resources_root", lambda: tmp_path / "resources")
+    monkeypatch.setattr(web_server.shutil, "which", lambda _name: "/usr/bin/pdflatex")
+
+    def fake_run(command: object, **kwargs: object) -> object:
+        cwd_arg = kwargs["cwd"]
+        assert isinstance(cwd_arg, (str, Path))
+        cwd = Path(cwd_arg)
+        (cwd / "resume.pdf").write_bytes(_valid_pdf_bytes())
+
+        class Completed:
+            returncode = 0
+
+        return Completed()
+
+    monkeypatch.setattr(web_server.subprocess, "run", fake_run)
+    monkeypatch.setattr(web_server, "_pdf_page_fill_ratio", lambda _path: 0.61)
+    resume = web_server.MasterResume(
+        id=1,
+        filename="resume.tex",
+        content="source",
+        content_sha256="source",
+        created_at=None,
+        updated_at=None,
+    )
+
+    with pytest.raises(web_server.GeneratedDocumentLayoutError, match="underfilled"):
+        web_server.save_role_resume(
+            {"id": 1, "company_name": "Acme", "title": "Product Intern"},
+            resume,
+            r"\documentclass{article}\begin{document}Complete experience\end{document}",
+            required_page_count=1,
+            minimum_page_fill_ratio=0.82,
+        )
+
+
+def test_pdf_page_fill_ratio_uses_real_positioned_text_and_fails_closed(
+    tmp_path: Path,
+) -> None:
+    filled = tmp_path / "filled.pdf"
+    underfilled = tmp_path / "underfilled.pdf"
+    transformed = tmp_path / "transformed.pdf"
+    blank = tmp_path / "blank.pdf"
+    filled.write_bytes(_positioned_text_pdf_bytes((740, 600, 450, 300, 150, 60)))
+    underfilled.write_bytes(_positioned_text_pdf_bytes((740, 650, 560, 500)))
+    transformed.write_bytes(
+        _positioned_text_pdf_bytes(
+            (740, 600, 450, 300, 150, 60),
+            transform="1 0 0 0.5 0 0",
+        )
+    )
+    blank.write_bytes(_blank_pdf_bytes())
+
+    assert web_server._pdf_page_fill_ratio(filled) > 0.82
+    assert web_server._pdf_page_fill_ratio(underfilled) < 0.40
+    assert 0.40 < web_server._pdf_page_fill_ratio(transformed) < 0.50
+    assert web_server._pdf_page_fill_ratio(blank) is None
+
+
+def test_source_resume_fidelity_requires_every_material_line_verbatim() -> None:
+    source = r"""\documentclass{article}
+\begin{document}
+\section{Work}
+Email: owner@example.com
+\resumeProjectHeading{\textbf{Employer \{Platform\}}}{2026}
+\resumeItem{Built nested \textbf{systems} at 70\% scale.}
+\section{Technical Skills}
+\item{Python, TypeScript}
+\end{document}
+"""
+    assert web_server._missing_source_resume_content(source, source) == []
+    for candidate in (
+        source.replace("\\documentclass{article}\n", ""),
+        source.replace("Email: owner@example.com\n", ""),
+        source.replace("\\section{Technical Skills}\n", ""),
+        source.replace("Built nested", "Built scalable nested"),
+        source.replace("Python, TypeScript", "Python"),
+        source.replace("2026", "2025"),
+    ):
+        assert web_server._missing_source_resume_content(source, candidate)
+
+
+def test_save_role_resume_rejects_unmeasurable_fill_and_rolls_back_pair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resume_root = tmp_path / "prepared-resumes"
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    monkeypatch.setattr(web_server, "_resume_resources_root", lambda: tmp_path / "resources")
+    monkeypatch.setattr(web_server.shutil, "which", lambda _name: "/usr/bin/pdflatex")
+
+    def fake_run(command: object, **kwargs: object) -> object:
+        cwd = Path(kwargs["cwd"])
+        (cwd / "resume.pdf").write_bytes(_blank_pdf_bytes())
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(web_server.subprocess, "run", fake_run)
+    resume = web_server.MasterResume(
+        id=1,
+        filename="resume.tex",
+        content="source",
+        content_sha256="source",
+        created_at=None,
+        updated_at=None,
+    )
+    role = {"id": 1, "company_name": "Acme", "title": "Product Intern"}
+    with pytest.raises(web_server.GeneratedDocumentLayoutError, match="could not be measured"):
+        web_server.save_role_resume(
+            role,
+            resume,
+            r"\documentclass{article}\begin{document}Complete\end{document}",
+            required_page_count=1,
+            minimum_page_fill_ratio=0.82,
+        )
+
+    role_dir = resume_root / "role-1"
+    role_dir.mkdir(parents=True, exist_ok=True)
+    target_tex = role_dir / "resume.tex"
+    target_pdf = role_dir / "resume.pdf"
+    target_tex.write_text("previous tex")
+    target_pdf.write_bytes(b"previous pdf")
+    monkeypatch.setattr(web_server, "_pdf_page_fill_ratio", lambda _path: 0.90)
+    real_replace = os.replace
+
+    def fail_pdf_commit(source: object, destination: object) -> None:
+        if Path(source).name == "selected.pdf" and Path(destination) == target_pdf:
+            raise OSError("injected PDF commit failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(web_server.os, "replace", fail_pdf_commit)
+    with pytest.raises(OSError, match="injected PDF commit failure"):
+        web_server.save_role_resume(
+            role,
+            resume,
+            r"\documentclass{article}\begin{document}Replacement\end{document}",
+            required_page_count=1,
+            minimum_page_fill_ratio=0.82,
+        )
+    assert target_tex.read_text() == "previous tex"
+    assert target_pdf.read_bytes() == b"previous pdf"
+
+
+def test_role_resume_generation_falls_back_to_full_source_when_ai_omits_experience(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-role-resume-fidelity.sqlite3"
+    resume_root = tmp_path / "prepared-resumes"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    monkeypatch.setattr(web_server, "_resume_resources_root", lambda: tmp_path / "resources")
+    monkeypatch.setattr(web_server.shutil, "which", lambda _name: "/usr/bin/pdflatex")
+
+    def fake_run(command: object, **kwargs: object) -> object:
+        cwd_arg = kwargs["cwd"]
+        assert isinstance(cwd_arg, (str, Path))
+        cwd = Path(cwd_arg)
+        (cwd / "resume.pdf").write_bytes(_valid_pdf_bytes())
+
+        class Completed:
+            returncode = 0
+
+        return Completed()
+
+    monkeypatch.setattr(web_server.subprocess, "run", fake_run)
+    source_latex = r"""\documentclass{article}
+\begin{document}
+\section{Work}
+\resumeProjectHeading{\textbf{Vital Employer}}{2026}
+\resumeItem{Vital production systems experience that must never be removed.}
+\section{Projects}
+\resumeProjectHeading{\textbf{Vital Project}}{2025}
+\resumeItem{Vital project experience that must never be removed.}
+\end{document}
+"""
+    generated_latex = r"""\documentclass{article}
+\begin{document}
+\section{Work}
+\resumeProjectHeading{\textbf{Vital Employer}}{2026}
+\resumeItem{Vital production systems experience that must never be removed.}
+\end{document}
+"""
+    calls: list[dict[str, object]] = []
+
+    async def fake_generate_resume_tweak(**kwargs: object) -> object:
+        calls.append(dict(kwargs))
+
+        class Draft:
+            latex = generated_latex
+            summary = "removed less relevant experience"
+
+        return Draft()
+
+    monkeypatch.setattr(web_server, "generate_resume_tweak", fake_generate_resume_tweak)
+    db.ensure_initialized()
+    resume = web_server.MasterResume(
+        id=1,
+        filename="resume.tex",
+        content=source_latex,
+        content_sha256="source",
+        created_at=None,
+        updated_at=None,
+    )
+
+    result = web_server.build_role_resume(
+        {"id": 1, "company_name": "Acme", "title": "Product Intern"},
+        resume,
+        tweaks="Tailor this resume without removing experience.",
+    )
+
+    assert len(calls) == 3
+    assert all(call["resume_content"] == source_latex for call in calls)
+    assert "Vital production systems experience" in result["latex"]
+    assert "Vital project experience" in result["latex"]
+    assert (resume_root / "role-1" / "resume.tex").read_text() == source_latex
+
+
+def test_role_resume_generation_falls_back_when_ai_latex_does_not_compile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-role-resume-compile-fallback.sqlite3"
+    resume_root = tmp_path / "prepared-resumes"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    monkeypatch.setattr(web_server, "_resume_resources_root", lambda: tmp_path / "resources")
+    monkeypatch.setattr(web_server.shutil, "which", lambda _name: "/usr/bin/pdflatex")
+    source_latex = (
+        "\\documentclass{article}\n\\begin{document}\n"
+        "\\section{Work}\n\\resumeItem{Complete source experience.}\n\\end{document}\n"
+    )
+    broken_latex = source_latex.replace(
+        "\\begin{document}\n",
+        "\\begin{document}\n% BROKEN AI LATEX\n",
+    )
+    compile_attempts = 0
+
+    def fake_run(command: object, **kwargs: object) -> object:
+        nonlocal compile_attempts
+        compile_attempts += 1
+        cwd = Path(kwargs["cwd"])
+        if "BROKEN AI LATEX" in (cwd / "resume.tex").read_text():
+            return SimpleNamespace(returncode=1)
+        (cwd / "resume.pdf").write_bytes(_valid_pdf_bytes())
+        return SimpleNamespace(returncode=0)
+
+    async def fake_generate_resume_tweak(**_kwargs: object) -> object:
+        return SimpleNamespace(latex=broken_latex, summary="broken")
+
+    monkeypatch.setattr(web_server.subprocess, "run", fake_run)
+    monkeypatch.setattr(web_server, "generate_resume_tweak", fake_generate_resume_tweak)
+    db.ensure_initialized()
+    resume = web_server.MasterResume(
+        id=1,
+        filename="resume.tex",
+        content=source_latex,
+        content_sha256="source",
+        created_at=None,
+        updated_at=None,
+    )
+
+    result = web_server.build_role_resume(
+        {"id": 1, "company_name": "Acme", "title": "Product Intern"},
+        resume,
+        tweaks="Tailor without removing content.",
+    )
+
+    assert compile_attempts == 4
+    assert result["latex"] == source_latex
+    assert (resume_root / "role-1" / "resume.tex").read_text() == source_latex
 
 
 def test_role_chat_endpoint_uses_role_material_contexts(

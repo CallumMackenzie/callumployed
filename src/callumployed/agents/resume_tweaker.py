@@ -27,7 +27,12 @@ other-experience notes. Keep the resume truthful and concise.
 Rules:
 - preserve the current LaTeX structure, packages, commands, and formatting unless
   a requested tweak requires a narrow content edit
-- revise existing bullets before adding new sections
+- preserve every existing experience item verbatim, including every employer,
+  role, project, date, heading, and resume bullet from the source resume
+- never delete, shorten, summarize, or paraphrase source experience; tailoring may
+  reorder complete experience entries or add source-supported material only
+- fit page-count requirements through LaTeX margins, spacing, line leading, and
+  bounded legible typography—not by removing source content
 - do not invent employers, projects, metrics, skills, dates, schools, awards, or
   responsibilities
 - use job_context to choose wording and emphasis, but do not copy unsupported

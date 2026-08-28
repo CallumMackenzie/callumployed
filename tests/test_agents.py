@@ -261,6 +261,8 @@ def test_resume_tweak_prompt_includes_existing_resume_and_tweaks() -> None:
     assert "Built a Kubernetes scheduler" in prompt
     assert "full," in prompt
     assert "compilable replacement LaTeX document" in prompt
+    assert "preserve every existing experience item verbatim" in prompt
+    assert "never delete, shorten, summarize, or paraphrase source experience" in prompt
 
 
 def test_role_chat_prompt_includes_role_material_contexts() -> None:
