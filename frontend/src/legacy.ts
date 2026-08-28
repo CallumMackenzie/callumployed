@@ -3780,10 +3780,12 @@ settingsForm.addEventListener("change", (event) => {
 settingsForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const submitButton = settingsForm.querySelector('button[type="submit"]');
-  const controls = settingsForm.querySelectorAll("[data-setting-key]");
+  const controls = settingsForm.querySelectorAll(
+    'input[type="checkbox"][name], select[name], input[data-setting-text][name]',
+  );
   const payload = {};
   controls.forEach((control) => {
-    const key = control.dataset.settingKey;
+    const key = control.name;
     if (!key) return;
     payload[key] = control.type === "checkbox" ? control.checked : control.value;
   });

@@ -233,7 +233,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'aria-label="applicant profile"' in markup
         assert 'id="settings-profile-options"' in markup
         assert '<button type="submit">save settings</button>' in markup
-        assert 'settingsForm.querySelectorAll("[data-setting-key]")' in app_javascript
+        assert "input[data-setting-text][name]" in app_javascript
         assert 'body: JSON.stringify(payload)' in app_javascript
         assert 'id="settings-options"' in markup
         assert 'aria-label="filters"' in markup
