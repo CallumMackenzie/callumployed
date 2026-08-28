@@ -30,6 +30,7 @@ from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
 from platformdirs import user_data_path
+from pypdf import PdfReader
 
 from callumployed.agents.cover_letter import (
     ApplicantProfile,
@@ -112,6 +113,11 @@ from callumployed.data.repositories import (
     should_use_internship_mode,
     update_company,
     upsert_master_resume,
+)
+from callumployed.services.material_index import (
+    build_material_index,
+    get_material_index_status,
+    retrieve_indexed_materials,
 )
 from callumployed.services.scan_workflow import rescan_role as run_rescan_role
 from callumployed.services.scan_workflow import scan_company as run_scan_company
@@ -645,17 +651,16 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             if len(path_parts) == 2 and path_parts == ["api", "experience-notes"]:
                 self._add_experience_note()
                 return
+            if len(path_parts) == 3 and path_parts == ["api", "application-materials", "index"]:
+                self._index_application_materials()
+                return
             if len(path_parts) == 2 and path_parts == ["api", "companies"]:
                 self._add_company()
                 return
             if len(path_parts) == 2 and path_parts == ["api", "roles"]:
                 self._add_role()
                 return
-            if (
-                len(path_parts) == 3
-                and path_parts[0] == "api"
-                and path_parts[1] == "companies"
-            ):
+            if len(path_parts) == 3 and path_parts[0] == "api" and path_parts[1] == "companies":
                 self._update_company(path_parts[2])
                 return
             if (
@@ -696,11 +701,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
         def do_DELETE(self) -> None:
             parsed_url = urlparse(self.path)
             path_parts = [part for part in PurePosixPath(parsed_url.path).parts if part != "/"]
-            if (
-                len(path_parts) == 3
-                and path_parts[0] == "api"
-                and path_parts[1] == "companies"
-            ):
+            if len(path_parts) == 3 and path_parts[0] == "api" and path_parts[1] == "companies":
                 self._delete_company(path_parts[2])
                 return
             if (
@@ -1050,9 +1051,8 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                     return
                 analysis = build_prep_analysis(role.model_dump(mode="json"), resume)
                 feedback_items = analysis.get("feedback_items")
-                if (
-                    not isinstance(feedback_items, list)
-                    or not 0 <= feedback_index < len(feedback_items)
+                if not isinstance(feedback_items, list) or not 0 <= feedback_index < len(
+                    feedback_items
                 ):
                     self.send_error(HTTPStatus.BAD_REQUEST, "Invalid feedback_index")
                     return
@@ -1267,9 +1267,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                         role=chat_context["role"],
                         resume_content=chat_context["resume_content"],
                         cover_letter_content=chat_context["cover_letter_content"],
-                        employment_history_context=chat_context[
-                            "employment_history_context"
-                        ],
+                        employment_history_context=chat_context["employment_history_context"],
                         messages=messages,
                     )
                 )
@@ -1577,8 +1575,18 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
 
             filename = payload.get("filename")
             content = payload.get("content")
-            if not isinstance(filename, str) or not isinstance(content, str):
-                self.send_error(HTTPStatus.BAD_REQUEST, "Expected filename and content")
+            content_base64 = payload.get("content_base64")
+            if not isinstance(filename, str):
+                self.send_error(HTTPStatus.BAD_REQUEST, "Expected filename")
+                return
+            try:
+                extracted_content = _experience_note_content_from_payload(
+                    filename,
+                    content=content,
+                    content_base64=content_base64,
+                )
+            except ValueError as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
                 return
 
             try:
@@ -1586,7 +1594,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                     note = add_experience_note(
                         connection,
                         filename=filename,
-                        content=content,
+                        content=extracted_content,
                     )
                     notes = list_experience_notes(connection)
             except ValueError as error:
@@ -1599,6 +1607,31 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                     "experience_notes": [_experience_note_summary(item) for item in notes],
                 }
             )
+
+        def _index_application_materials(self) -> None:
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            notes: list[ExperienceNote] = []
+            try:
+                with db.connect() as connection:
+                    notes = list_experience_notes(connection)
+                if not notes:
+                    raise ValueError("Upload project or employment-history notes before indexing.")
+                material_index = build_material_index(
+                    [_experience_note_index_source(note) for note in notes]
+                )
+            except ValueError as error:
+                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+                return
+            except OSError:
+                LOGGER.exception("Application material indexing failed")
+                self._send_json_with_status(
+                    {"error": "Application material indexing failed."},
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+                return
+            self._send_json({"material_index": material_index})
 
         def _start_scan_all(self) -> None:
             started = SCAN_COORDINATOR.start()
@@ -1656,12 +1689,12 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             try:
                 validated_payload = dict(payload)
                 if APPLICANT_FIRST_NAME_CONFIG_KEY in payload:
-                    validated_payload[APPLICANT_FIRST_NAME_CONFIG_KEY] = (
-                        _clean_applicant_name_part(payload[APPLICANT_FIRST_NAME_CONFIG_KEY])
+                    validated_payload[APPLICANT_FIRST_NAME_CONFIG_KEY] = _clean_applicant_name_part(
+                        payload[APPLICANT_FIRST_NAME_CONFIG_KEY]
                     )
                 if APPLICANT_LAST_NAME_CONFIG_KEY in payload:
-                    validated_payload[APPLICANT_LAST_NAME_CONFIG_KEY] = (
-                        _clean_applicant_name_part(payload[APPLICANT_LAST_NAME_CONFIG_KEY])
+                    validated_payload[APPLICANT_LAST_NAME_CONFIG_KEY] = _clean_applicant_name_part(
+                        payload[APPLICANT_LAST_NAME_CONFIG_KEY]
                     )
                 for key in APPLICANT_PROFILE_TEXT_CONFIG_KEYS:
                     if key in payload:
@@ -1670,16 +1703,14 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                             payload[key],
                         )
                 if COVER_LETTER_MODEL_CONFIG_KEY in payload:
-                    validated_payload[COVER_LETTER_MODEL_CONFIG_KEY] = (
-                        _clean_cover_letter_model(payload[COVER_LETTER_MODEL_CONFIG_KEY])
+                    validated_payload[COVER_LETTER_MODEL_CONFIG_KEY] = _clean_cover_letter_model(
+                        payload[COVER_LETTER_MODEL_CONFIG_KEY]
                     )
                 if "location_filter" in payload:
                     location_filter = payload["location_filter"].strip().lower().replace("-", "_")
                     if location_filter not in LOCATION_FILTER_VALUES:
                         expected_values = ", ".join(sorted(LOCATION_FILTER_VALUES))
-                        raise ValueError(
-                            f"location_filter must be one of: {expected_values}"
-                        )
+                        raise ValueError(f"location_filter must be one of: {expected_values}")
                     validated_payload["location_filter"] = location_filter
                 if "central_api_url" in payload:
                     central_api_url = payload["central_api_url"].strip().rstrip("/")
@@ -1723,17 +1754,13 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                         set_config_value(
                             connection,
                             APPLICANT_FIRST_NAME_CONFIG_KEY,
-                            _clean_applicant_name_part(
-                                payload[APPLICANT_FIRST_NAME_CONFIG_KEY]
-                            ),
+                            _clean_applicant_name_part(payload[APPLICANT_FIRST_NAME_CONFIG_KEY]),
                         )
                     if APPLICANT_LAST_NAME_CONFIG_KEY in payload:
                         set_config_value(
                             connection,
                             APPLICANT_LAST_NAME_CONFIG_KEY,
-                            _clean_applicant_name_part(
-                                payload[APPLICANT_LAST_NAME_CONFIG_KEY]
-                            ),
+                            _clean_applicant_name_part(payload[APPLICANT_LAST_NAME_CONFIG_KEY]),
                         )
                     for key in APPLICANT_PROFILE_TEXT_CONFIG_KEYS:
                         if key in payload:
@@ -1871,9 +1898,7 @@ def build_scan_status_payload() -> dict[str, Any]:
     )
     latest_scan_status = latest_scan.scan_status if latest_scan else None
     recent_failed_scans = [
-        scan
-        for scan in latest_scan_runs
-        if scan.scan_status == ScanStatus.FAILED and scan.error
+        scan for scan in latest_scan_runs if scan.scan_status == ScanStatus.FAILED and scan.error
     ][:5]
     return {
         "scanning": snapshot.scanning,
@@ -1928,18 +1953,22 @@ def build_config_payload() -> dict[str, Any]:
         require_software_keywords = should_require_software_keywords(connection)
         internship_mode = should_use_internship_mode(connection)
         location_filter = get_location_filter(connection)
-        applicant_first_name = get_config_value(
-            connection,
-            APPLICANT_FIRST_NAME_CONFIG_KEY,
-        ) or ""
-        applicant_last_name = get_config_value(
-            connection,
-            APPLICANT_LAST_NAME_CONFIG_KEY,
-        ) or ""
-        applicant_email = get_config_value(connection, APPLICANT_EMAIL_CONFIG_KEY) or ""
-        applicant_institution = (
-            get_config_value(connection, APPLICANT_INSTITUTION_CONFIG_KEY) or ""
+        applicant_first_name = (
+            get_config_value(
+                connection,
+                APPLICANT_FIRST_NAME_CONFIG_KEY,
+            )
+            or ""
         )
+        applicant_last_name = (
+            get_config_value(
+                connection,
+                APPLICANT_LAST_NAME_CONFIG_KEY,
+            )
+            or ""
+        )
+        applicant_email = get_config_value(connection, APPLICANT_EMAIL_CONFIG_KEY) or ""
+        applicant_institution = get_config_value(connection, APPLICANT_INSTITUTION_CONFIG_KEY) or ""
         applicant_degree = get_config_value(connection, APPLICANT_DEGREE_CONFIG_KEY) or ""
         try:
             cover_letter_model = _clean_cover_letter_model(
@@ -2032,8 +2061,7 @@ def build_config_payload() -> dict[str, Any]:
                 "default": DEFAULT_COVER_LETTER_MODEL,
                 "editable": True,
                 "options": [
-                    {"value": value, "label": label}
-                    for value, label in COVER_LETTER_MODEL_OPTIONS
+                    {"value": value, "label": label} for value, label in COVER_LETTER_MODEL_OPTIONS
                 ],
             },
             {
@@ -2085,8 +2113,7 @@ def build_config_payload() -> dict[str, Any]:
                 "key": "location_filter",
                 "label": "location filter",
                 "description": (
-                    "only applies while scanning; existing roles are unaffected "
-                    "unless re-filtered"
+                    "only applies while scanning; existing roles are unaffected unless re-filtered"
                 ),
                 "control": "select",
                 "value": location_filter,
@@ -2479,9 +2506,7 @@ def build_cover_letter_examples_payload() -> dict[str, Any]:
     with db.connect() as connection:
         examples = list_cover_letter_examples(connection)
     return {
-        "cover_letter_examples": [
-            _cover_letter_example_summary(example) for example in examples
-        ]
+        "cover_letter_examples": [_cover_letter_example_summary(example) for example in examples]
     }
 
 
@@ -2656,6 +2681,7 @@ def build_role_cover_letter(
 
     applicant_profile = ApplicantProfile()
     experience_notes: list[ExperienceNote] = []
+    experience_context: list[dict[str, object]] = []
     cover_letter_model = DEFAULT_COVER_LETTER_MODEL
 
     def search_cover_letters(query: str, *, limit: int = 3) -> list[dict[str, object]]:
@@ -2680,15 +2706,18 @@ def build_role_cover_letter(
                 )
             except ValueError:
                 cover_letter_model = DEFAULT_COVER_LETTER_MODEL
+        experience_context = _generation_experience_context(
+            experience_notes,
+            role=role,
+            tweaks=tweaks,
+        )
         draft = asyncio.run(
             generate_cover_letter(
                 role=role,
                 resume_content=resume.content,
                 search_tool=search_cover_letters,
                 applicant_profile=applicant_profile,
-                other_experience_context=[
-                    _experience_note_context(note) for note in experience_notes
-                ],
+                other_experience_context=experience_context,
                 tweaks=tweaks,
                 previous_cover_letter_latex=previous_cover_letter_latex,
                 settings=LlmSettings(model=cover_letter_model),
@@ -2704,9 +2733,7 @@ def build_role_cover_letter(
                 role,
                 resume,
                 applicant_profile=applicant_profile,
-                other_experience_context=[
-                    _experience_note_context(note) for note in experience_notes
-                ],
+                other_experience_context=experience_context,
             )
         )
         example_ids = []
@@ -2764,6 +2791,7 @@ def build_role_resume(
     if not isinstance(role_id, int):
         raise RuntimeError("Role did not include an ID")
     source_latex = previous_latex or _ensure_role_resume_copy(role_id, resume).read_text()
+    experience_notes: list[ExperienceNote] = []
     try:
         with db.connect() as connection:
             db.run_migrations(connection)
@@ -2773,9 +2801,11 @@ def build_role_resume(
                 role=role,
                 resume_content=source_latex,
                 tweaks=tweaks,
-                other_experience_context=[
-                    _experience_note_context(note) for note in experience_notes
-                ],
+                other_experience_context=_generation_experience_context(
+                    experience_notes,
+                    role=role,
+                    tweaks=tweaks,
+                ),
             )
         )
     except Exception as error:  # noqa: BLE001 - surface a concise UI failure.
@@ -2809,9 +2839,7 @@ def build_role_chat_context(role_id: int) -> dict[str, Any]:
         "role": role_payload,
         "resume_content": resume_content,
         "cover_letter_content": cover_letter_content,
-        "employment_history_context": [
-            _experience_note_context(note) for note in experience_notes
-        ],
+        "employment_history_context": [_experience_note_context(note) for note in experience_notes],
     }
 
 
@@ -2913,8 +2941,7 @@ def _remove_cover_letter_website_header_lines(latex: str) -> str:
     for line in latex.splitlines():
         normalized = line.lower()
         has_personal_site = any(
-            marker in normalized
-            for marker in ("http://", "https://", r"\url{", r"\href{http")
+            marker in normalized for marker in ("http://", "https://", r"\url{", r"\href{http")
         )
         is_email = "@" in normalized or "mailto:" in normalized
         if has_personal_site and not is_email:
@@ -2962,11 +2989,7 @@ def _normalize_cover_letter_page_layout(latex: str) -> str:
     content = re.sub(r"\\ragged(?:bottom|right)\s*", "", content)
     content = re.sub(r"\\setlength\{\\tabcolsep\}\{[^}]*\}\s*", "", content)
     content = re.sub(r"\\titleformat\{\\section\}.*?\n", "", content)
-    layout = (
-        "\\setlength{\\parskip}{0.85em}\n"
-        "\\setlength{\\parindent}{0pt}\n"
-        "\\pagestyle{empty}\n"
-    )
+    layout = "\\setlength{\\parskip}{0.85em}\n\\setlength{\\parindent}{0pt}\n\\pagestyle{empty}\n"
     if "\\begin{document}" in content:
         return content.replace("\\begin{document}", f"{layout}\\begin{{document}}", 1)
     return f"{layout}{content}"
@@ -3106,9 +3129,7 @@ def _saved_role_resume(
     if not isinstance(role_id, int):
         raise RuntimeError("Role did not include an ID")
     resume_path = (
-        _ensure_role_resume_copy(role_id, resume)
-        if ensure_copy
-        else _role_resume_tex_path(role_id)
+        _ensure_role_resume_copy(role_id, resume) if ensure_copy else _role_resume_tex_path(role_id)
     )
     if not resume_path.exists():
         return {
@@ -3216,8 +3237,7 @@ def _cover_letter_display_summary(
         if example_count != 1:
             examples += "s"
         return (
-            f"Drafted cover letter for {role_label} using resume, "
-            f"job description, and {examples}."
+            f"Drafted cover letter for {role_label} using resume, job description, and {examples}."
         )
     return f"Drafted cover letter for {role_label} using resume and job description."
 
@@ -3278,11 +3298,7 @@ def _prep_keywords(text: str) -> set[str]:
         "your",
     }
     normalized = "".join(character.lower() if character.isalnum() else " " for character in text)
-    return {
-        word
-        for word in normalized.split()
-        if len(word) >= 4 and word not in ignored_terms
-    }
+    return {word for word in normalized.split() if len(word) >= 4 and word not in ignored_terms}
 
 
 def _optional_comment(value: object) -> str | None:
@@ -3683,9 +3699,8 @@ def _write_tectonic_resume_input(resume_path: Path) -> Path:
         "\\ifdefined\\pdfgentounicode\\else\\newcount\\pdfgentounicode\\fi\n"
     )
     if (
-        ("\\pdfglyphtounicode" in content or "\\pdfgentounicode" in content)
-        and compatibility not in content
-    ):
+        "\\pdfglyphtounicode" in content or "\\pdfgentounicode" in content
+    ) and compatibility not in content:
         content = content.replace("\\documentclass", f"{compatibility}\\documentclass", 1)
     compile_path = resume_path.with_name("resume-tectonic.tex")
     compile_path.write_text(content)
@@ -3694,9 +3709,7 @@ def _write_tectonic_resume_input(resume_path: Path) -> Path:
 
 def _safe_filename(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode()
-    cleaned = "".join(
-        character.lower() if character.isalnum() else "-" for character in normalized
-    )
+    cleaned = "".join(character.lower() if character.isalnum() else "-" for character in normalized)
     parts = [part for part in cleaned.split("-") if part]
     return "-".join(parts[:10]) or "role"
 
@@ -3725,10 +3738,7 @@ def _applicant_pdf_filename_prefix() -> str:
     except Exception:  # noqa: BLE001 - filename generation should not block PDF serving.
         first_name = ""
         last_name = ""
-    prefix = (
-        _clean_applicant_name_part(first_name)
-        + _clean_applicant_name_part(last_name)
-    )
+    prefix = _clean_applicant_name_part(first_name) + _clean_applicant_name_part(last_name)
     return prefix or "Applicant"
 
 
@@ -3738,15 +3748,13 @@ def _application_materials_payload(
     notes: list[ExperienceNote],
 ) -> dict[str, Any]:
     resume_resources = _list_resume_resources()
-    has_missing_required_materials = (
-        resume is None or len(examples) == 0 or len(notes) == 0
-    )
+    index_sources = [_experience_note_index_source(note) for note in notes]
+    has_missing_required_materials = resume is None or len(examples) == 0 or len(notes) == 0
     return {
         "master_resume": _master_resume_summary(resume) if resume else None,
-        "cover_letter_examples": [
-            _cover_letter_example_summary(example) for example in examples
-        ],
+        "cover_letter_examples": [_cover_letter_example_summary(example) for example in examples],
         "experience_notes": [_experience_note_summary(note) for note in notes],
+        "material_index": get_material_index_status(index_sources),
         "resume_resources": resume_resources,
         "ui": {
             "default_collapsed": not has_missing_required_materials,
@@ -3789,6 +3797,70 @@ def _experience_note_summary(note: ExperienceNote) -> dict[str, Any]:
         "created_at": note.created_at.isoformat() if note.created_at else None,
         "updated_at": note.updated_at.isoformat() if note.updated_at else None,
     }
+
+
+def _experience_note_index_source(note: ExperienceNote) -> dict[str, object]:
+    return {
+        "id": note.id,
+        "filename": note.filename,
+        "content": note.content,
+        "content_sha256": note.content_sha256,
+        "updated_at": note.updated_at.isoformat() if note.updated_at else None,
+    }
+
+
+def _generation_experience_context(
+    notes: list[ExperienceNote],
+    *,
+    role: dict[str, Any],
+    tweaks: str | None,
+    total_content_limit: int = 16_000,
+) -> list[dict[str, object]]:
+    sources = [_experience_note_index_source(note) for note in notes]
+    query = " ".join(
+        str(value or "")
+        for value in (
+            role.get("title"),
+            role.get("company_name"),
+            role.get("location"),
+            role.get("description"),
+            tweaks,
+        )
+    )
+    indexed = retrieve_indexed_materials(
+        sources,
+        query=query,
+        total_content_limit=total_content_limit,
+    )
+    if indexed:
+        return indexed
+
+    if not notes:
+        return []
+    per_note_limit = max(1, total_content_limit // min(len(notes), 5))
+    bounded: list[dict[str, object]] = []
+    for note in notes[:5]:
+        content = _bounded_experience_text(note.content, per_note_limit)
+        bounded.append(
+            {
+                "filename": note.filename,
+                "content": content,
+                "updated_at": note.updated_at.isoformat() if note.updated_at else None,
+            }
+        )
+    return bounded
+
+
+def _bounded_experience_text(content: str, limit: int) -> str:
+    cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", content)
+    if len(cleaned) <= limit:
+        return cleaned
+    marker = "\n...[experience note truncated; create an index for targeted retrieval]...\n"
+    if limit <= len(marker):
+        return cleaned[:limit]
+    available = limit - len(marker)
+    head_length = available * 2 // 3
+    return f"{cleaned[:head_length]}{marker}{cleaned[-(available - head_length) :]}"
 
 
 def _experience_note_context(note: ExperienceNote) -> dict[str, Any]:
@@ -3887,6 +3959,77 @@ def _try_resolve_company_with_central_store(
         normalized_name=response.normalized_name,
         prestige_tier=response.default_tier,
     )
+
+
+def _experience_note_content_from_payload(
+    filename: str,
+    *,
+    content: object,
+    content_base64: object,
+) -> str:
+    suffix = Path(filename).suffix.lower()
+    if suffix in {".pdf", ".docx"}:
+        if not isinstance(content_base64, str):
+            raise ValueError(f"{suffix.upper().removeprefix('.')} uploads require content_base64")
+        try:
+            document_bytes = base64.b64decode(content_base64, validate=True)
+        except (binascii.Error, ValueError) as error:
+            raise ValueError("Experience note content is not valid base64") from error
+        if suffix == ".pdf":
+            return _extract_pdf_text(document_bytes)
+        return _extract_docx_text(document_bytes)
+    if not isinstance(content, str):
+        raise ValueError("Expected filename and content")
+    return content
+
+
+def _extract_pdf_text(document_bytes: bytes) -> str:
+    try:
+        reader = PdfReader(BytesIO(document_bytes))
+        pages = [page.extract_text(extraction_mode="layout") or "" for page in reader.pages]
+    except Exception as error:  # noqa: BLE001 - pypdf exposes several parser errors.
+        raise ValueError("PDF experience note content could not be read") from error
+    extracted = "\n\f\n".join(pages).strip()
+    if not extracted:
+        raise ValueError("PDF experience note content cannot be empty")
+    return _infer_pdf_markdown_sections(extracted)
+
+
+def _infer_pdf_markdown_sections(content: str) -> str:
+    lines = content.replace("\r\n", "\n").replace("\r", "\n").splitlines()
+    rendered: list[str] = []
+    first_heading = True
+    for index, line in enumerate(lines):
+        stripped = re.sub(r"\s+", " ", line).strip()
+        previous_blank = index == 0 or not lines[index - 1].strip()
+        next_blank = index + 1 >= len(lines) or not lines[index + 1].strip()
+        next_text = ""
+        for candidate in lines[index + 1 :]:
+            if candidate.strip():
+                next_text = candidate.strip()
+                break
+        is_numbered_heading = bool(re.fullmatch(r"\d+\.\s+[^.!?]{3,100}", stripped))
+        is_standalone_heading = (
+            previous_blank
+            and next_blank
+            and 2 <= len(stripped.split()) <= 14
+            and len(stripped) <= 110
+            and stripped[:1].isupper()
+            and not stripped.endswith((".", "!", "?", ":", ";", ","))
+            and not stripped.startswith(("-", "•"))
+            and bool(next_text)
+        )
+        if (
+            stripped
+            and not stripped.startswith("#")
+            and (is_numbered_heading or is_standalone_heading)
+        ):
+            prefix = "#" if first_heading else "##"
+            rendered.append(f"{prefix} {stripped}")
+            first_heading = False
+        else:
+            rendered.append(line.rstrip())
+    return "\n".join(rendered).strip()
 
 
 def _cover_letter_content_from_payload(

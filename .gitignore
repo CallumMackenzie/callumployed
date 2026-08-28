@@ -15,6 +15,7 @@ htmlcov/
 *.db-wal
 
 artifacts/
+application-material-index/
 downloads/
 playwright-report/
 test-results/

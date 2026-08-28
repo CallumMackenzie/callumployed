@@ -76,11 +76,21 @@
               class="sr-only"
               id="experience-note-upload"
               type="file"
-              accept=".txt,.md,text/plain,text/markdown"
+              accept=".txt,.md,.pdf,.docx,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
               multiple
             />
             <button type="button" id="experience-note-upload-button">upload</button>
           </div>
+          <aside class="material-index-card" aria-label="application material index">
+            <div class="material-index-copy">
+              <p class="material-label">application material index</p>
+              <p class="material-index-warning" id="material-index-warning" role="status" aria-live="polite">
+                index application materials before generating tailored documents.
+              </p>
+              <p class="material-meta" id="material-index-status">not indexed</p>
+            </div>
+            <button type="button" id="material-index-button">index materials</button>
+          </aside>
         </div>
       </section>
 

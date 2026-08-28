@@ -836,6 +836,52 @@ h1 {
   border-top: 1px solid var(--line);
 }
 
+.material-index-card {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  border-top: 1px solid color-mix(in srgb, var(--purple) 22%, var(--line));
+  background: color-mix(in srgb, var(--purple) 6%, var(--surface));
+}
+
+.material-index-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.material-index-warning {
+  margin: 0;
+  color: #9a3412;
+  font-size: 0.82rem;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.material-index-warning[hidden] {
+  display: none;
+}
+
+.material-index-card button {
+  flex: 0 0 auto;
+  min-width: 132px;
+  min-height: 38px;
+  padding: 8px 12px;
+  white-space: nowrap;
+}
+
+.material-index-card button:disabled {
+  border-color: var(--line);
+  background: var(--surface-strong);
+  color: var(--muted);
+  cursor: wait;
+  transform: none;
+  box-shadow: none;
+}
+
 .material-status {
   min-width: 0;
   flex: 1 1 auto;
@@ -4043,6 +4089,15 @@ a:hover .role-link-icon {
 
   .material-row {
     flex-wrap: wrap;
+  }
+
+  .material-index-card {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .material-index-card button {
+    width: 100%;
   }
 
   .setting-option {

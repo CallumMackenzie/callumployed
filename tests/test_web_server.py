@@ -109,10 +109,7 @@ def _add_scan_candidate(connection: Any, scan_run_id: int, url: str) -> int:
 
 
 def _minimal_docx(paragraphs: list[str]) -> bytes:
-    body = "".join(
-        f"<w:p><w:r><w:t>{paragraph}</w:t></w:r></w:p>"
-        for paragraph in paragraphs
-    )
+    body = "".join(f"<w:p><w:r><w:t>{paragraph}</w:t></w:r></w:p>" for paragraph in paragraphs)
     document_xml = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
@@ -151,15 +148,11 @@ def test_pwa_manifest_and_apple_icon_are_served_with_correct_content_types() -> 
     thread.start()
     try:
         port = server.server_address[1]
-        with urlopen(
-            f"http://127.0.0.1:{port}/assets/manifest.webmanifest", timeout=5
-        ) as response:
+        with urlopen(f"http://127.0.0.1:{port}/assets/manifest.webmanifest", timeout=5) as response:
             assert response.status == 200
             assert response.headers["Content-Type"] == "application/manifest+json; charset=utf-8"
             manifest = json.loads(response.read())
-        with urlopen(
-            f"http://127.0.0.1:{port}/assets/apple-touch-icon.png", timeout=5
-        ) as response:
+        with urlopen(f"http://127.0.0.1:{port}/assets/apple-touch-icon.png", timeout=5) as response:
             assert response.status == 200
             assert response.headers["Content-Type"] == "image/png"
             assert response.read().startswith(b"\x89PNG\r\n\x1a\n")
@@ -182,9 +175,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
 
         with urlopen(url, timeout=5) as response:
             index_markup = response.read().decode()
-        with urlopen(
-            f"http://127.0.0.1:{port}/assets/build/app.js", timeout=5
-        ) as response:
+        with urlopen(f"http://127.0.0.1:{port}/assets/build/app.js", timeout=5) as response:
             assert response.status == 200
             assert response.headers["Content-Type"] == "text/javascript; charset=utf-8"
 
@@ -197,8 +188,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="toggle-all"' in markup
         assert (
             '<link rel="icon" href="/assets/camackenzie-logo.svg?v=20260827-2" '
-            'type="image/svg+xml" />'
-            in index_markup
+            'type="image/svg+xml" />' in index_markup
         )
         assert 'rel="apple-touch-icon"' in index_markup
         assert 'sizes="180x180"' in index_markup
@@ -245,7 +235,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert '<button type="submit">save settings</button>' in markup
         assert "input[data-setting-text][name]" in app_javascript
         assert 'const response = await fetch("/api/config", {' in app_javascript
-        assert 'body: JSON.stringify(payload)' in app_javascript
+        assert "body: JSON.stringify(payload)" in app_javascript
         assert 'id="settings-options"' in markup
         assert 'aria-label="filters"' in markup
         assert 'aria-label="config"' in markup
@@ -271,6 +261,11 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="experience-note-upload"' in markup
         assert 'id="experience-note-upload-button"' in markup
         assert "projects / employment history notes" in markup
+        assert 'id="material-index-button"' in markup
+        assert 'id="material-index-warning"' in markup
+        assert 'id="material-index-status"' in markup
+        assert 'fetch("/api/application-materials/index", {' in app_javascript
+        assert 'method: "POST"' in app_javascript
         assert 'id="materials-required-warning"' in markup
         assert 'aria-label="missing required application materials"' in markup
         assert 'id="toolbar-summary"' in markup
@@ -281,8 +276,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=react-ts-20260828-5" in index_markup
-        assert "/assets/build/app.js?v=react-ts-20260828-6" in index_markup
+        assert "/assets/app.css?v=react-ts-20260828-6" in index_markup
+        assert "/assets/build/app.js?v=react-ts-20260828-7" in index_markup
         assert 'class="prep-role-hero"' in app_javascript
         assert 'class="prep-workspace-nav"' in app_javascript
         assert 'data-prep-section-target="prep-resume-' in app_javascript
@@ -746,6 +741,10 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
     database = tmp_path / "tracker-cover-letter-generate.sqlite3"
     resume_root = tmp_path / "prepared-resumes"
     monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setenv(
+        "CALLUMPLOYED_MATERIAL_INDEX_ROOT",
+        str(tmp_path / "application-material-index"),
+    )
     monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
     monkeypatch.setattr(web_server.shutil, "which", lambda _name: "/usr/bin/pdflatex")
 
@@ -801,10 +800,16 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
             """
         )
         connection.commit()
-        add_experience_note(
+        note = add_experience_note(
             connection,
             filename="projects.md",
-            content="Built a BLE sensor network for motion analysis.",
+            content=(
+                "# Projects\n"
+                "## Backend Telemetry\n"
+                "Built a Python backend for secure sensor ingestion on AWS.\n"
+                "## Community Campaign\n"
+                "Organized a neighborhood arts event and social campaign."
+            ),
         )
         web_server.set_config_value(connection, "applicant_first_name", "Jake")
         web_server.set_config_value(connection, "applicant_last_name", "Yeo")
@@ -812,6 +817,7 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         web_server.set_config_value(connection, "applicant_institution", "University of Victoria")
         web_server.set_config_value(connection, "applicant_degree", "Software Engineering")
         web_server.set_config_value(connection, "cover_letter_model", "gpt-5.6-terra")
+        web_server.build_material_index([web_server._experience_note_index_source(note)])
     db.ensure_initialized()
 
     server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
@@ -825,9 +831,7 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
                 {
                     "tweaks": "Make it warmer and shorten the Amazon paragraph.",
                     "previous_latex": (
-                        "\\documentclass{letter}\\begin{document}"
-                        "Previous Acme draft"
-                        "\\end{document}"
+                        "\\documentclass{letter}\\begin{document}Previous Acme draft\\end{document}"
                     ),
                 }
             ).encode(),
@@ -840,12 +844,9 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
 
         cover_letter = payload["cover_letter"]
         assert response.status == 200
-        assert (
-            cover_letter["summary"]
-            == (
-                "Drafted cover letter for Backend Intern at Acme using resume, "
-                "job description, and 1 stored cover letter example."
-            )
+        assert cover_letter["summary"] == (
+            "Drafted cover letter for Backend Intern at Acme using resume, "
+            "job description, and 1 stored cover letter example."
         )
         assert cover_letter["path"] == str(resume_root / "role-1" / "cover-letter.tex")
         assert cover_letter["pdf_path"] == str(resume_root / "role-1" / "cover-letter.pdf")
@@ -855,13 +856,15 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         assert captured["previous_cover_letter_latex"] == (
             "\\documentclass{letter}\\begin{document}Previous Acme draft\\end{document}"
         )
-        assert captured["other_experience_context"] == [
-            {
-                "filename": "projects.md",
-                "content": "Built a BLE sensor network for motion analysis.",
-                "updated_at": captured["other_experience_context"][0]["updated_at"],
-            }
-        ]
+        indexed_context = captured["other_experience_context"]
+        assert isinstance(indexed_context, list)
+        assert len(indexed_context) == 1
+        indexed_page = indexed_context[0]
+        assert isinstance(indexed_page, dict)
+        assert indexed_page["title"] == "Backend Telemetry"
+        assert str(indexed_page["filename"]).startswith("sections/")
+        assert "Python backend for secure sensor ingestion" in str(indexed_page["content"])
+        assert "neighborhood arts event" not in str(indexed_page["content"])
         applicant_profile = captured["applicant_profile"]
         assert isinstance(applicant_profile, ApplicantProfile)
         assert applicant_profile.model_dump() == {
@@ -1109,10 +1112,7 @@ def test_cover_letter_pdf_endpoint_serves_saved_role_pdf(
         assert response.headers["Content-Type"] == "application/pdf"
         disposition = response.headers["Content-Disposition"]
         assert disposition.startswith("inline;")
-        assert (
-            'filename="CallumMackenzie-acme-backend-intern-cover-letter.pdf"'
-            in disposition
-        )
+        assert 'filename="CallumMackenzie-acme-backend-intern-cover-letter.pdf"' in disposition
         assert body == b"%PDF saved cover letter"
     finally:
         server.shutdown()
@@ -1138,9 +1138,7 @@ def test_role_material_pdf_filename_includes_safe_job_context(
         kind="cover_letter",
     )
 
-    assert filename == (
-        "CallumMackenzie-munchen-r-d-ml-engineer-safety-trust-cover-letter.pdf"
-    )
+    assert filename == ("CallumMackenzie-munchen-r-d-ml-engineer-safety-trust-cover-letter.pdf")
 
 
 def test_cover_letter_latex_normalizer_adds_compact_one_page_layout() -> None:
@@ -1505,9 +1503,7 @@ def test_role_resume_endpoint_loads_and_saves_editable_latex(
             data=json.dumps(
                 {
                     "latex": (
-                        "\\documentclass{article}\\begin{document}"
-                        "Edited role resume"
-                        "\\end{document}"
+                        "\\documentclass{article}\\begin{document}Edited role resume\\end{document}"
                     )
                 }
             ).encode(),
@@ -1528,9 +1524,10 @@ def test_role_resume_endpoint_loads_and_saves_editable_latex(
 
         assert response.status == 200
         assert response.headers["Content-Disposition"].startswith("inline;")
-        assert 'filename="CallumMackenzie-acme-backend-intern-resume.pdf"' in response.headers[
-            "Content-Disposition"
-        ]
+        assert (
+            'filename="CallumMackenzie-acme-backend-intern-resume.pdf"'
+            in response.headers["Content-Disposition"]
+        )
         assert body == b"role resume pdf"
     finally:
         server.shutdown()
@@ -1545,6 +1542,10 @@ def test_role_resume_endpoint_regenerates_with_tweaks(
     database = tmp_path / "tracker-role-resume-regenerate.sqlite3"
     resume_root = tmp_path / "prepared-resumes"
     monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setenv(
+        "CALLUMPLOYED_MATERIAL_INDEX_ROOT",
+        str(tmp_path / "application-material-index"),
+    )
     monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
     monkeypatch.setattr(web_server, "_resume_resources_root", lambda: tmp_path / "resources")
     monkeypatch.setattr(web_server.shutil, "which", lambda _name: "/usr/bin/pdflatex")
@@ -1568,8 +1569,7 @@ def test_role_resume_endpoint_regenerates_with_tweaks(
 
         class Draft:
             latex = (
-                "\\documentclass{article}\\begin{document}"
-                "Python distributed systems\\end{document}"
+                "\\documentclass{article}\\begin{document}Python distributed systems\\end{document}"
             )
             summary = "emphasized distributed systems"
 
@@ -1597,12 +1597,19 @@ def test_role_resume_endpoint_regenerates_with_tweaks(
             VALUES (1, 'resume.tex', 'Master resume', 'abc')
             """
         )
-        add_experience_note(
+        note = add_experience_note(
             connection,
             filename="projects.md",
-            content="Built a Kubernetes scheduler.",
+            content=(
+                "# Projects\n"
+                "## Distributed Scheduler\n"
+                "Built a Kubernetes scheduler for Python distributed systems.\n"
+                "## Art Portfolio\n"
+                "Curated a watercolor gallery."
+            ),
         )
         connection.commit()
+        web_server.build_material_index([web_server._experience_note_index_source(note)])
     db.ensure_initialized()
 
     server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
@@ -1633,13 +1640,14 @@ def test_role_resume_endpoint_regenerates_with_tweaks(
         assert base64.b64decode(resume["pdf_base64"]) == b"regenerated resume pdf"
         assert captured["resume_content"] == "Current editor latex"
         assert captured["tweaks"] == "Emphasize distributed systems."
-        assert captured["other_experience_context"] == [
-            {
-                "filename": "projects.md",
-                "content": "Built a Kubernetes scheduler.",
-                "updated_at": captured["other_experience_context"][0]["updated_at"],
-            }
-        ]
+        indexed_context = captured["other_experience_context"]
+        assert isinstance(indexed_context, list)
+        assert len(indexed_context) == 1
+        indexed_page = indexed_context[0]
+        assert isinstance(indexed_page, dict)
+        assert indexed_page["title"] == "Distributed Scheduler"
+        assert "Kubernetes scheduler for Python distributed systems" in str(indexed_page["content"])
+        assert "watercolor gallery" not in str(indexed_page["content"])
         assert (resume_root / "role-1" / "resume.tex").read_text() == resume["latex"]
     finally:
         server.shutdown()
@@ -1703,11 +1711,7 @@ def test_role_chat_endpoint_uses_role_material_contexts(
         request = Request(
             f"http://127.0.0.1:{port}/api/roles/1/chat",
             data=json.dumps(
-                {
-                    "messages": [
-                        {"role": "user", "content": "What should I emphasize?"}
-                    ]
-                }
+                {"messages": [{"role": "user", "content": "What should I emphasize?"}]}
             ).encode(),
             headers={"Content-Type": "application/json"},
             method="POST",
@@ -2088,8 +2092,7 @@ def test_config_payload_returns_current_settings(
             "key": "location_filter",
             "label": "location filter",
             "description": (
-                "only applies while scanning; existing roles are unaffected "
-                "unless re-filtered"
+                "only applies while scanning; existing roles are unaffected unless re-filtered"
             ),
             "control": "select",
             "value": "all",
@@ -2536,9 +2539,7 @@ def test_company_management_endpoints_create_link_and_delete_link(
 
         assert response.status == 200
         [company] = deleted_payload["companies"]
-        assert [page["url"] for page in company["career_pages"]] == [
-            "https://example.com/students"
-        ]
+        assert [page["url"] for page in company["career_pages"]] == ["https://example.com/students"]
 
         delete_company_request = Request(
             f"http://127.0.0.1:{port}/api/companies/{company_id}",
@@ -2553,9 +2554,9 @@ def test_company_management_endpoints_create_link_and_delete_link(
         with db.connect() as connection:
             deactivated_company = get_company(connection, company_id)
             assert deactivated_company.is_active is False
-            assert [
-                page.url for page in list_company_career_pages(connection, company_id)
-            ] == ["https://example.com/students"]
+            assert [page.url for page in list_company_career_pages(connection, company_id)] == [
+                "https://example.com/students"
+            ]
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -3180,9 +3181,7 @@ def test_master_resume_endpoint_uploads_and_replaces_tex_resume(
             created_payload = json.loads(response.read().decode())
 
         assert created_payload["master_resume"]["filename"] == "master.tex"
-        assert created_payload["master_resume"]["content_bytes"] == len(
-            b"\\documentclass{article}"
-        )
+        assert created_payload["master_resume"]["content_bytes"] == len(b"\\documentclass{article}")
 
         replacement_request = Request(
             base_url,
@@ -3267,9 +3266,7 @@ def test_master_resume_upload_replaces_resumes_for_interested_roles(
     try:
         request = Request(
             f"http://127.0.0.1:{server.server_address[1]}/api/master-resume",
-            data=json.dumps(
-                {"filename": "new.tex", "content": "new master resume"}
-            ).encode(),
+            data=json.dumps({"filename": "new.tex", "content": "new master resume"}).encode(),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
@@ -3411,6 +3408,50 @@ def test_experience_notes_endpoint_uploads_multiple_notes(
         server.server_close()
 
 
+def test_experience_notes_endpoint_extracts_pdf_upload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-experience-pdf.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(
+        web_server,
+        "_extract_pdf_text",
+        lambda _content: "# Employment\n## Platform Engineer\nBuilt Kubernetes tooling.",
+    )
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}/api/experience-notes"
+        request = Request(
+            base_url,
+            data=json.dumps(
+                {
+                    "filename": "employment-history.pdf",
+                    "content_base64": base64.b64encode(b"pdf content").decode(),
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=5):
+            pass
+
+        notes = []
+        with db.connect() as connection:
+            notes = list_experience_notes(connection)
+        assert len(notes) == 1
+        assert notes[0].filename == "employment-history.pdf"
+        assert notes[0].content == ("# Employment\n## Platform Engineer\nBuilt Kubernetes tooling.")
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_application_materials_endpoint_reports_default_collapsed_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3498,6 +3539,83 @@ def test_application_materials_endpoint_reports_default_collapsed_state(
         server.server_close()
 
 
+def test_application_material_index_endpoint_tracks_upload_freshness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-material-index.sqlite3"
+    index_root = tmp_path / "application-material-index"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setenv("CALLUMPLOYED_MATERIAL_INDEX_ROOT", str(index_root))
+    monkeypatch.setattr(
+        web_server,
+        "_resume_resources_root",
+        lambda: tmp_path / "resume-resources",
+    )
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        note_request = Request(
+            f"{base_url}/api/experience-notes",
+            data=json.dumps(
+                {
+                    "filename": "history.md",
+                    "content": "# Projects\n## Scheduler\nBuilt Kubernetes tools in Python.",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(note_request, timeout=5):
+            pass
+
+        with urlopen(f"{base_url}/api/application-materials", timeout=5) as response:
+            missing_payload = json.loads(response.read().decode())
+        assert missing_payload["material_index"]["status"] == "missing"
+        assert missing_payload["material_index"]["needs_index"] is True
+        assert missing_payload["material_index"]["warning"]
+
+        index_request = Request(
+            f"{base_url}/api/application-materials/index",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(index_request, timeout=5) as response:
+            indexed_payload = json.loads(response.read().decode())
+        assert indexed_payload["material_index"]["status"] == "ready"
+        assert indexed_payload["material_index"]["needs_index"] is False
+        assert indexed_payload["material_index"]["document_count"] == 2
+        assert (index_root / "index.md").is_file()
+
+        changed_request = Request(
+            f"{base_url}/api/experience-notes",
+            data=json.dumps(
+                {
+                    "filename": "employment.md",
+                    "content": "# Employment\n## Engineer\nImproved PostgreSQL reliability.",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(changed_request, timeout=5):
+            pass
+
+        with urlopen(f"{base_url}/api/application-materials", timeout=5) as response:
+            stale_payload = json.loads(response.read().decode())
+        assert stale_payload["material_index"]["status"] == "stale"
+        assert stale_payload["material_index"]["needs_index"] is True
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_cover_letter_examples_endpoint_extracts_docx_upload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3538,9 +3656,7 @@ def test_cover_letter_examples_endpoint_extracts_docx_upload(
         with db.connect() as connection:
             examples = list_cover_letter_examples(connection)
         assert len(examples) == 1
-        assert examples[0].content == (
-            "Dear Google,\nI am excited about this internship."
-        )
+        assert examples[0].content == ("Dear Google,\nI am excited about this internship.")
     finally:
         server.shutdown()
         thread.join(timeout=5)

@@ -32,6 +32,9 @@ const experienceNoteMeta = document.querySelector("#experience-note-meta");
 const experienceNoteUpload = document.querySelector("#experience-note-upload");
 const experienceNoteUploadButton = document.querySelector("#experience-note-upload-button");
 const experienceNoteList = document.querySelector("#experience-note-list");
+const materialIndexButton = document.querySelector("#material-index-button");
+const materialIndexWarning = document.querySelector("#material-index-warning");
+const materialIndexStatus = document.querySelector("#material-index-status");
 const reviewDiscoveredButton = document.querySelector("#review-discovered");
 const prepInterestedButton = document.querySelector("#prep-interested");
 const reviewView = document.querySelector("#review-view");
@@ -119,6 +122,7 @@ let masterResume = null;
 let resumeResources = [];
 let coverLetterExamples = [];
 let experienceNotes = [];
+let materialIndex = null;
 let reviewQueue = [];
 let prepQueue = [];
 let prepAnalysisByRoleId = new Map();
@@ -466,6 +470,36 @@ function renderExperienceNotes(notes, message = "") {
   }
 }
 
+function renderMaterialIndex(index, message = "") {
+  materialIndex = index ?? null;
+  const status = materialIndex?.status ?? "missing";
+  const needsIndex = status !== "ready";
+  const hasNotes = experienceNotes.length > 0;
+  materialIndexWarning.hidden = !needsIndex;
+  materialIndexWarning.textContent = message || materialIndex?.warning || "";
+  materialIndexButton.disabled = !hasNotes;
+  materialIndexButton.textContent = status === "ready" ? "reindex materials" : "index materials";
+
+  if (message) {
+    materialIndexStatus.textContent = message;
+  } else if (status === "ready") {
+    const pageCount = Number(materialIndex?.document_count ?? 0);
+    const skippedCount = Number(materialIndex?.skipped_source_count ?? 0);
+    const indexedAt = formatCompactDate(materialIndex?.generated_at);
+    materialIndexStatus.textContent = [
+      `${pageCount} indexed ${pageCount === 1 ? "page" : "pages"}`,
+      skippedCount ? `${skippedCount} unreadable upload skipped` : "",
+      indexedAt,
+    ]
+      .filter(Boolean)
+      .join(" | ");
+  } else if (status === "stale") {
+    materialIndexStatus.textContent = "index out of date";
+  } else {
+    materialIndexStatus.textContent = "not indexed";
+  }
+}
+
 function renderResumeResources(resources, message = "") {
   resumeResources = Array.isArray(resources) ? resources : [];
   resumeResourceUploadButton.textContent = resumeResources.length > 0 ? "add" : "upload";
@@ -503,6 +537,7 @@ function renderApplicationMaterials(payload, options = {}) {
   renderResumeResources(payload?.resume_resources ?? []);
   renderCoverLetterExamples(payload?.cover_letter_examples ?? []);
   renderExperienceNotes(payload?.experience_notes ?? []);
+  renderMaterialIndex(payload?.material_index ?? null);
   updateMaterialsSummary(payload?.ui);
   if (!materialsInitialized || options.applyDefaultCollapsed) {
     setMaterialsCollapsed(Boolean(payload?.ui?.default_collapsed));
@@ -1981,13 +2016,17 @@ async function uploadExperienceNotes(files) {
   );
   try {
     for (const file of selectedFiles) {
+      const suffix = file.name.toLowerCase();
+      const payload = { filename: file.name };
+      if (suffix.endsWith(".pdf") || suffix.endsWith(".docx")) {
+        payload.content_base64 = await readFileAsBase64(file);
+      } else {
+        payload.content = await file.text();
+      }
       const response = await fetch("/api/experience-notes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          filename: file.name,
-          content: await file.text(),
-        }),
+        body: JSON.stringify(payload),
       });
       if (!response.ok) throw new Error("Experience note upload failed");
     }
@@ -1999,6 +2038,31 @@ async function uploadExperienceNotes(files) {
   } finally {
     experienceNoteUpload.value = "";
     experienceNoteUploadButton.disabled = false;
+  }
+}
+
+async function indexApplicationMaterials() {
+  if (materialIndexButton.disabled || experienceNotes.length === 0) return;
+  materialIndexButton.disabled = true;
+  materialIndexButton.textContent = "indexing...";
+  materialIndexWarning.hidden = false;
+  materialIndexWarning.textContent = "Building section pages and a targeted retrieval index...";
+  materialIndexStatus.textContent = "indexing...";
+  try {
+    const response = await fetch("/api/application-materials/index", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    if (!response.ok) throw new Error("Application material indexing failed");
+    await loadApplicationMaterials();
+  } catch {
+    materialIndexWarning.hidden = false;
+    materialIndexWarning.textContent = "Could not index application materials. Try again.";
+    materialIndexStatus.textContent = "index failed";
+  } finally {
+    materialIndexButton.disabled = experienceNotes.length === 0;
+    materialIndexButton.textContent = materialIndex?.status === "ready" ? "reindex materials" : "index materials";
   }
 }
 
@@ -2068,6 +2132,10 @@ experienceNoteUploadButton.addEventListener("click", () => {
 
 experienceNoteUpload.addEventListener("change", () => {
   uploadExperienceNotes(experienceNoteUpload.files);
+});
+
+materialIndexButton.addEventListener("click", () => {
+  indexApplicationMaterials();
 });
 
 materialsToggle.addEventListener("click", () => {
