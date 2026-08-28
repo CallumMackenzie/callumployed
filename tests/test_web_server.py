@@ -24,6 +24,7 @@ from callumployed.data import db
 from callumployed.data.models import Company, Role, RoleDiscoveryAttempt, RoleStatus, ScanStatus
 from callumployed.data.repositories import (
     add_company,
+    add_cover_letter_example,
     add_experience_note,
     add_role,
     add_role_discovery_attempt,
@@ -261,11 +262,11 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="experience-note-upload"' in markup
         assert 'id="experience-note-upload-button"' in markup
         assert "projects / employment history notes" in markup
-        assert 'id="material-index-button"' in markup
+        # Material indexing is server-owned and automatic after source changes; no
+        # manual index action is exposed in the dashboard.
+        assert 'id="material-index-button"' not in markup
         assert 'id="material-index-warning"' in markup
         assert 'id="material-index-status"' in markup
-        assert 'fetch("/api/application-materials/index", {' in app_javascript
-        assert 'method: "POST"' in app_javascript
         assert 'id="materials-required-warning"' in markup
         assert 'aria-label="missing required application materials"' in markup
         assert 'id="toolbar-summary"' in markup
@@ -3030,6 +3031,8 @@ def test_tracker_status_endpoint_moves_role(
             response_payload = json.loads(response.read().decode())
             assert response.status == 200
         assert response_payload["role"]["updated_at"].endswith("Z")
+        assert response_payload["autoprep_job"]["role_id"] == 1
+        assert response_payload["autoprep_job"]["worker_state"] == "queued"
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -3539,6 +3542,66 @@ def test_application_materials_endpoint_reports_default_collapsed_state(
         server.server_close()
 
 
+def test_application_material_sources_can_be_previewed_and_removed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "material-management.sqlite3"
+    resources = tmp_path / "resume-resources"
+    resources.mkdir()
+    resource = resources / "portfolio.pdf"
+    resource.write_bytes(b"%PDF-resource")
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "_resume_resources_root", lambda: resources)
+    db.ensure_initialized()
+    with db.connect() as connection:
+        example = add_cover_letter_example(
+            connection,
+            filename="example.txt",
+            content="Distinctive cover letter source.",
+        )
+        note = add_experience_note(
+            connection,
+            filename="projects.md",
+            content="Distinctive employment and project source.",
+        )
+    assert example.id is not None
+    assert note.id is not None
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        with urlopen(f"{base_url}/api/cover-letter-examples/{example.id}", timeout=5) as response:
+            assert json.loads(response.read())["content"] == "Distinctive cover letter source."
+        with urlopen(f"{base_url}/api/experience-notes/{note.id}", timeout=5) as response:
+            assert json.loads(response.read())["content"] == (
+                "Distinctive employment and project source."
+            )
+        with urlopen(f"{base_url}/api/resume-resources/portfolio.pdf", timeout=5) as response:
+            assert response.headers["Content-Type"] == "application/pdf"
+            assert response.read() == b"%PDF-resource"
+
+        for path in (
+            f"cover-letter-examples/{example.id}",
+            f"experience-notes/{note.id}",
+            "resume-resources/portfolio.pdf",
+        ):
+            request = Request(f"{base_url}/api/{path}", method="DELETE")
+            with urlopen(request, timeout=5) as response:
+                assert response.status == 200
+
+        with db.connect() as connection:
+            assert list_cover_letter_examples(connection) == []
+            assert list_experience_notes(connection) == []
+        assert not resource.exists()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_application_material_index_endpoint_tracks_upload_freshness(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3575,21 +3638,9 @@ def test_application_material_index_endpoint_tracks_upload_freshness(
 
         with urlopen(f"{base_url}/api/application-materials", timeout=5) as response:
             missing_payload = json.loads(response.read().decode())
-        assert missing_payload["material_index"]["status"] == "missing"
-        assert missing_payload["material_index"]["needs_index"] is True
-        assert missing_payload["material_index"]["warning"]
-
-        index_request = Request(
-            f"{base_url}/api/application-materials/index",
-            data=b"{}",
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urlopen(index_request, timeout=5) as response:
-            indexed_payload = json.loads(response.read().decode())
-        assert indexed_payload["material_index"]["status"] == "ready"
-        assert indexed_payload["material_index"]["needs_index"] is False
-        assert indexed_payload["material_index"]["document_count"] == 2
+        assert missing_payload["material_index"]["status"] == "ready"
+        assert missing_payload["material_index"]["needs_index"] is False
+        assert missing_payload["material_index"]["document_count"] == 2
         assert (index_root / "index.md").is_file()
 
         changed_request = Request(
@@ -3608,8 +3659,9 @@ def test_application_material_index_endpoint_tracks_upload_freshness(
 
         with urlopen(f"{base_url}/api/application-materials", timeout=5) as response:
             stale_payload = json.loads(response.read().decode())
-        assert stale_payload["material_index"]["status"] == "stale"
-        assert stale_payload["material_index"]["needs_index"] is True
+        assert stale_payload["material_index"]["status"] == "ready"
+        assert stale_payload["material_index"]["needs_index"] is False
+        assert stale_payload["material_index"]["document_count"] == 4
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -3657,6 +3709,48 @@ def test_cover_letter_examples_endpoint_extracts_docx_upload(
             examples = list_cover_letter_examples(connection)
         assert len(examples) == 1
         assert examples[0].content == ("Dear Google,\nI am excited about this internship.")
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_cover_letter_examples_endpoint_extracts_pdf_upload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-cover-letter-pdf.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(
+        web_server,
+        "_extract_pdf_text",
+        lambda _content: "Dear team,\nI build reliable systems.",
+    )
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_address[1]}/api/cover-letter-examples"
+        request = Request(
+            url,
+            data=json.dumps(
+                {
+                    "filename": "example.pdf",
+                    "content_base64": base64.b64encode(b"pdf content").decode(),
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=5):
+            pass
+
+        examples = []
+        with db.connect() as connection:
+            examples = list_cover_letter_examples(connection)
+        assert examples[0].content == "Dear team,\nI build reliable systems."
     finally:
         server.shutdown()
         thread.join(timeout=5)

@@ -44,7 +44,7 @@
           </div>
           <div class="material-row">
             <div class="material-status">
-              <p class="material-label">render resources</p>
+              <p class="material-label">résumé sources</p>
               <p class="material-meta" id="resume-resource-meta">no resources uploaded</p>
               <ul class="examples-list" id="resume-resource-list"></ul>
             </div>
@@ -61,7 +61,7 @@
               class="sr-only"
               id="cover-letter-upload"
               type="file"
-              accept=".tex,.txt,.md,.docx,text/plain,text/markdown,text/x-tex,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              accept=".tex,.txt,.md,.pdf,.docx,text/plain,text/markdown,text/x-tex,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
               multiple
             />
             <button type="button" id="cover-letter-upload-button">upload</button>
@@ -89,18 +89,16 @@
               </p>
               <p class="material-meta" id="material-index-status">not indexed</p>
             </div>
-            <button type="button" id="material-index-button">index materials</button>
           </aside>
         </div>
       </section>
 
       <section class="review-entry" aria-label="discovered review">
-        <button type="button" id="review-discovered">review discovered</button>
-        <button type="button" id="prep-interested">prep interested</button>
-        <button type="button" id="autoprep-interested">autoprep interested</button>
-        <button type="button" id="prepped-roles">prepped roles</button>
-        <button type="button" id="scan-all-button">scan roles</button>
-        <button type="button" id="manage-companies-button">manage companies</button>
+        <button class="quick-action quick-action--review" type="button" id="review-discovered">review discovered</button>
+        <button class="quick-action quick-action--review" type="button" id="prep-interested">prep interested</button>
+        <button class="quick-action quick-action--prepare" type="button" id="prepped-roles">prepped roles</button>
+        <button class="quick-action quick-action--manage" type="button" id="scan-all-button">scan roles</button>
+        <button class="quick-action quick-action--manage" type="button" id="manage-companies-button">manage companies</button>
         <div class="scan-summary" id="scan-summary" aria-live="polite">
           <span id="scan-status-text">scan idle</span>
           <span class="scan-status-last" id="scan-last-time">last scan: never</span>

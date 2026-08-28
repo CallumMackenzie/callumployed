@@ -154,6 +154,8 @@ let autoprepSubmitting = false;
 let preppedJobs = [];
 let selectedPreppedRoleId = null;
 let preppedPoll = null;
+const preppedCommentsByDocument = new Map();
+const openPreppedPreviews = new Set();
 let materialsInitialized = false;
 let scanStatusPoll = null;
 let wasScanning = false;
@@ -229,6 +231,15 @@ function formatUiText(value) {
 
 function escapeUiText(value) {
   return escapeHtml(formatUiText(value));
+}
+
+function safeExternalHttpUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    return ["http:", "https:"].includes(url.protocol) ? url.href : "";
+  } catch {
+    return "";
+  }
 }
 
 function findLatexCommandEnd(value, start) {
@@ -427,6 +438,22 @@ function renderMasterResume(resume, message = "") {
   resumeMeta.textContent = [formatUiText(resume.filename), size, updated].filter(Boolean).join(" | ");
 }
 
+function renderMaterialSourceItem(item, materialType, size, {binary = false} = {}) {
+  const identifier = binary ? item.filename : item.id;
+  return `
+    <li class="material-source-item" title="${escapeUiText(item.filename)}">
+      <div class="material-source-copy">
+        <span>${escapeUiText(item.filename)}</span>
+        <small>${escapeHtml(size)}</small>
+      </div>
+      <div class="material-source-actions">
+        <button type="button" class="material-source-view" data-material-view="${escapeHtml(materialType)}" data-material-id="${escapeHtml(identifier)}" data-material-binary="${binary}">preview</button>
+        <button type="button" class="material-source-remove" data-material-remove="${escapeHtml(materialType)}" data-material-id="${escapeHtml(identifier)}" data-material-name="${escapeUiText(item.filename)}">remove</button>
+      </div>
+      <div class="material-source-preview" data-material-preview-body hidden></div>
+    </li>`;
+}
+
 function renderCoverLetterExamples(examples, message = "") {
   coverLetterExamples = Array.isArray(examples) ? examples : [];
   coverLetterUploadButton.textContent = coverLetterExamples.length > 0 ? "add" : "upload";
@@ -437,26 +464,9 @@ function renderCoverLetterExamples(examples, message = "") {
   } else {
     coverLetterMeta.textContent = `${coverLetterExamples.length} ${coverLetterExamples.length === 1 ? "example" : "examples"} stored`;
   }
-
-  const visibleExamples = coverLetterExamples.slice(0, 3);
-  const hiddenCount = Math.max(coverLetterExamples.length - visibleExamples.length, 0);
-  coverLetterList.innerHTML = visibleExamples
-    .map((example) => {
-      const size = formatFileSize(example.content_bytes);
-      return `
-        <li title="${escapeUiText(example.filename)}">
-          <span>${escapeUiText(example.filename)}</span>
-          <small>${escapeHtml(size)}</small>
-        </li>
-      `;
-    })
+  coverLetterList.innerHTML = coverLetterExamples
+    .map((example) => renderMaterialSourceItem(example, "cover-letter-examples", formatFileSize(example.content_bytes)))
     .join("");
-  if (hiddenCount > 0) {
-    coverLetterList.insertAdjacentHTML(
-      "beforeend",
-      `<li class="examples-more"><span>+${hiddenCount} more</span></li>`,
-    );
-  }
 }
 
 function renderExperienceNotes(notes, message = "") {
@@ -469,26 +479,9 @@ function renderExperienceNotes(notes, message = "") {
   } else {
     experienceNoteMeta.textContent = `${experienceNotes.length} ${experienceNotes.length === 1 ? "note" : "notes"} stored`;
   }
-
-  const visibleNotes = experienceNotes.slice(0, 3);
-  const hiddenCount = Math.max(experienceNotes.length - visibleNotes.length, 0);
-  experienceNoteList.innerHTML = visibleNotes
-    .map((note) => {
-      const size = formatFileSize(note.content_bytes);
-      return `
-        <li title="${escapeUiText(note.filename)}">
-          <span>${escapeUiText(note.filename)}</span>
-          <small>${escapeHtml(size)}</small>
-        </li>
-      `;
-    })
+  experienceNoteList.innerHTML = experienceNotes
+    .map((note) => renderMaterialSourceItem(note, "experience-notes", formatFileSize(note.content_bytes)))
     .join("");
-  if (hiddenCount > 0) {
-    experienceNoteList.insertAdjacentHTML(
-      "beforeend",
-      `<li class="examples-more"><span>+${hiddenCount} more</span></li>`,
-    );
-  }
 }
 
 function renderMaterialIndex(index, message = "") {
@@ -498,8 +491,6 @@ function renderMaterialIndex(index, message = "") {
   const hasNotes = experienceNotes.length > 0;
   materialIndexWarning.hidden = !needsIndex;
   materialIndexWarning.textContent = message || materialIndex?.warning || "";
-  materialIndexButton.disabled = !hasNotes;
-  materialIndexButton.textContent = status === "ready" ? "reindex materials" : "index materials";
 
   if (message) {
     materialIndexStatus.textContent = message;
@@ -532,25 +523,16 @@ function renderResumeResources(resources, message = "") {
     resumeResourceMeta.textContent = `${resumeResources.length} ${resumeResources.length === 1 ? "resource" : "resources"} stored`;
   }
 
-  const visibleResources = resumeResources.slice(0, 3);
-  const hiddenCount = Math.max(resumeResources.length - visibleResources.length, 0);
-  resumeResourceList.innerHTML = visibleResources
-    .map((resource) => {
-      const size = formatFileSize(resource.bytes);
-      return `
-        <li title="${escapeUiText(resource.filename)}">
-          <span>${escapeUiText(resource.filename)}</span>
-          <small>${escapeHtml(size)}</small>
-        </li>
-      `;
-    })
+  resumeResourceList.innerHTML = resumeResources
+    .map((resource) =>
+      renderMaterialSourceItem(
+        resource,
+        "resume-resources",
+        formatFileSize(resource.bytes),
+        {binary: true},
+      ),
+    )
     .join("");
-  if (hiddenCount > 0) {
-    resumeResourceList.insertAdjacentHTML(
-      "beforeend",
-      `<li class="examples-more"><span>+${hiddenCount} more</span></li>`,
-    );
-  }
 }
 
 function renderApplicationMaterials(payload, options = {}) {
@@ -601,6 +583,65 @@ function formatFileSize(bytes) {
   if (!Number.isFinite(bytes)) return "";
   if (bytes < 1024) return `${bytes} b`;
   return `${Math.round(bytes / 1024)} kb`;
+}
+
+async function toggleMaterialPreview(button) {
+  const item = button.closest(".material-source-item");
+  const preview = item?.querySelector("[data-material-preview-body]");
+  if (!preview) return;
+  if (preview.dataset.loaded === "true") {
+    preview.hidden = !preview.hidden;
+    button.textContent = preview.hidden ? "preview" : "hide";
+    return;
+  }
+  button.disabled = true;
+  button.textContent = "loading...";
+  const materialType = button.dataset.materialView;
+  const identifier = button.dataset.materialId;
+  const url = `/api/${encodeURIComponent(materialType)}/${encodeURIComponent(identifier)}`;
+  try {
+    if (button.dataset.materialBinary === "true") {
+      preview.innerHTML = `<iframe title="${escapeUiText(identifier)} preview" src="${escapeHtml(url)}"></iframe>`;
+    } else {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error("Preview unavailable");
+      const payload = await response.json();
+      const pre = document.createElement("pre");
+      pre.textContent = payload.content || "This source is empty.";
+      preview.replaceChildren(pre);
+    }
+    preview.dataset.loaded = "true";
+    preview.hidden = false;
+    button.textContent = "hide";
+  } catch (error) {
+    preview.textContent = error instanceof Error ? error.message : "Preview unavailable";
+    preview.hidden = false;
+    button.textContent = "preview";
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function removeApplicationMaterial(button) {
+  const materialType = button.dataset.materialRemove;
+  const identifier = button.dataset.materialId;
+  const filename = button.dataset.materialName || "this source";
+  if (!window.confirm(`Remove ${filename}? This removes it from future application preparation.`)) return;
+  button.disabled = true;
+  button.textContent = "removing...";
+  try {
+    const response = await fetch(
+      `/api/${encodeURIComponent(materialType)}/${encodeURIComponent(identifier)}`,
+      {method: "DELETE"},
+    );
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Remove failed");
+    renderApplicationMaterials(payload);
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "remove";
+    window.alert(error instanceof Error ? error.message : "Remove failed");
+  }
 }
 
 function renderStatuses(statuses) {
@@ -2004,7 +2045,7 @@ async function uploadCoverLetterExamples(files) {
   try {
     for (const file of selectedFiles) {
       const payload = { filename: file.name };
-      if (file.name.toLowerCase().endsWith(".docx")) {
+      if ([".pdf", ".docx"].some((suffix) => file.name.toLowerCase().endsWith(suffix))) {
         payload.content_base64 = await readFileAsBase64(file);
       } else {
         payload.content = await file.text();
@@ -2059,31 +2100,6 @@ async function uploadExperienceNotes(files) {
   } finally {
     experienceNoteUpload.value = "";
     experienceNoteUploadButton.disabled = false;
-  }
-}
-
-async function indexApplicationMaterials() {
-  if (materialIndexButton.disabled || experienceNotes.length === 0) return;
-  materialIndexButton.disabled = true;
-  materialIndexButton.textContent = "indexing...";
-  materialIndexWarning.hidden = false;
-  materialIndexWarning.textContent = "Building section pages and a targeted retrieval index...";
-  materialIndexStatus.textContent = "indexing...";
-  try {
-    const response = await fetch("/api/application-materials/index", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    });
-    if (!response.ok) throw new Error("Application material indexing failed");
-    await loadApplicationMaterials();
-  } catch {
-    materialIndexWarning.hidden = false;
-    materialIndexWarning.textContent = "Could not index application materials. Try again.";
-    materialIndexStatus.textContent = "index failed";
-  } finally {
-    materialIndexButton.disabled = experienceNotes.length === 0;
-    materialIndexButton.textContent = materialIndex?.status === "ready" ? "reindex materials" : "index materials";
   }
 }
 
@@ -2155,12 +2171,19 @@ experienceNoteUpload.addEventListener("change", () => {
   uploadExperienceNotes(experienceNoteUpload.files);
 });
 
-materialIndexButton.addEventListener("click", () => {
-  indexApplicationMaterials();
-});
 
 materialsToggle.addEventListener("click", () => {
   setMaterialsCollapsed(materialsToggle.getAttribute("aria-expanded") === "true");
+});
+
+materialsBody.addEventListener("click", (event) => {
+  const previewButton = event.target.closest("[data-material-view]");
+  if (previewButton) {
+    toggleMaterialPreview(previewButton);
+    return;
+  }
+  const removeButton = event.target.closest("[data-material-remove]");
+  if (removeButton) removeApplicationMaterial(removeButton);
 });
 
 scanAllButton.addEventListener("click", () => {
@@ -3490,7 +3513,8 @@ function setWorkspaceHash(hash) {
 }
 
 async function openAutoprepView() {
-  autoprepSubmitting = false;
+  // Interested roles are now queued automatically server-side; retain no manual entry path.
+  if (!autoprepInterestedButton) return;
   autoprepSelectedButton.textContent = "Autoprep Selected";
   autoprepView.hidden = false;
   document.body.classList.add("autoprep-open");
@@ -3655,15 +3679,31 @@ function renderPreppedDetail() {
     preppedDetail.innerHTML = '<div class="prepped-empty"><h3>nothing prepped yet.</h3><p>Queue Interested roles from Autoprep Interested.</p></div>';
     return;
   }
-  const resumeFilename = job.resume_artifact_path?.split("/").pop() ?? "Not available";
-  const coverFilename = job.cover_letter_artifact_path?.split("/").pop() ?? "Not available";
-  const retryResume = ["failed", "interrupted"].includes(job.resume_status) ? '<button type="button" data-autoprep-retry="resume">Retry résumé</button>' : "";
-  const retryCover = ["failed", "interrupted"].includes(job.cover_letter_status) ? '<button type="button" data-autoprep-retry="cover-letter">Retry cover letter</button>' : "";
+  const jobTitle = escapeUiText(job.title);
+  const safeRoleUrl = safeExternalHttpUrl(job.role_url);
+  const roleLink = safeRoleUrl
+    ? `<a class="prepped-role-link" href="${escapeHtml(safeRoleUrl)}" target="_blank" rel="noopener noreferrer">${jobTitle}<span aria-hidden="true">↗</span></a>`
+    : jobTitle;
+  const roleFacts = [
+    ["Location", job.location || "Unavailable"],
+    ["Added", formatCompactDate(job.date_added || job.created_at) || "Unavailable"],
+    ["Last seen", formatCompactDate(job.last_seen_at) || "Unavailable"],
+    ["Posting ID", job.posting_id || "Unavailable"],
+  ];
   preppedDetail.innerHTML = `
-    <header class="prepped-detail-heading"><div><p class="eyebrow">${escapeUiText(job.company_name)}</p><h3>${escapeUiText(job.title)}</h3><p>${escapeUiText(job.location || "location unavailable")}</p></div><span class="prepped-status status-${escapeHtml(job.overall_status)}">${escapeHtml(autoprepStatusLabel(job.overall_status))}</span></header>
+    <header class="prepped-detail-heading">
+      <div><p class="eyebrow">${escapeUiText(job.company_name)}</p><h3>${roleLink}</h3></div>
+      <span class="prepped-status status-${escapeHtml(job.overall_status)}">${escapeHtml(autoprepStatusLabel(job.overall_status))}</span>
+    </header>
+    <dl class="prepped-role-facts">${roleFacts.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeUiText(value)}</dd></div>`).join("")}</dl>
+    <details class="prepped-role-description">
+      <summary>Job description</summary>
+      <div class="prepped-description-copy">${escapeUiText(job.description || "No job description was saved.").replaceAll("\n", "<br>")}</div>
+    </details>
+    ${job.notes ? `<details class="prepped-role-description"><summary>Role notes</summary><div class="prepped-description-copy">${escapeUiText(job.notes).replaceAll("\n", "<br>")}</div></details>` : ""}
     <div class="prepped-document-grid">
-      ${renderPreppedDocument("Résumé", job.resume_status, resumeFilename, job.resume_error, job.resume_session_id, retryResume)}
-      ${renderPreppedDocument("Cover letter", job.cover_letter_status, coverFilename, job.cover_letter_error, job.cover_letter_session_id, retryCover)}
+      ${renderPreppedDocument(job, "resume", "Résumé")}
+      ${renderPreppedDocument(job, "cover-letter", "Cover letter")}
     </div>
     <div class="prepped-detail-actions">
       <button type="button" data-prepped-nav="previous" ${currentIndex <= 0 ? "disabled" : ""}>Previous</button>
@@ -3674,8 +3714,72 @@ function renderPreppedDetail() {
     <p class="prepped-safety-note">Autoprep prepares files only. It never submits an application.</p>`;
 }
 
-function renderPreppedDocument(label, status, filename, error, sessionId, retryButton) {
-  return `<section class="prepped-document status-${escapeHtml(status)}"><div class="prepped-document-heading"><h4>${escapeHtml(label)}</h4><span>${escapeHtml(autoprepStatusLabel(status))}</span></div><p class="prepped-filename">${escapeHtml(filename)}</p>${sessionId ? `<p class="prepped-session">Hermes session: ${escapeHtml(sessionId)}</p>` : ""}${error ? `<p class="prepped-error">${escapeHtml(error)}</p>` : ""}${retryButton}</section>`;
+function renderPreppedDocument(job, documentKind, label) {
+  const fieldKind = documentKind === "cover-letter" ? "cover_letter" : "resume";
+  const status = job[`${fieldKind}_status`];
+  const artifactPath = job[`${fieldKind}_artifact_path`];
+  const filename = artifactPath?.split("/").pop() ?? "Not available";
+  const error = job[`${fieldKind}_error`];
+  const instruction = job[`${fieldKind}_instruction`] || "";
+  const key = `${job.role_id}:${documentKind}`;
+  const comments = preppedCommentsByDocument.get(key) ?? instruction;
+  const active = ["queued", "generating", "generating_tweaks", "regenerating"].includes(status);
+  const retryButton = ["failed", "interrupted"].includes(status)
+    ? `<button type="button" data-autoprep-retry="${documentKind}">Retry ${escapeHtml(label.toLowerCase())}</button>`
+    : "";
+  const previewOpen = openPreppedPreviews.has(key);
+  const previewUrl = `/api/autoprep/roles/${encodeURIComponent(job.role_id)}/documents/${documentKind}.pdf?v=${encodeURIComponent(job.updated_at || "")}`;
+  return `
+    <section class="prepped-document status-${escapeHtml(status)}">
+      <div class="prepped-document-heading"><h4>${escapeHtml(label)}</h4><span>${escapeHtml(autoprepStatusLabel(status))}</span></div>
+      <p class="prepped-filename">${escapeHtml(filename)}</p>
+      ${error ? `<p class="prepped-error">${escapeHtml(error)}</p>` : ""}
+      <div class="prepped-document-actions">
+        <button type="button" data-autoprep-preview="${documentKind}" ${artifactPath ? "" : "disabled"}>${previewOpen ? "Hide preview" : "Preview PDF"}</button>
+        ${retryButton}
+      </div>
+      <div class="prepped-pdf-preview" data-autoprep-preview-panel="${documentKind}" ${previewOpen && artifactPath ? "" : "hidden"}>
+        ${previewOpen && artifactPath ? `<iframe title="${escapeHtml(label)} PDF preview" src="${escapeHtml(previewUrl)}"></iframe>` : ""}
+      </div>
+      <label class="prepped-comments-label" for="prepped-comments-${escapeHtml(key)}">Comments for the next version</label>
+      <textarea id="prepped-comments-${escapeHtml(key)}" data-autoprep-comments="${documentKind}" rows="4" placeholder="Describe specific, truthful changes..." ${active ? "disabled" : ""}>${escapeUiText(comments)}</textarea>
+      <button class="prepped-regenerate" type="button" data-autoprep-regenerate="${documentKind}" ${status === "ready" && String(comments).trim() ? "" : "disabled"}>${active ? "Regenerating..." : `Regenerate ${escapeHtml(label)}`}</button>
+    </section>`;
+}
+
+async function regenerateAutoprepDocument(job, documentKind, button) {
+  if (button.disabled) return;
+  const key = `${job.role_id}:${documentKind}`;
+  const textarea = preppedDetail.querySelector(`[data-autoprep-comments="${documentKind}"]`);
+  const comments = String(textarea?.value || preppedCommentsByDocument.get(key) || "").trim();
+  if (!comments) {
+    textarea?.focus();
+    return;
+  }
+  button.disabled = true;
+  button.textContent = "Queuing regeneration...";
+  try {
+    const response = await fetch(
+      `/api/autoprep/roles/${encodeURIComponent(job.role_id)}/regenerate/${documentKind}`,
+      {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          comments,
+          idempotency_key: autoprepActionKey(`regenerate-${documentKind}`),
+        }),
+      },
+    );
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Regeneration request failed");
+    preppedCommentsByDocument.delete(key);
+    const index = preppedJobs.findIndex((item) => Number(item.role_id) === Number(job.role_id));
+    if (index >= 0) preppedJobs[index] = payload.job;
+    renderPreppedRoles();
+  } catch (error) {
+    window.alert(error instanceof Error ? error.message : "Regeneration request failed");
+    await refreshPreppedRoles();
+  }
 }
 
 async function retryAutoprepDocument(roleId, documentKind, button) {
@@ -3716,7 +3820,7 @@ closeReviewButton.addEventListener("click", closeReviewView);
 
 prepInterestedButton.addEventListener("click", openPrepView);
 
-autoprepInterestedButton.addEventListener("click", openAutoprepView);
+autoprepInterestedButton?.addEventListener("click", openAutoprepView);
 
 preppedRolesButton.addEventListener("click", () => openPreppedView());
 
@@ -3756,6 +3860,19 @@ preppedList.addEventListener("click", (event) => {
   renderPreppedRoles();
 });
 
+preppedDetail.addEventListener("input", (event) => {
+  const comments = event.target.closest("[data-autoprep-comments]");
+  if (!comments) return;
+  const key = `${selectedPreppedRoleId}:${comments.dataset.autoprepComments}`;
+  preppedCommentsByDocument.set(key, comments.value);
+  const regenerateButton = preppedDetail.querySelector(
+    `[data-autoprep-regenerate="${comments.dataset.autoprepComments}"]`,
+  );
+  const job = preppedJobs.find((item) => Number(item.role_id) === Number(selectedPreppedRoleId));
+  const fieldKind = comments.dataset.autoprepComments === "cover-letter" ? "cover_letter" : "resume";
+  if (regenerateButton) regenerateButton.disabled = job?.[`${fieldKind}_status`] !== "ready" || !comments.value.trim();
+});
+
 preppedDetail.addEventListener("click", async (event) => {
   const job = preppedJobs.find((item) => Number(item.role_id) === Number(selectedPreppedRoleId));
   if (!job) return;
@@ -3765,6 +3882,19 @@ preppedDetail.addEventListener("click", async (event) => {
     const offset = navButton.dataset.preppedNav === "next" ? 1 : -1;
     selectedPreppedRoleId = preppedJobs[currentIndex + offset]?.role_id ?? job.role_id;
     renderPreppedRoles();
+    return;
+  }
+  const previewButton = event.target.closest("[data-autoprep-preview]");
+  if (previewButton) {
+    const key = `${job.role_id}:${previewButton.dataset.autoprepPreview}`;
+    if (openPreppedPreviews.has(key)) openPreppedPreviews.delete(key);
+    else openPreppedPreviews.add(key);
+    renderPreppedDetail();
+    return;
+  }
+  const regenerateButton = event.target.closest("[data-autoprep-regenerate]");
+  if (regenerateButton) {
+    regenerateAutoprepDocument(job, regenerateButton.dataset.autoprepRegenerate, regenerateButton);
     return;
   }
   const retryButton = event.target.closest("[data-autoprep-retry]");

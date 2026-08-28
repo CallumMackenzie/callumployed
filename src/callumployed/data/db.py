@@ -38,6 +38,7 @@ def run_migrations(connection: turso.Connection) -> None:
     _ensure_cover_letter_examples_table(connection)
     _ensure_cover_letter_example_vectors_table(connection)
     _ensure_experience_notes_table(connection)
+    _ensure_role_context_vectors_table(connection)
     _ensure_resume_feedback_history_table(connection)
     _ensure_company_is_active_column(connection)
     _ensure_company_browser_wait_column(connection)
@@ -130,6 +131,31 @@ def _ensure_experience_notes_table(connection: turso.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_experience_notes_updated_at
             ON experience_notes (updated_at)
+        """
+    )
+
+
+def _ensure_role_context_vectors_table(connection: turso.Connection) -> None:
+    """Persist deterministic, role-local retrieval chunks for document generation."""
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS role_context_vectors (
+            role_id INTEGER NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            label TEXT NOT NULL,
+            content TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            vector_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (role_id, chunk_index),
+            FOREIGN KEY (role_id) REFERENCES roles (id) ON DELETE CASCADE
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_role_context_vectors_role_updated
+            ON role_context_vectors (role_id, updated_at)
         """
     )
 

@@ -43,7 +43,7 @@ class CoverLetterSearchTool(Protocol):
 
 
 MAX_COVER_LETTER_SEARCH_QUERY_CHARS = 24000
-MAX_ROLE_DESCRIPTION_CHARS = 12000
+MAX_ROLE_CONTEXT_CHARS = 12000
 MAX_RESUME_CONTEXT_CHARS = 16000
 MAX_OTHER_EXPERIENCE_CONTEXT_CHARS = 16000
 MAX_COVER_LETTER_EXAMPLE_CONTEXT_CHARS = 12000
@@ -108,8 +108,8 @@ change, what previous draft text you are operating on, and then produce the full
 updated LaTeX document.
 
 Integrate the context deliberately:
-- use job_context for the company, role title, location, and strongest role
-  requirements
+- use job_context for the company, role title, location, and retrieved local role
+  requirements; never infer requirements not present in those retrieved chunks
 - use resume_context only for claims that are directly supported by the resume
 - use other_experience_context for additional truthful projects or employment
   history that could strengthen the cover letter even if it is not already in
@@ -224,6 +224,7 @@ class CoverLetterAgent:
         resume_content: str,
         applicant_profile: ApplicantProfile | None = None,
         other_experience_context: list[dict[str, Any]] | None = None,
+        role_context: list[dict[str, Any]] | None = None,
         tweaks: str | None = None,
         previous_cover_letter_latex: str | None = None,
     ) -> CoverLetterDraft:
@@ -234,12 +235,15 @@ class CoverLetterAgent:
         other_experience_text = " ".join(
             str(item.get("content") or "") for item in bounded_experience_context
         )
+        role_context_text = " ".join(
+            str(item.get("content") or "") for item in (role_context or [])
+        )
         queries = [
             _bounded_context_text(
                 " ".join(
                     [
                         str(role.get("title") or ""),
-                        str(role.get("description") or ""),
+                        role_context_text,
                         resume_content,
                         other_experience_text,
                     ]
@@ -272,6 +276,7 @@ class CoverLetterAgent:
                 role=role,
                 resume_content=resume_content,
                 other_experience_context=other_experience_context,
+                role_context=role_context,
                 cover_letter_examples=list(examples_by_id.values()),
                 tweaks=tweaks,
                 previous_cover_letter_latex=previous_cover_letter_latex,
@@ -317,6 +322,7 @@ def build_cover_letter_prompt(
     role: dict[str, Any],
     resume_content: str,
     other_experience_context: list[dict[str, Any]] | None = None,
+    role_context: list[dict[str, Any]] | None = None,
     cover_letter_examples: list[dict[str, object]],
     tweaks: str | None = None,
     previous_cover_letter_latex: str | None = None,
@@ -335,8 +341,8 @@ def build_cover_letter_prompt(
             "title": role.get("title"),
             "url": role.get("role_url"),
             "location": role.get("location"),
-            "description": _bounded_context_text(
-                role.get("description"), MAX_ROLE_DESCRIPTION_CHARS
+            "role_context_chunks": _bounded_context_items(
+                role_context or [], MAX_ROLE_CONTEXT_CHARS, include_similarity=True
             ),
         },
         "resume_context": {
@@ -374,6 +380,7 @@ async def generate_cover_letter(
     search_tool: CoverLetterSearchTool,
     applicant_profile: ApplicantProfile | None = None,
     other_experience_context: list[dict[str, Any]] | None = None,
+    role_context: list[dict[str, Any]] | None = None,
     tweaks: str | None = None,
     previous_cover_letter_latex: str | None = None,
     settings: LlmSettings | None = None,
@@ -388,6 +395,7 @@ async def generate_cover_letter(
         resume_content=resume_content,
         applicant_profile=applicant_profile,
         other_experience_context=other_experience_context,
+        role_context=role_context,
         tweaks=tweaks,
         previous_cover_letter_latex=previous_cover_letter_latex,
     )

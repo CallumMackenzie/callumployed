@@ -15,7 +15,6 @@ from callumployed.data.models import Company, Role, RoleStatus
 from callumployed.data.repositories import (
     add_company,
     add_role,
-    count_resume_feedback_history,
     set_role_status,
     upsert_master_resume,
 )
@@ -29,13 +28,13 @@ from callumployed.services.autoprep import (
     get_autoprep_job,
     list_autoprep_jobs,
     mark_autoprep_document,
+    queue_autoprep_regeneration,
     recover_interrupted_autoprep_jobs,
     release_autoprep_claim,
     retry_autoprep_document,
 )
 from callumployed.services.hermes_generation import (
     HermesGenerationError,
-    HermesGenerationResult,
     HermesSessionRunner,
     parse_hermes_generation_output,
     parse_json_response,
@@ -172,6 +171,60 @@ def test_partial_failure_preserves_resume_and_retries_only_cover_letter(tmp_path
         assert retried["resume_artifact_path"] == str(resume_pdf)
         assert retried["cover_letter_status"] == "queued"
         assert replay["cover_letter_attempt"] == retried["cover_letter_attempt"] == 2
+
+
+def test_ready_document_can_be_regenerated_with_persisted_comments(tmp_path: Path) -> None:
+    database = tmp_path / "autoprep-regeneration.sqlite3"
+    resume_pdf = tmp_path / "resume.pdf"
+    resume_pdf.write_bytes(b"%PDF-resume")
+    with db.connect(database) as connection:
+        db.run_migrations(connection)
+        ensure_autoprep_schema(connection)
+        role_id = _interested_role(connection)
+        [job] = enqueue_autoprep_jobs(connection, [role_id], idempotency_key="attempt")
+        assert claim_next_autoprep_job(connection) is not None
+        mark_autoprep_document(
+            connection,
+            job["id"],
+            "resume",
+            "ready",
+            session_id="resume-session",
+            artifact_path=str(resume_pdf),
+            resume_latex="\\documentclass{article}",
+        )
+        mark_autoprep_document(
+            connection,
+            job["id"],
+            "cover_letter",
+            "ready",
+            session_id="cover-session",
+            artifact_path=str(tmp_path / "cover-letter.pdf"),
+        )
+        finish_autoprep_worker(connection, job["id"])
+
+        regenerated = queue_autoprep_regeneration(
+            connection,
+            role_id,
+            "resume",
+            instruction="Emphasize the Kubernetes project and shorten the summary.",
+            idempotency_key="regenerate-resume-1",
+        )
+
+        assert regenerated["worker_state"] == "queued"
+        assert regenerated["resume_status"] == "queued"
+        assert regenerated["cover_letter_status"] == "ready"
+        assert regenerated["resume_instruction"] == (
+            "Emphasize the Kubernetes project and shorten the summary."
+        )
+        assert regenerated["resume_attempt"] == 2
+        assert regenerated["resume_artifact_path"] == str(resume_pdf)
+        assert "resume_session_id" not in regenerated
+        stored_session_id = connection.execute(
+            "SELECT resume_session_id FROM autoprep_jobs WHERE id = ?", (job["id"],)
+        ).fetchone()["resume_session_id"]
+        assert stored_session_id == "resume-session"
+        assert regenerated["role_url"].startswith("https://example.com/")
+        assert regenerated["description"] == "Build reliable Python services."
 
 
 def test_startup_recovery_marks_unfinished_documents_interrupted(tmp_path: Path) -> None:
@@ -366,6 +419,8 @@ def test_autoprep_api_lists_only_interested_and_returns_accepted_jobs_immediatel
             jobs = json.loads(response.read())["jobs"]
         assert len(jobs) == 1
         assert jobs[0]["role_id"] == interested_id
+        assert jobs[0]["role_url"].endswith("/backend-engineer")
+        assert jobs[0]["description"] == "Build reliable Python services."
 
         documents = tmp_path / "prepared-documents"
         documents.mkdir()
@@ -392,6 +447,42 @@ def test_autoprep_api_lists_only_interested_and_returns_accepted_jobs_immediatel
                 artifact_path=str(cover_pdf),
                 artifact_directory=str(documents),
             )
+            finish_autoprep_worker(connection, accepted["jobs"][0]["id"])
+
+        for document_kind, expected in (("resume", b"resume"), ("cover-letter", b"cover")):
+            with urlopen(
+                f"{base_url}/api/autoprep/roles/{interested_id}/documents/{document_kind}.pdf",
+                timeout=5,
+            ) as response:
+                assert response.headers["Content-Type"] == "application/pdf"
+                assert response.read() == expected
+
+        regenerate_request = Request(
+            f"{base_url}/api/autoprep/roles/{interested_id}/regenerate/resume",
+            data=json.dumps(
+                {
+                    "comments": "Put the Kubernetes project first.",
+                    "idempotency_key": "regenerate-resume-api-1",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(regenerate_request, timeout=5) as response:
+            assert response.status == 202
+            regenerating = json.loads(response.read())["job"]
+        assert regenerating["resume_status"] == "queued"
+        assert regenerating["resume_instruction"] == "Put the Kubernetes project first."
+        with db.connect() as connection:
+            mark_autoprep_document(
+                connection,
+                accepted["jobs"][0]["id"],
+                "resume",
+                status="ready",
+                session_id="resume-session",
+                artifact_path=str(resume_pdf),
+            )
+            finish_autoprep_worker(connection, accepted["jobs"][0]["id"])
 
         opened: list[list[str]] = []
         monkeypatch.setattr(web_server.subprocess, "Popen", lambda command: opened.append(command))
@@ -432,7 +523,7 @@ def test_autoprep_api_lists_only_interested_and_returns_accepted_jobs_immediatel
         server.server_close()
 
 
-def test_autoprep_worker_reuses_prompts_and_saves_traceable_role_pdfs(
+def test_autoprep_worker_uses_direct_generation_and_preserves_document_artifacts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -450,74 +541,29 @@ def test_autoprep_worker_reuses_prompts_and_saves_traceable_role_pdfs(
         [job] = enqueue_autoprep_jobs(connection, [role_id], idempotency_key="worker")
         assert claim_next_autoprep_job(connection) is not None
 
-    cover_prompts: list[str] = []
-
-    class FakeHermesRunner:
-        def start(self, prompt: str, *, model: str, source: str) -> HermesGenerationResult:
-            assert "job_context" in prompt
-            assert model
-            if source.endswith("resume"):
-                return HermesGenerationResult(
-                    session_id="resume-session",
-                    content=json.dumps(
-                        {
-                            "verdict": "tweak",
-                            "overview": "Foreground Python.",
-                            "feedback_items": [
-                                {
-                                    "label": "change_wording",
-                                    "title": "change wording to align with posting: Python",
-                                    "detail": "Make Python evidence more visible.",
-                                    "tweak_prompt": "Foreground supported Python work.",
-                                }
-                            ],
-                        }
-                    ),
-                )
-            cover_prompts.append(prompt)
-            return HermesGenerationResult(
-                session_id="cover-session",
-                content=json.dumps(
-                    {
-                        "latex": "\\documentclass{article}\\begin{document}Letter\\end{document}",
-                        "summary": "Tailored letter.",
-                        "example_ids": [],
-                    }
-                ),
-            )
-
-        def resume(self, session_id: str, prompt: str, *, model: str) -> HermesGenerationResult:
-            assert session_id == "resume-session"
-            assert "regeneration_tweaks" in prompt
-            assert model
-            return HermesGenerationResult(
-                session_id=session_id,
-                content=json.dumps(
-                    {
-                        "latex": "\\documentclass{article}\\begin{document}Tailored\\end{document}",
-                        "summary": "Applied all tweaks.",
-                    }
-                ),
-            )
-
     generated_resume = tmp_path / "generated-resume.pdf"
     generated_cover = tmp_path / "generated-cover.pdf"
     for path in (generated_resume, generated_cover):
         writer = PdfWriter()
         writer.add_blank_page(width=612, height=792)
         writer.write(path)
-
-    monkeypatch.setattr(web_server, "AUTOPREP_SESSION_RUNNER", FakeHermesRunner())
+    resume_calls: list[dict[str, object]] = []
+    cover_calls: list[dict[str, object]] = []
     monkeypatch.setattr(web_server, "user_data_path", lambda *_args, **_kwargs: tmp_path / "data")
     monkeypatch.setattr(
         web_server,
-        "save_role_resume",
-        lambda *_args, **_kwargs: {"pdf_path": str(generated_resume)},
+        "build_role_resume",
+        lambda role, resume, **kwargs: resume_calls.append(kwargs) or {
+            "pdf_path": str(generated_resume),
+            "latex": "\\documentclass{article}\\begin{document}Tailored\\end{document}",
+        },
     )
     monkeypatch.setattr(
         web_server,
-        "_write_role_cover_letter",
-        lambda *_args, **_kwargs: {"pdf_path": str(generated_cover)},
+        "build_role_cover_letter",
+        lambda role, resume, **kwargs: cover_calls.append(kwargs) or {
+            "pdf_path": str(generated_cover),
+        },
     )
 
     web_server._process_autoprep_job(job["id"])
@@ -525,20 +571,28 @@ def test_autoprep_worker_reuses_prompts_and_saves_traceable_role_pdfs(
     with db.connect() as connection:
         completed = get_autoprep_job(connection, job["id"])
         stored_resume_latex = connection.execute(
-            "SELECT resume_latex FROM autoprep_jobs WHERE id = ?",
+            "SELECT resume_latex, resume_session_id, cover_letter_session_id "
+            "FROM autoprep_jobs WHERE id = ?",
             (job["id"],),
-        ).fetchone()[0]
-        assert count_resume_feedback_history(connection) == 1
+        ).fetchone()
     assert completed["overall_status"] == "ready"
-    assert completed["resume_session_id"] == "resume-session"
-    assert completed["cover_letter_session_id"] == "cover-session"
-    assert "resume_latex" not in completed
-    assert stored_resume_latex == "\\documentclass{article}\\begin{document}Tailored\\end{document}"
-    assert len(cover_prompts) == 1 and "Tailored" in cover_prompts[0]
+    assert "resume_session_id" not in completed
+    assert "cover_letter_session_id" not in completed
+    assert stored_resume_latex[0] == (
+        "\\documentclass{article}\\begin{document}Tailored\\end{document}"
+    )
+    assert stored_resume_latex[1] is None and stored_resume_latex[2] is None
+    assert resume_calls and cover_calls
+    assert cover_calls[0]["allow_local_fallback"] is False
     assert Path(completed["resume_artifact_path"]).is_file()
     assert Path(completed["cover_letter_artifact_path"]).is_file()
-    assert Path(completed["resume_artifact_path"]).parent == Path(
-        completed["cover_letter_artifact_path"]
-    ).parent
-    assert Path(completed["resume_artifact_path"]).suffix == ".pdf"
-    assert Path(completed["cover_letter_artifact_path"]).suffix == ".pdf"
+
+    with db.connect() as connection:
+        queue_autoprep_regeneration(
+            connection, role_id, "cover_letter", instruction="Make the opening direct.",
+            idempotency_key="regenerate-worker-cover",
+        )
+        assert claim_next_autoprep_job(connection) is not None
+    web_server._process_autoprep_job(job["id"])
+    assert len(cover_calls) == 2
+    assert cover_calls[-1]["tweaks"] == "Make the opening direct."

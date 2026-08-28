@@ -6,6 +6,7 @@ import binascii
 import gzip
 import json
 import logging
+import mimetypes
 import re
 import shlex
 import shutil
@@ -25,7 +26,7 @@ from io import BytesIO
 from pathlib import Path, PurePosixPath
 from socketserver import BaseServer
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
@@ -34,21 +35,11 @@ from pypdf import PdfReader
 
 from callumployed.agents.cover_letter import (
     ApplicantProfile,
-    CoverLetterDraft,
-    build_cover_letter_prompt,
     generate_cover_letter,
     strip_cover_letter_dash_punctuation,
 )
-from callumployed.agents.resume_feedback import (
-    ResumeFeedbackResponse,
-    build_resume_feedback_prompt,
-    evaluate_resume_feedback,
-)
-from callumployed.agents.resume_tweaker import (
-    ResumeTweakDraft,
-    build_resume_tweak_prompt,
-    generate_resume_tweak,
-)
+from callumployed.agents.resume_feedback import evaluate_resume_feedback
+from callumployed.agents.resume_tweaker import generate_resume_tweak
 from callumployed.agents.role_chat import generate_role_chat, parse_role_chat_messages
 from callumployed.central.client import CentralStoreClient, CentralStoreError
 from callumployed.central.config import (
@@ -85,10 +76,14 @@ from callumployed.data.repositories import (
     count_resume_feedback_history,
     deactivate_company,
     delete_company_career_page,
+    delete_cover_letter_example,
+    delete_experience_note,
     finish_scan_run,
     get_company,
     get_company_scan_discovery_counts,
     get_config_value,
+    get_cover_letter_example,
+    get_experience_note,
     get_location_filter,
     get_master_resume,
     get_role,
@@ -108,6 +103,7 @@ from callumployed.data.repositories import (
     list_scan_runs,
     record_resume_feedback_history,
     record_role_review_later,
+    retrieve_role_context,
     set_company_central_link,
     set_company_central_sync_status,
     set_config_value,
@@ -122,12 +118,14 @@ from callumployed.data.repositories import (
     should_include_hardware_roles,
     should_require_software_keywords,
     should_use_internship_mode,
+    sync_role_context_vectors,
     update_company,
     upsert_master_resume,
 )
 from callumployed.services.autoprep import (
     AutoprepConflictError,
     AutoprepCoordinator,
+    clear_autoprep_instruction,
     enqueue_autoprep_jobs,
     ensure_autoprep_schema,
     finish_autoprep_worker,
@@ -137,13 +135,9 @@ from callumployed.services.autoprep import (
     list_autoprep_jobs,
     list_interested_autoprep_roles,
     mark_autoprep_document,
+    queue_autoprep_regeneration,
     recover_interrupted_autoprep_jobs,
     retry_autoprep_document,
-)
-from callumployed.services.hermes_generation import (
-    HermesGenerationInterrupted,
-    HermesSessionRunner,
-    parse_json_response,
 )
 from callumployed.services.material_index import (
     build_material_index,
@@ -176,7 +170,6 @@ COVER_LETTER_MODEL_OPTIONS = (
     ("gpt-4.1-mini", "GPT-4.1 mini"),
 )
 SUPPORTED_COVER_LETTER_MODELS = frozenset(value for value, _label in COVER_LETTER_MODEL_OPTIONS)
-AUTOPREP_SESSION_RUNNER = HermesSessionRunner(cwd=Path(__file__).resolve().parents[3])
 AUTOPREP_COORDINATOR: AutoprepCoordinator | None = None
 APPLICANT_PROFILE_TEXT_CONFIG_KEYS = {
     APPLICANT_EMAIL_CONFIG_KEY,
@@ -537,6 +530,20 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
             path_parts = [part for part in PurePosixPath(parsed_url.path).parts if part != "/"]
             if (
+                len(path_parts) == 3
+                and path_parts[0] == "api"
+                and path_parts[1] in {"cover-letter-examples", "experience-notes"}
+            ):
+                self._send_application_material(path_parts[1], path_parts[2])
+                return
+            if (
+                len(path_parts) == 3
+                and path_parts[0] == "api"
+                and path_parts[1] == "resume-resources"
+            ):
+                self._send_resume_resource(path_parts[2])
+                return
+            if (
                 len(path_parts) == 4
                 and path_parts[0] == "api"
                 and path_parts[1] == "roles"
@@ -576,6 +583,13 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             ):
                 self._send_cover_letter_pdf(path_parts[2])
                 return
+            if (
+                len(path_parts) == 6
+                and path_parts[:3] == ["api", "autoprep", "roles"]
+                and path_parts[4] == "documents"
+            ):
+                self._send_autoprep_document(path_parts[3], path_parts[5])
+                return
             if parsed_url.path.startswith("/assets/"):
                 asset_path = parsed_url.path.removeprefix("/assets/")
                 asset_parts = PurePosixPath(asset_path).parts
@@ -600,6 +614,13 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 and path_parts[4] == "retry"
             ):
                 self._retry_autoprep_document(path_parts[3], path_parts[5])
+                return
+            if (
+                len(path_parts) == 6
+                and path_parts[:3] == ["api", "autoprep", "roles"]
+                and path_parts[4] == "regenerate"
+            ):
+                self._regenerate_autoprep_document(path_parts[3], path_parts[5])
                 return
             if (
                 len(path_parts) == 5
@@ -764,6 +785,14 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
         def do_DELETE(self) -> None:
             parsed_url = urlparse(self.path)
             path_parts = [part for part in PurePosixPath(parsed_url.path).parts if part != "/"]
+            if (
+                len(path_parts) == 3
+                and path_parts[0] == "api"
+                and path_parts[1]
+                in {"cover-letter-examples", "experience-notes", "resume-resources"}
+            ):
+                self._delete_application_material(path_parts[1], path_parts[2])
+                return
             if len(path_parts) == 3 and path_parts[0] == "api" and path_parts[1] == "companies":
                 self._delete_company(path_parts[2])
                 return
@@ -809,6 +838,80 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 self.send_error(HTTPStatus.BAD_REQUEST, "JSON body must be an object")
                 return None
             return payload
+
+        def _send_application_material(self, material_type: str, material_id_text: str) -> None:
+            try:
+                material_id = int(material_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid material id")
+                return
+            material = None
+            with db.connect() as connection:
+                material = (
+                    get_cover_letter_example(connection, material_id)
+                    if material_type == "cover-letter-examples"
+                    else get_experience_note(connection, material_id)
+                )
+            if material is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "Application material not found")
+                return
+            content = material.content
+            preview_warning = None
+            if material_type == "cover-letter-examples" and content.lstrip().startswith("%PDF-"):
+                preview_warning = (
+                    "This legacy PDF was stored before readable-text extraction was added. "
+                    "Remove it and upload the PDF again to preview and use its extracted text."
+                )
+                content = preview_warning
+            self._send_json(
+                {
+                    "id": material.id,
+                    "filename": material.filename,
+                    "content": content,
+                    "preview_warning": preview_warning,
+                    "content_sha256": material.content_sha256,
+                    "updated_at": material.updated_at.isoformat() if material.updated_at else None,
+                }
+            )
+
+        def _send_resume_resource(self, filename_text: str) -> None:
+            path = _safe_resume_resource_path(filename_text)
+            if path is None or not path.is_file():
+                self.send_error(HTTPStatus.NOT_FOUND, "Resume resource not found")
+                return
+            body = path.read_bytes()
+            content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Disposition", "inline")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _delete_application_material(self, material_type: str, identifier: str) -> None:
+            if material_type == "resume-resources":
+                path = _safe_resume_resource_path(identifier)
+                if path is None or not path.is_file():
+                    self.send_error(HTTPStatus.NOT_FOUND, "Resume resource not found")
+                    return
+                path.unlink()
+            else:
+                try:
+                    material_id = int(identifier)
+                except ValueError:
+                    self.send_error(HTTPStatus.BAD_REQUEST, "Invalid material id")
+                    return
+                with db.connect() as connection:
+                    deleted = (
+                        delete_cover_letter_example(connection, material_id)
+                        if material_type == "cover-letter-examples"
+                        else delete_experience_note(connection, material_id)
+                    )
+                if not deleted:
+                    self.send_error(HTTPStatus.NOT_FOUND, "Application material not found")
+                    return
+            _refresh_application_material_index()
+            self._send_json(build_application_materials_payload())
 
         def _enqueue_autoprep(self) -> None:
             payload = self._read_json_body()
@@ -874,6 +977,77 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
             _wake_autoprep_coordinator()
             self._send_json_with_status({"accepted": True, "job": job}, HTTPStatus.ACCEPTED)
+
+        def _regenerate_autoprep_document(self, role_id_text: str, document_kind: str) -> None:
+            try:
+                role_id = int(role_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
+                return
+            if document_kind not in {"resume", "cover-letter"}:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid document kind")
+                return
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            comments = payload.get("comments")
+            idempotency_key = payload.get("idempotency_key")
+            if not isinstance(comments, str) or not isinstance(idempotency_key, str):
+                self.send_error(
+                    HTTPStatus.BAD_REQUEST,
+                    "comments and idempotency_key are required",
+                )
+                return
+            try:
+                with db.connect() as connection:
+                    ensure_autoprep_schema(connection)
+                    job = queue_autoprep_regeneration(
+                        connection,
+                        role_id,
+                        "cover_letter" if document_kind == "cover-letter" else "resume",
+                        instruction=comments,
+                        idempotency_key=idempotency_key,
+                    )
+            except AutoprepConflictError as error:
+                self._send_json_with_status({"error": str(error)}, HTTPStatus.CONFLICT)
+                return
+            except ValueError as error:
+                self._send_json_with_status({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            _wake_autoprep_coordinator()
+            self._send_json_with_status({"accepted": True, "job": job}, HTTPStatus.ACCEPTED)
+
+        def _send_autoprep_document(self, role_id_text: str, document_name: str) -> None:
+            try:
+                role_id = int(role_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
+                return
+            document_paths = {
+                "resume.pdf": ("resume_artifact_path", "resume.pdf"),
+                "cover-letter.pdf": ("cover_letter_artifact_path", "cover-letter.pdf"),
+            }
+            document = document_paths.get(document_name)
+            if document is None:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid document kind")
+                return
+            with db.connect() as connection:
+                ensure_autoprep_schema(connection)
+                job = get_role_autoprep_job(connection, role_id)
+            if job is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "Autoprep role not found")
+                return
+            path_value = job.get(document[0])
+            directory_value = job.get("artifact_directory")
+            if not isinstance(path_value, str) or not isinstance(directory_value, str):
+                self.send_error(HTTPStatus.NOT_FOUND, "Prepared document is not available")
+                return
+            path = Path(path_value).resolve()
+            directory = Path(directory_value).resolve()
+            if path.parent != directory or path.suffix.lower() != ".pdf" or not path.is_file():
+                self.send_error(HTTPStatus.NOT_FOUND, "Prepared document is not available")
+                return
+            self._send_pdf_file(path, filename=document[1])
 
         def _open_autoprep_folder(self, role_id_text: str) -> None:
             try:
@@ -956,6 +1130,8 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 self.send_error(HTTPStatus.BAD_REQUEST, "Unsupported role status")
                 return
 
+            autoprep_job: dict[str, Any] | None = None
+            role: Role | None = None
             try:
                 with db.connect() as connection:
                     role = set_role_status(
@@ -964,11 +1140,26 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                         status,
                         summary="Status updated from tracker.",
                     )
+                    if status is RoleStatus.INTERESTED:
+                        ensure_autoprep_schema(connection)
+                        autoprep_job = enqueue_autoprep_jobs(
+                            connection,
+                            [role_id],
+                            idempotency_key=f"interested-role-{role_id}",
+                        )[0]
             except LookupError:
                 self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
                 return
+            except (AutoprepConflictError, ValueError) as error:
+                self.send_error(HTTPStatus.CONFLICT, str(error))
+                return
 
-            self._send_json({"role": _role_payload(role)})
+            if role is None:
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Role status was not updated")
+                return
+            if autoprep_job is not None:
+                _wake_autoprep_coordinator()
+            self._send_json({"role": _role_payload(role), "autoprep_job": autoprep_job})
 
         def _record_review_later(self, role_id_text: str) -> None:
             try:
@@ -1657,6 +1848,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             except ValueError as error:
                 self.send_error(HTTPStatus.BAD_REQUEST, str(error))
                 return
+            _refresh_application_material_index()
             self._send_json(
                 {
                     "resource": _resume_resource_summary(saved_path),
@@ -1695,6 +1887,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
 
             updated_count = _replace_role_resumes(interested_roles, resume)
+            _refresh_application_material_index()
             self._send_json(
                 {
                     "master_resume": _master_resume_summary(resume),
@@ -1735,6 +1928,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 self.send_error(HTTPStatus.BAD_REQUEST, str(error))
                 return
 
+            _refresh_application_material_index()
             self._send_json(
                 {
                     "cover_letter_example": _cover_letter_example_summary(example),
@@ -1777,6 +1971,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 self.send_error(HTTPStatus.BAD_REQUEST, str(error))
                 return
 
+            _refresh_application_material_index()
             self._send_json(
                 {
                     "experience_note": _experience_note_summary(note),
@@ -2693,11 +2888,28 @@ def build_experience_notes_payload() -> dict[str, Any]:
 
 
 def build_application_materials_payload() -> dict[str, Any]:
+    resume: MasterResume | None = None
+    examples: list[CoverLetterExample] = []
+    notes: list[ExperienceNote] = []
     with db.connect() as connection:
         resume = get_master_resume(connection)
         examples = list_cover_letter_examples(connection)
         notes = list_experience_notes(connection)
-    return _application_materials_payload(resume, examples, notes)
+    payload = _application_materials_payload(resume, examples, notes)
+    # Existing material libraries created before automatic refresh are repaired on
+    # their next read, so the UI never leaves the user with a manual index task.
+    if payload["material_index"]["needs_index"]:
+        _refresh_application_material_index()
+        payload = _application_materials_payload(resume, examples, notes)
+    return payload
+
+
+def _refresh_application_material_index() -> dict[str, Any]:
+    """Atomically refresh the local material index after any source mutation."""
+    notes: list[ExperienceNote] = []
+    with db.connect() as connection:
+        notes = list_experience_notes(connection)
+    return build_material_index([_experience_note_index_source(note) for note in notes])
 
 
 def build_autoprep_interested_payload() -> dict[str, Any]:
@@ -2742,15 +2954,6 @@ def _process_autoprep_job(job_id: int) -> None:
     if job["resume_status"] == "queued":
         try:
             _prepare_autoprep_resume(job_id, role, role_payload, resume)
-        except HermesGenerationInterrupted as error:
-            with db.connect() as connection:
-                mark_autoprep_document(
-                    connection,
-                    job_id,
-                    "resume",
-                    "interrupted",
-                    error=_autoprep_error(error),
-                )
         except Exception as error:  # noqa: BLE001 - keep cover-letter work independent.
             LOGGER.exception("Autoprep resume failed for role %s", role.id)
             with db.connect() as connection:
@@ -2767,15 +2970,6 @@ def _process_autoprep_job(job_id: int) -> None:
     if job["cover_letter_status"] == "queued":
         try:
             _prepare_autoprep_cover_letter(job_id, role_payload, resume)
-        except HermesGenerationInterrupted as error:
-            with db.connect() as connection:
-                mark_autoprep_document(
-                    connection,
-                    job_id,
-                    "cover_letter",
-                    "interrupted",
-                    error=_autoprep_error(error),
-                )
         except Exception as error:  # noqa: BLE001 - preserve a completed resume.
             LOGGER.exception("Autoprep cover letter failed for role %s", role.id)
             with db.connect() as connection:
@@ -2796,98 +2990,46 @@ def _prepare_autoprep_resume(
     role_payload: dict[str, Any],
     resume: MasterResume,
 ) -> None:
+    """Generate a tailored resume through the configured LangChain provider only."""
+    instruction = ""
+    previous_latex: str | None = None
     with db.connect() as connection:
-        knowledge_base = list_resume_feedback_knowledge(
-            connection,
-            role=role_payload,
-            resume_content=resume.content,
-        )
-        experience_notes = list_experience_notes(connection)
-        mark_autoprep_document(connection, job_id, "resume", "generating_tweaks")
-    experience_context = _generation_experience_context(
-        experience_notes,
-        role=role_payload,
-        tweaks=None,
-    )
-    model = LlmSettings().model
-    feedback_result = AUTOPREP_SESSION_RUNNER.start(
-        build_resume_feedback_prompt(
-            role=role_payload,
-            resume_content=resume.content,
-            knowledge_base=knowledge_base,
-            other_experience_context=experience_context,
-        ),
-        model=model,
-        source="callumployed-autoprep-resume",
-    )
-    with db.connect() as connection:
+        current_job = get_autoprep_job(connection, job_id)
+        instruction = str(current_job.get("resume_instruction") or "").strip()
+        previous_latex = get_autoprep_resume_latex(connection, job_id)
         mark_autoprep_document(
             connection,
             job_id,
             "resume",
-            "generating_tweaks",
-            session_id=feedback_result.session_id,
+            "regenerating" if instruction else "generating_tweaks",
         )
-    feedback = ResumeFeedbackResponse.model_validate(parse_json_response(feedback_result.content))
-    tweak_prompts: list[str] = []
-    with db.connect() as connection:
-        for feedback_index, item in enumerate(feedback.feedback_items):
-            feedback_payload = item.model_dump(mode="json")
-            tweak_prompt = _feedback_tweak_prompt(feedback_payload)
-            if not tweak_prompt:
-                continue
-            tweak_prompts.append(tweak_prompt)
-            record_resume_feedback_history(
-                connection,
-                role=role,
-                feedback_index=feedback_index,
-                feedback=feedback_payload,
-                response="accepted",
-                comment="Automatically accepted by Autoprep.",
-            )
-    tweaks = "\n".join(f"- {prompt}" for prompt in tweak_prompts)
-    if not tweaks:
-        tweaks = (
-            "The fit analysis found no supported content changes. Preserve the source resume "
-            "exactly and do not invent any claims."
-        )
-    with db.connect() as connection:
-        mark_autoprep_document(
-            connection,
-            job_id,
-            "resume",
-            "regenerating",
-            session_id=feedback_result.session_id,
-        )
-    revision_result = AUTOPREP_SESSION_RUNNER.resume(
-        feedback_result.session_id,
-        build_resume_tweak_prompt(
-            role=role_payload,
-            resume_content=resume.content,
-            tweaks=tweaks,
-            other_experience_context=experience_context,
-        ),
-        model=model,
+    tweaks = instruction or (
+        "Tailor this resume truthfully for the saved role context. Preserve the current "
+        "LaTeX structure, prioritize directly relevant supported experience, and do not "
+        "invent claims."
     )
-    draft = ResumeTweakDraft.model_validate(parse_json_response(revision_result.content))
-    generated = save_role_resume(role_payload, resume, draft.latex)
+    generated = build_role_resume(
+        role_payload,
+        resume,
+        tweaks=tweaks,
+        previous_latex=previous_latex if instruction else None,
+    )
     source_pdf = _required_generated_pdf(generated, "resume")
     artifact_directory, artifact_path = _copy_autoprep_pdf(
-        role_payload,
-        source_pdf,
-        kind="resume",
+        role_payload, source_pdf, kind="resume"
     )
+    latex = str(generated.get("latex") or "")
     with db.connect() as connection:
         mark_autoprep_document(
             connection,
             job_id,
             "resume",
             "ready",
-            session_id=revision_result.session_id,
             artifact_path=str(artifact_path),
             artifact_directory=str(artifact_directory),
-            resume_latex=draft.latex,
+            resume_latex=latex or None,
         )
+        clear_autoprep_instruction(connection, job_id, "resume")
 
 
 def _prepare_autoprep_cover_letter(
@@ -2895,84 +3037,40 @@ def _prepare_autoprep_cover_letter(
     role_payload: dict[str, Any],
     resume: MasterResume,
 ) -> None:
+    """Generate through Callumployed's configured LangChain provider only.
+
+    Role requirements enter the generator only through the documented, local
+    role-context retrieval projection in ``build_role_cover_letter``.
+    """
+    instruction = ""
     tailored_resume_latex: str | None = None
     with db.connect() as connection:
-        experience_notes = list_experience_notes(connection)
-        applicant_profile = _load_applicant_profile(connection)
+        current_job = get_autoprep_job(connection, job_id)
+        instruction = str(current_job.get("cover_letter_instruction") or "").strip()
         tailored_resume_latex = get_autoprep_resume_latex(connection, job_id)
-        cover_letter_model = _clean_cover_letter_model(
-            get_config_value(connection, COVER_LETTER_MODEL_CONFIG_KEY)
-            or DEFAULT_COVER_LETTER_MODEL
-        )
         mark_autoprep_document(connection, job_id, "cover_letter", "generating")
     role_id = int(role_payload["id"])
-    saved_resume = (
-        {"latex": tailored_resume_latex, "format": "latex"}
-        if tailored_resume_latex
-        else _saved_role_resume(role_payload, resume)
+    resume_for_generation = MasterResume(
+        filename=resume.filename,
+        content=tailored_resume_latex or resume.content,
+        content_sha256=resume.content_sha256,
     )
-    resume_content = str(saved_resume.get("latex") or resume.content)
-    experience_context = _generation_experience_context(
-        experience_notes,
-        role=role_payload,
-        tweaks=None,
-    )
-    examples = _cover_letter_examples_for_prompt(
+    previous_cover_letter = _saved_role_cover_letter(role_id) if instruction else None
+    generated = build_role_cover_letter(
         role_payload,
-        resume_content,
-        experience_context,
-    )
-    result = AUTOPREP_SESSION_RUNNER.start(
-        build_cover_letter_prompt(
-            applicant_profile=applicant_profile,
-            role=role_payload,
-            resume_content=resume_content,
-            other_experience_context=experience_context,
-            cover_letter_examples=examples,
+        resume_for_generation,
+        tweaks=instruction or None,
+        previous_cover_letter_latex=(
+            str((previous_cover_letter or {}).get("latex") or "") or None
         ),
-        model=cover_letter_model,
-        source="callumployed-autoprep-cover-letter",
-    )
-    with db.connect() as connection:
-        mark_autoprep_document(
-            connection,
-            job_id,
-            "cover_letter",
-            "generating",
-            session_id=result.session_id,
-        )
-    draft = CoverLetterDraft.model_validate(parse_json_response(result.content))
-    generated = _write_role_cover_letter(
-        role_payload,
-        _normalize_cover_letter_latex(strip_cover_letter_dash_punctuation(draft.latex)),
-        source="ai_cover_letter",
-        example_ids=draft.example_ids,
-        tweaks=None,
+        allow_local_fallback=False,
     )
     source_pdf = _required_generated_pdf(generated, "cover letter")
     page_count = len(PdfReader(str(source_pdf)).pages)
     if page_count != 1:
-        correction = AUTOPREP_SESSION_RUNNER.resume(
-            result.session_id,
-            (
-                f"The generated cover letter compiled to {page_count} pages. Return the same "
-                "JSON schema with a complete revised LaTeX document that fits exactly one page. "
-                "Preserve truthful role tailoring and the established 225-275 word constraint."
-            ),
-            model=cover_letter_model,
+        raise RuntimeError(
+            f"Generated cover letter did not fit exactly one PDF page ({page_count} pages)."
         )
-        draft = CoverLetterDraft.model_validate(parse_json_response(correction.content))
-        generated = _write_role_cover_letter(
-            role_payload,
-            _normalize_cover_letter_latex(strip_cover_letter_dash_punctuation(draft.latex)),
-            source="ai_cover_letter",
-            example_ids=draft.example_ids,
-            tweaks="Condensed automatically to the one-page requirement.",
-        )
-        source_pdf = _required_generated_pdf(generated, "cover letter")
-        if len(PdfReader(str(source_pdf)).pages) != 1:
-            raise RuntimeError("Generated cover letter did not fit exactly one PDF page.")
-        result = correction
     artifact_directory, artifact_path = _copy_autoprep_pdf(
         role_payload,
         source_pdf,
@@ -2984,11 +3082,14 @@ def _prepare_autoprep_cover_letter(
             job_id,
             "cover_letter",
             "ready",
-            session_id=result.session_id,
             artifact_path=str(artifact_path),
             artifact_directory=str(artifact_directory),
         )
-    LOGGER.info("Autoprep cover letter completed for role %s", role_id)
+        clear_autoprep_instruction(connection, job_id, "cover_letter")
+    LOGGER.info(
+        "Autoprep cover letter completed through direct LangChain generation for role %s",
+        role_id,
+    )
 
 
 def _cover_letter_examples_for_prompt(
@@ -3222,7 +3323,9 @@ def build_role_cover_letter(
     *,
     tweaks: str | None = None,
     previous_cover_letter_latex: str | None = None,
+    allow_local_fallback: bool = True,
 ) -> dict[str, Any]:
+    """Generate with the configured LangChain provider and role-local Turso retrieval."""
     role_id = role.get("id")
     if not isinstance(role_id, int):
         raise RuntimeError("Role did not include an ID")
@@ -3230,7 +3333,10 @@ def build_role_cover_letter(
     applicant_profile = ApplicantProfile()
     experience_notes: list[ExperienceNote] = []
     experience_context: list[dict[str, object]] = []
+    role_context: list[dict[str, object]] = []
     cover_letter_model = DEFAULT_COVER_LETTER_MODEL
+    role_for_prompt = dict(role)
+    role_for_prompt.pop("description", None)
 
     def search_cover_letters(query: str, *, limit: int = 3) -> list[dict[str, object]]:
         with db.connect() as connection:
@@ -3245,6 +3351,29 @@ def build_role_cover_letter(
     try:
         with db.connect() as connection:
             db.run_migrations(connection)
+            authoritative_role = get_role(connection, role_id)
+            company = get_company(connection, authoritative_role.company_id)
+            sync_role_context_vectors(
+                connection,
+                role=authoritative_role,
+                company_name=company.name,
+            )
+            role_context = retrieve_role_context(
+                connection,
+                role_id=role_id,
+                query=" ".join(
+                    filter(
+                        None,
+                        [
+                            str(role_for_prompt.get("title") or ""),
+                            str(role_for_prompt.get("company_name") or company.name),
+                            str(role_for_prompt.get("location") or ""),
+                            str(tweaks or ""),
+                        ],
+                    )
+                ),
+                limit=4,
+            )
             experience_notes = list_experience_notes(connection)
             applicant_profile = _load_applicant_profile(connection)
             try:
@@ -3256,16 +3385,17 @@ def build_role_cover_letter(
                 cover_letter_model = DEFAULT_COVER_LETTER_MODEL
         experience_context = _generation_experience_context(
             experience_notes,
-            role=role,
+            role=role_for_prompt,
             tweaks=tweaks,
         )
         draft = asyncio.run(
             generate_cover_letter(
-                role=role,
+                role=role_for_prompt,
                 resume_content=resume.content,
                 search_tool=search_cover_letters,
                 applicant_profile=applicant_profile,
                 other_experience_context=experience_context,
+                role_context=role_context,
                 tweaks=tweaks,
                 previous_cover_letter_latex=previous_cover_letter_latex,
                 settings=LlmSettings(model=cover_letter_model),
@@ -3274,11 +3404,13 @@ def build_role_cover_letter(
         latex = _normalize_cover_letter_latex(draft.latex)
         example_ids = draft.example_ids
         source = "ai_cover_letter"
-    except Exception:  # noqa: BLE001 - prep should degrade when the LLM is unavailable.
+    except Exception:
+        if not allow_local_fallback:
+            raise
         LOGGER.exception("AI cover letter generation failed for role %s", role_id)
         latex = _normalize_cover_letter_latex(
             _fallback_cover_letter_latex(
-                role,
+                role_for_prompt,
                 resume,
                 applicant_profile=applicant_profile,
                 other_experience_context=experience_context,
@@ -3288,7 +3420,7 @@ def build_role_cover_letter(
         source = "local_cover_letter_fallback"
 
     return _write_role_cover_letter(
-        role,
+        role_for_prompt,
         latex,
         source=source,
         example_ids=example_ids,
@@ -3964,6 +4096,16 @@ def _resume_resources_root() -> Path:
     return user_data_path("callumployed", appauthor=False) / "resume-resources"
 
 
+def _safe_resume_resource_path(filename_text: str) -> Path | None:
+    decoded = unquote(filename_text)
+    filename = Path(decoded).name
+    if not filename or filename != decoded or "\x00" in filename:
+        return None
+    root = _resume_resources_root().resolve()
+    candidate = (root / filename).resolve()
+    return candidate if candidate.parent == root else None
+
+
 def _role_resume_dir(role_id: int) -> Path:
     return _prepared_resumes_root() / f"role-{role_id}"
 
@@ -4586,13 +4728,19 @@ def _cover_letter_content_from_payload(
     content: object,
     content_base64: object,
 ) -> str:
-    if filename.lower().endswith(".docx"):
+    suffix = Path(filename).suffix.lower()
+    if suffix in {".pdf", ".docx"}:
         if not isinstance(content_base64, str):
-            raise ValueError("DOCX cover letter uploads require content_base64")
+            document_type = suffix.upper().removeprefix(".")
+            raise ValueError(
+                f"{document_type} cover letter uploads require content_base64"
+            )
         try:
             document_bytes = base64.b64decode(content_base64, validate=True)
         except (binascii.Error, ValueError) as error:
-            raise ValueError("DOCX cover letter content is not valid base64") from error
+            raise ValueError("Cover letter content is not valid base64") from error
+        if suffix == ".pdf":
+            return _extract_pdf_text(document_bytes)
         return _extract_docx_text(document_bytes)
     if not isinstance(content, str):
         raise ValueError("Expected filename and content")
@@ -4771,7 +4919,6 @@ def run_server(host: str, port: int) -> None:
         server.serve_forever()
     finally:
         AUTOPREP_COORDINATOR.stop_claiming()
-        AUTOPREP_SESSION_RUNNER.stop()
         AUTOPREP_COORDINATOR.wait_for_workers()
         _close_server(server)
 

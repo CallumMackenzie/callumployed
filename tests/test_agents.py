@@ -158,6 +158,12 @@ def test_cover_letter_prompt_includes_resume_job_and_tool_results() -> None:
                 "updated_at": "2026-07-29T12:00:00Z",
             }
         ],
+        role_context=[
+            {
+                "label": "requirements",
+                "content": "Python distributed systems internship",
+            }
+        ],
         tweaks="Make the tone warmer and emphasize ML infrastructure.",
         cover_letter_examples=[
             {

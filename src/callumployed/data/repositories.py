@@ -424,6 +424,144 @@ def _load_vector(value: object) -> dict[str, int]:
     }
 
 
+def sync_role_context_vectors(
+    connection: turso.Connection,
+    *,
+    role: Role,
+    company_name: str,
+) -> bool:
+    """Replace only one role's local retrieval projection when its source changes."""
+    if role.id is None:
+        raise ValueError("role context requires a persisted role id")
+    chunks = _role_context_chunks(role, company_name=company_name)
+    desired = [
+        (label, content, hashlib.sha256(content.encode()).hexdigest())
+        for label, content in chunks
+    ]
+    existing_rows = connection.execute(
+        """
+        SELECT chunk_index, label, content_sha256
+        FROM role_context_vectors
+        WHERE role_id = ?
+        ORDER BY chunk_index
+        """,
+        (role.id,),
+    ).fetchall()
+    existing = [
+        (str(row["label"]), str(row["content_sha256"])) for row in existing_rows
+    ]
+    if existing == [(label, digest) for label, _content, digest in desired]:
+        return False
+    connection.execute("DELETE FROM role_context_vectors WHERE role_id = ?", (role.id,))
+    for chunk_index, (label, content, digest) in enumerate(desired):
+        connection.execute(
+            """
+            INSERT INTO role_context_vectors (
+                role_id, chunk_index, label, content, content_sha256, vector_json, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+            """,
+            (
+                role.id,
+                chunk_index,
+                label,
+                content,
+                digest,
+                json.dumps(_text_vector(content), sort_keys=True),
+            ),
+        )
+    connection.commit()
+    return True
+
+
+def retrieve_role_context(
+    connection: turso.Connection,
+    *,
+    role_id: int,
+    query: str,
+    limit: int = 4,
+) -> list[dict[str, object]]:
+    """Retrieve local job context strictly scoped to one authoritative role ID."""
+    if limit <= 0:
+        return []
+    query_vector = _text_vector(query)
+    rows = connection.execute(
+        """
+        SELECT chunk_index, label, content, vector_json, updated_at
+        FROM role_context_vectors
+        WHERE role_id = ?
+        ORDER BY chunk_index
+        """,
+        (role_id,),
+    ).fetchall()
+    ranked: list[dict[str, object]] = []
+    for row in rows:
+        item = dict(row)
+        ranked.append(
+            {
+                "id": int(item["chunk_index"]),
+                "filename": f"role-{role_id}-{item['label']}.txt",
+                "label": item["label"],
+                "content": item["content"],
+                "similarity": _cosine_similarity(query_vector, _load_vector(item["vector_json"])),
+                "updated_at": item["updated_at"],
+            }
+        )
+    ranked.sort(key=_role_context_rank)
+    return ranked[:limit]
+
+
+def _role_context_rank(item: dict[str, object]) -> tuple[float, int]:
+    similarity = item.get("similarity")
+    chunk_index = item.get("id")
+    return (
+        -(similarity if isinstance(similarity, float) else 0.0),
+        chunk_index if isinstance(chunk_index, int) else 0,
+    )
+
+
+def _role_context_chunks(role: Role, *, company_name: str) -> list[tuple[str, str]]:
+    metadata = "\n".join(
+        value
+        for value in (
+            "Role metadata",
+            f"Company: {company_name}",
+            f"Title: {role.title}",
+            f"URL: {role.role_url}",
+            f"Location: {role.location}" if role.location else "",
+            f"Posting ID: {role.posting_id}" if role.posting_id else "",
+            f"First seen: {role.first_seen_at}" if role.first_seen_at else "",
+            f"Last seen: {role.last_seen_at}" if role.last_seen_at else "",
+            f"Notes: {role.notes}" if role.notes else "",
+        )
+        if value
+    )
+    description = (role.description or "").strip()
+    chunks: list[tuple[str, str]] = [("metadata", metadata)]
+    if not description:
+        return chunks
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", description) if part.strip()]
+    current = ""
+    part_index = 1
+    for paragraph in paragraphs or [description]:
+        while paragraph:
+            capacity = 4_000 - len(current) - (2 if current else 0)
+            if capacity <= 0:
+                chunks.append((f"description-{part_index}", current))
+                part_index += 1
+                current = ""
+                capacity = 4_000
+            piece = paragraph[:capacity]
+            paragraph = paragraph[capacity:].lstrip()
+            current = f"{current}\n\n{piece}" if current else piece
+            if len(current) >= 4_000:
+                chunks.append((f"description-{part_index}", current))
+                part_index += 1
+                current = ""
+    if current:
+        chunks.append((f"description-{part_index}", current))
+    return chunks
+
+
 def _cosine_similarity(left: dict[str, int], right: dict[str, int]) -> float:
     if not left or not right:
         return 0.0
@@ -499,6 +637,31 @@ def list_cover_letter_examples(connection: turso.Connection) -> list[CoverLetter
     return [CoverLetterExample.model_validate(dict(row)) for row in rows]
 
 
+def get_cover_letter_example(
+    connection: turso.Connection,
+    example_id: int,
+) -> CoverLetterExample | None:
+    row = connection.execute(
+        """
+        SELECT id, filename, content, content_sha256, created_at, updated_at
+        FROM cover_letter_examples
+        WHERE id = ?
+        """,
+        (example_id,),
+    ).fetchone()
+    return CoverLetterExample.model_validate(dict(row)) if row is not None else None
+
+
+def delete_cover_letter_example(connection: turso.Connection, example_id: int) -> bool:
+    connection.execute(
+        "DELETE FROM cover_letter_example_vectors WHERE cover_letter_example_id = ?",
+        (example_id,),
+    )
+    cursor = connection.execute("DELETE FROM cover_letter_examples WHERE id = ?", (example_id,))
+    connection.commit()
+    return cursor.rowcount > 0
+
+
 def add_cover_letter_example(
     connection: turso.Connection,
     *,
@@ -549,6 +712,24 @@ def list_experience_notes(connection: turso.Connection) -> list[ExperienceNote]:
         """
     ).fetchall()
     return [ExperienceNote.model_validate(dict(row)) for row in rows]
+
+
+def get_experience_note(connection: turso.Connection, note_id: int) -> ExperienceNote | None:
+    row = connection.execute(
+        """
+        SELECT id, filename, content, content_sha256, created_at, updated_at
+        FROM experience_notes
+        WHERE id = ?
+        """,
+        (note_id,),
+    ).fetchone()
+    return ExperienceNote.model_validate(dict(row)) if row is not None else None
+
+
+def delete_experience_note(connection: turso.Connection, note_id: int) -> bool:
+    cursor = connection.execute("DELETE FROM experience_notes WHERE id = ?", (note_id,))
+    connection.commit()
+    return cursor.rowcount > 0
 
 
 def add_experience_note(

@@ -152,12 +152,16 @@ def ensure_autoprep_schema(connection: turso.Connection) -> None:
             worker_state TEXT NOT NULL DEFAULT 'queued',
             resume_status TEXT NOT NULL DEFAULT 'queued',
             cover_letter_status TEXT NOT NULL DEFAULT 'queued',
+            -- Legacy Hermes session references are retained for historical jobs only.
+            -- Direct LangChain generation never reads or writes these values.
             resume_session_id TEXT,
             cover_letter_session_id TEXT,
             resume_artifact_path TEXT,
             cover_letter_artifact_path TEXT,
             artifact_directory TEXT,
             resume_latex TEXT,
+            resume_instruction TEXT,
+            cover_letter_instruction TEXT,
             resume_error TEXT,
             cover_letter_error TEXT,
             resume_attempt INTEGER NOT NULL DEFAULT 1,
@@ -180,8 +184,25 @@ def ensure_autoprep_schema(connection: turso.Connection) -> None:
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             FOREIGN KEY (job_id) REFERENCES autoprep_jobs(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS autoprep_regenerations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            job_id INTEGER NOT NULL,
+            document_kind TEXT NOT NULL,
+            instruction_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (job_id) REFERENCES autoprep_jobs(id) ON DELETE CASCADE
+        );
         """
     )
+    job_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(autoprep_jobs)").fetchall()
+    }
+    for column_name in ("resume_instruction", "cover_letter_instruction"):
+        if column_name not in job_columns:
+            connection.execute(f"ALTER TABLE autoprep_jobs ADD COLUMN {column_name} TEXT")
     connection.commit()
 
 
@@ -260,7 +281,13 @@ def list_autoprep_jobs(
         SELECT
             j.*,
             r.title,
+            r.role_url,
             r.location,
+            r.notes,
+            r.description,
+            r.posting_id,
+            r.first_seen_at,
+            r.last_seen_at,
             r.role_status,
             r.created_at AS role_created_at,
             r.updated_at AS role_updated_at,
@@ -304,7 +331,13 @@ def get_autoprep_job(connection: turso.Connection, job_id: int) -> dict[str, Any
         SELECT
             j.*,
             r.title,
+            r.role_url,
             r.location,
+            r.notes,
+            r.description,
+            r.posting_id,
+            r.first_seen_at,
+            r.last_seen_at,
             r.role_status,
             r.created_at AS role_created_at,
             r.updated_at AS role_updated_at,
@@ -532,6 +565,96 @@ def retry_autoprep_document(
     return get_autoprep_job(connection, job["id"])
 
 
+def queue_autoprep_regeneration(
+    connection: turso.Connection,
+    role_id: int,
+    document_kind: DocumentKind,
+    *,
+    instruction: str,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    clean_key = idempotency_key.strip()
+    clean_instruction = instruction.strip()
+    if not clean_key:
+        raise ValueError("An idempotency key is required.")
+    if not clean_instruction:
+        raise ValueError("Add comments before regenerating the document.")
+    if len(clean_instruction) > 4000:
+        raise ValueError("Regeneration comments must be 4000 characters or fewer.")
+    prefix = _document_prefix(document_kind)
+    instruction_hash = hashlib.sha256(clean_instruction.encode()).hexdigest()
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        job = get_role_autoprep_job(connection, role_id)
+        if job is None:
+            raise ValueError("No Autoprep job exists for this role.")
+        existing = connection.execute(
+            """
+            SELECT job_id, document_kind, instruction_hash
+            FROM autoprep_regenerations
+            WHERE idempotency_key = ?
+            """,
+            (clean_key,),
+        ).fetchone()
+        if existing is not None:
+            if (
+                int(existing["job_id"]) != job["id"]
+                or str(existing["document_kind"]) != document_kind
+                or str(existing["instruction_hash"]) != instruction_hash
+            ):
+                raise AutoprepConflictError(
+                    "This regeneration key was already used for another action."
+                )
+            connection.commit()
+            return get_autoprep_job(connection, job["id"])
+        if job["worker_state"] != "idle":
+            raise AutoprepConflictError("This role is already being prepared.")
+        if str(job[f"{prefix}_status"]) != "ready":
+            raise AutoprepConflictError("Only a ready document can be regenerated with comments.")
+        connection.execute(
+            """
+            INSERT INTO autoprep_regenerations (
+                idempotency_key, job_id, document_kind, instruction_hash
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (clean_key, job["id"], document_kind, instruction_hash),
+        )
+        connection.execute(
+            f"""
+            UPDATE autoprep_jobs
+            SET {prefix}_status = 'queued',
+                {prefix}_error = NULL,
+                {prefix}_instruction = ?,
+                {prefix}_attempt = {prefix}_attempt + 1,
+                overall_status = 'queued',
+                worker_state = 'queued',
+                completed_at = NULL,
+                queued_at = datetime('now'),
+                updated_at = datetime('now')
+            WHERE id = ?
+            """,  # noqa: S608
+            (clean_instruction, job["id"]),
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return get_autoprep_job(connection, job["id"])
+
+
+def clear_autoprep_instruction(
+    connection: turso.Connection,
+    job_id: int,
+    document_kind: DocumentKind,
+) -> None:
+    prefix = _document_prefix(document_kind)
+    connection.execute(
+        f"UPDATE autoprep_jobs SET {prefix}_instruction = NULL WHERE id = ?",  # noqa: S608
+        (job_id,),
+    )
+    connection.commit()
+
+
 def recover_interrupted_autoprep_jobs(connection: turso.Connection) -> int:
     rows = connection.execute(
         """
@@ -634,6 +757,10 @@ def _derive_overall_status(resume_status: str, cover_status: str) -> str:
 def _job_payload(row: Any) -> dict[str, Any]:
     payload = dict(row)
     payload.pop("resume_latex", None)
+    # Preserve legacy session IDs in storage for auditability without exposing
+    # them as active generation state in the API/UI.
+    payload.pop("resume_session_id", None)
+    payload.pop("cover_letter_session_id", None)
     payload["resume_available"] = bool(payload.get("resume_artifact_path"))
     payload["cover_letter_available"] = bool(payload.get("cover_letter_artifact_path"))
     return payload

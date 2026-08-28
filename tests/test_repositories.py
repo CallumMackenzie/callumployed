@@ -45,6 +45,7 @@ from callumployed.data.repositories import (
     list_scan_runs,
     record_resume_feedback_history,
     record_role_review_later,
+    retrieve_role_context,
     set_include_graduate_degree_roles,
     set_include_hardware_roles,
     set_internship_mode,
@@ -56,6 +57,7 @@ from callumployed.data.repositories import (
     should_include_hardware_roles,
     should_require_software_keywords,
     should_use_internship_mode,
+    sync_role_context_vectors,
     update_role,
     upsert_master_resume,
 )
@@ -808,3 +810,51 @@ def test_list_role_events_returns_recent_role_events() -> None:
 
     assert len(events) == 1
     assert events[0].summary == "Worth tracking."
+
+
+def test_role_context_vectors_refresh_and_never_mix_roles() -> None:
+    connection = db.connect(":memory:")
+    db.run_migrations(connection)
+    company = add_company(connection, Company(name="Acme"))
+    assert company.id is not None
+    first = add_role(
+        connection,
+        Role(
+            company_id=company.id,
+            title="Platform Engineer",
+            role_url="https://example.com/platform",
+            description="Build Kubernetes control planes and reliable Python services.",
+        ),
+    )
+    second = add_role(
+        connection,
+        Role(
+            company_id=company.id,
+            title="Frontend Engineer",
+            role_url="https://example.com/frontend",
+            description="Build React interfaces and accessible design systems.",
+        ),
+    )
+    assert first.id is not None and second.id is not None
+
+    assert sync_role_context_vectors(connection, role=first, company_name=company.name) is True
+    assert sync_role_context_vectors(connection, role=second, company_name=company.name) is True
+    first_matches = retrieve_role_context(
+        connection, role_id=first.id, query="Kubernetes Python", limit=10
+    )
+    assert first_matches
+    assert all("React interfaces" not in str(item["content"]) for item in first_matches)
+    assert any("Kubernetes" in str(item["content"]) for item in first_matches)
+
+    refreshed = update_role(
+        connection, first.id, description="Build Kafka event pipelines in Go."
+    )
+    assert sync_role_context_vectors(connection, role=refreshed, company_name=company.name) is True
+    refreshed_matches = retrieve_role_context(
+        connection, role_id=first.id, query="Kafka Go", limit=10
+    )
+    assert any("Kafka event pipelines" in str(item["content"]) for item in refreshed_matches)
+    assert all(
+        "Kubernetes control planes" not in str(item["content"])
+        for item in refreshed_matches
+    )
