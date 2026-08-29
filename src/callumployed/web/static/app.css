@@ -4397,6 +4397,32 @@ body.prepped-open {
   background: rgb(95 43 216 / 0.07);
 }
 
+.prepped-list-item.is-cover-letter-generating,
+.prepped-list-item.is-cover-letter-generating.is-active {
+  border-color: #6d5bd0;
+  background: linear-gradient(135deg, #f1efff, #e6f5ff);
+  color: #3d327f;
+  animation: prepped-cover-letter-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes prepped-cover-letter-pulse {
+  0%,
+  100% {
+    border-color: #6d5bd0;
+    box-shadow: 0 0 0 0 rgb(109 91 208 / 0.08);
+  }
+  50% {
+    border-color: #3f8fd2;
+    box-shadow: 0 0 0 4px rgb(63 143 210 / 0.18), 0 8px 20px rgb(95 43 216 / 0.12);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .prepped-list-item.is-cover-letter-generating {
+    animation: none;
+  }
+}
+
 .prepped-list-item.has-generation-failure,
 .prepped-list-item.has-generation-failure.is-active {
   border-color: #b42318;

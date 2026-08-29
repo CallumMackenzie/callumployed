@@ -275,6 +275,19 @@ def test_applicant_profile_omits_unset_optional_sender_lines() -> None:
     assert "\\\\\n\\\\" not in profile.latex_sender_block
 
 
+def test_applicant_profile_places_phone_below_email_in_sender_block() -> None:
+    profile = ApplicantProfile(
+        first_name="Callum",
+        last_name="Mackenzie",
+        email="callum@example.com",
+        phone="+1 (250) 555-0123",
+    )
+
+    assert profile.latex_sender_block.endswith(
+        "callum@example.com\\\\\n+1 (250) 555-0123"
+    )
+
+
 def test_resume_tweak_prompt_includes_existing_resume_and_tweaks() -> None:
     prompt = build_resume_tweak_prompt(
         role={

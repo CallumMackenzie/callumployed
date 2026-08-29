@@ -3680,6 +3680,10 @@ function autoprepJobHasGenerationFailure(job) {
   );
 }
 
+function autoprepCoverLetterIsGenerating(job) {
+  return job.cover_letter_status === "generating" || job.overall_status === "generating_cover_letter";
+}
+
 function autoprepStatusLabel(status) {
   return ({
     queued: "Queued", generating_resume_tweaks: "Generating resume tweaks", regenerating_resume: "Regenerating resume",
@@ -3776,9 +3780,11 @@ function renderPreppedRoles() {
   preppedBulkStatus.textContent = preppedBulkMessage;
   preppedList.innerHTML = preppedJobs.map((job) => {
     const hasGenerationFailure = autoprepJobHasGenerationFailure(job);
+    const coverLetterGenerating =
+      !hasGenerationFailure && autoprepCoverLetterIsGenerating(job);
     const activeClass = Number(job.role_id) === Number(selectedPreppedRoleId) ? " is-active" : "";
     return `
-      <button type="button" class="prepped-list-item${hasGenerationFailure ? " has-generation-failure" : ""}${activeClass}" data-prepped-role="${job.role_id}">
+      <button type="button" class="prepped-list-item${coverLetterGenerating ? " is-cover-letter-generating" : ""}${hasGenerationFailure ? " has-generation-failure" : ""}${activeClass}" data-prepped-role="${job.role_id}">
         <strong>${escapeUiText(job.company_name)}</strong><span>${escapeUiText(job.title)}</span>
         <small class="status-${escapeHtml(job.overall_status)}">${escapeHtml(autoprepStatusLabel(job.overall_status))}</small>
       </button>`;

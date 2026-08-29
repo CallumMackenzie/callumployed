@@ -22,6 +22,7 @@ class ApplicantProfile(CoverLetterModel):
     first_name: str = ""
     last_name: str = ""
     email: str = ""
+    phone: str = ""
     institution: str = ""
     degree: str = ""
 
@@ -34,7 +35,7 @@ class ApplicantProfile(CoverLetterModel):
 
     @property
     def latex_sender_block(self) -> str:
-        lines = [self.full_name, self.institution, self.degree, self.email]
+        lines = [self.full_name, self.institution, self.degree, self.email, self.phone]
         return "\\\\\n".join(_escape_latex_profile_value(line) for line in lines if line)
 
 
@@ -267,11 +268,14 @@ the retrieved examples:
 - use a compact article-based letter layout when needed; avoid LaTeX letter
   class spacing if it risks spilling past one page
 - keep the sender/contact header left-aligned at the top of the page
+- stack the exact company name, location or work arrangement, exact role title,
+  and date in the recipient header; never omit the role title
 - the sender/contact header must contain only the non-empty name, institution,
-  degree, and email values in applicant_profile; copy those identity values
-  exactly and never infer identity details from examples, the resume, or prior drafts
-- do not include the user's personal website, GitHub, LinkedIn, phone number,
-  or extra links in the sender/contact header
+  degree, email, and phone values in applicant_profile; place phone below email
+  and copy those identity values exactly. Never infer identity details from
+  examples, the resume, or prior drafts
+- do not include the user's personal website, GitHub, LinkedIn, or extra links
+  in the sender/contact header
 - use proper LaTeX line breaks (`\\`) for stacked header/contact/signature
   lines; never use a single trailing backslash as a line break
 - inspect the complete job description for an explicitly named hiring contact,
@@ -308,11 +312,17 @@ recipient lines, greeting if needed, and body paragraphs:
 \\usepackage[hidelinks]{hyperref}
 \\setlength{\\parskip}{0.55em}
 \\setlength{\\parindent}{1.5em}
+\\hyphenpenalty=10000
+\\exhyphenpenalty=10000
+\\setlength{\\emergencystretch}{2em}
 \\pagestyle{empty}
 \\begin{document}
 \\noindent <applicant_profile.latex_sender_block>\\par
 \\vspace{1.1em}
-\\noindent <recipient/company lines, including date>\\par
+\\noindent <exact company>\\\\
+<location or work arrangement>\\\\
+<exact role title>\\\\
+<date>\\par
 \\vspace{1.1em}
 
 \\noindent Dear <explicitly named hiring contact, or Hiring Manager>,\\par

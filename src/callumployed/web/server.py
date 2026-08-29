@@ -162,6 +162,7 @@ SCAN_ALL_COMPANY_TIMEOUT_SECONDS = 5 * 60
 APPLICANT_FIRST_NAME_CONFIG_KEY = "applicant_first_name"
 APPLICANT_LAST_NAME_CONFIG_KEY = "applicant_last_name"
 APPLICANT_EMAIL_CONFIG_KEY = "applicant_email"
+APPLICANT_PHONE_CONFIG_KEY = "applicant_phone"
 APPLICANT_INSTITUTION_CONFIG_KEY = "applicant_institution"
 APPLICANT_DEGREE_CONFIG_KEY = "applicant_degree"
 COVER_LETTER_MODEL_CONFIG_KEY = "cover_letter_model"
@@ -204,6 +205,7 @@ SUPPORTED_COVER_LETTER_MODELS = frozenset(value for value, _label in COVER_LETTE
 AUTOPREP_COORDINATOR: AutoprepCoordinator | None = None
 APPLICANT_PROFILE_TEXT_CONFIG_KEYS = {
     APPLICANT_EMAIL_CONFIG_KEY,
+    APPLICANT_PHONE_CONFIG_KEY,
     APPLICANT_INSTITUTION_CONFIG_KEY,
     APPLICANT_DEGREE_CONFIG_KEY,
 }
@@ -2513,6 +2515,7 @@ def build_config_payload() -> dict[str, Any]:
             or ""
         )
         applicant_email = get_config_value(connection, APPLICANT_EMAIL_CONFIG_KEY) or ""
+        applicant_phone = get_config_value(connection, APPLICANT_PHONE_CONFIG_KEY) or ""
         applicant_institution = get_config_value(connection, APPLICANT_INSTITUTION_CONFIG_KEY) or ""
         applicant_degree = get_config_value(connection, APPLICANT_DEGREE_CONFIG_KEY) or ""
         try:
@@ -2586,6 +2589,17 @@ def build_config_payload() -> dict[str, Any]:
                 "input_type": "email",
                 "autocomplete": "email",
                 "value": applicant_email,
+                "default": "",
+                "editable": True,
+            },
+            {
+                "key": APPLICANT_PHONE_CONFIG_KEY,
+                "label": "phone number",
+                "description": "shown below the email in the cover letter sender block",
+                "control": "text",
+                "input_type": "tel",
+                "autocomplete": "tel",
+                "value": applicant_phone,
                 "default": "",
                 "editable": True,
             },
@@ -3670,6 +3684,7 @@ def build_role_cover_letter(
         latex = _normalize_cover_letter_latex(
             draft.latex,
             hiring_contact=find_named_hiring_contact(role_for_prompt.get("description")),
+            role_title=str(role_for_prompt.get("title") or ""),
         )
         example_ids = draft.example_ids
         source = "ai_cover_letter"
@@ -3685,6 +3700,7 @@ def build_role_cover_letter(
                 other_experience_context=experience_context,
             ),
             hiring_contact=find_named_hiring_contact(role_for_prompt.get("description")),
+            role_title=str(role_for_prompt.get("title") or ""),
         )
         example_ids = []
         source = "local_cover_letter_fallback"
@@ -3758,6 +3774,7 @@ def build_role_cover_letter(
             latex = _normalize_cover_letter_latex(
                 draft.latex,
                 hiring_contact=find_named_hiring_contact(role_for_prompt.get("description")),
+                role_title=str(role_for_prompt.get("title") or ""),
             )
             example_ids = draft.example_ids
     raise AssertionError("bounded cover letter generation loop did not return")
@@ -3768,6 +3785,7 @@ def _load_applicant_profile(connection: Any) -> ApplicantProfile:
         first_name=get_config_value(connection, APPLICANT_FIRST_NAME_CONFIG_KEY) or "",
         last_name=get_config_value(connection, APPLICANT_LAST_NAME_CONFIG_KEY) or "",
         email=get_config_value(connection, APPLICANT_EMAIL_CONFIG_KEY) or "",
+        phone=get_config_value(connection, APPLICANT_PHONE_CONFIG_KEY) or "",
         institution=get_config_value(connection, APPLICANT_INSTITUTION_CONFIG_KEY) or "",
         degree=get_config_value(connection, APPLICANT_DEGREE_CONFIG_KEY) or "",
     )
@@ -3779,6 +3797,7 @@ def save_role_cover_letter(role: dict[str, Any], latex: str) -> dict[str, Any]:
         _normalize_cover_letter_latex(
             latex,
             hiring_contact=find_named_hiring_contact(role.get("description")),
+            role_title=str(role.get("title") or ""),
         ),
         source="edited_cover_letter",
         example_ids=[],
@@ -4406,7 +4425,10 @@ def _write_role_cover_letter(
 
 
 def _normalize_cover_letter_latex(
-    latex: str, *, hiring_contact: str | None = None
+    latex: str,
+    *,
+    hiring_contact: str | None = None,
+    role_title: str | None = None,
 ) -> str:
     content = _normalize_cover_letter_text_characters(latex.strip())
     content = _strip_cover_letter_em_dashes(content)
@@ -4435,6 +4457,7 @@ def _normalize_cover_letter_latex(
     content = _normalize_cover_letter_signature(content)
     content = _repair_broken_cover_letter_links(content)
     content = _normalize_manual_cover_letter_header(_left_align_cover_letter_header(content))
+    content = _ensure_cover_letter_role_title_header(content, role_title=role_title)
     return f"{content.rstrip()}\n"
 
 
@@ -4513,6 +4536,8 @@ def _normalize_cover_letter_page_layout(latex: str) -> str:
     content = re.sub(r"\\setlength\{\\parskip\}\{[^}]*\}\s*", "", content)
     content = re.sub(r"\\setlength\{\\parindent\}\{[^}]*\}\s*", "", content)
     content = re.sub(r"\\linespread\{[^}]*\}\s*", "", content)
+    content = re.sub(r"\\(?:ex)?hyphenpenalty\s*=\s*\d+\s*", "", content)
+    content = re.sub(r"\\setlength\{\\emergencystretch\}\{[^}]*\}\s*", "", content)
     content = re.sub(r"\\pagestyle\{[^}]*\}\s*", "", content)
     content = re.sub(r"\\fancyhf\{[^}]*\}\s*", "", content)
     content = re.sub(r"\\fancyfoot\{[^}]*\}\s*", "", content)
@@ -4529,6 +4554,9 @@ def _normalize_cover_letter_page_layout(latex: str) -> str:
     layout = (
         "\\setlength{\\parskip}{0.55em}\n"
         "\\setlength{\\parindent}{1.5em}\n"
+        "\\hyphenpenalty=10000\n"
+        "\\exhyphenpenalty=10000\n"
+        "\\setlength{\\emergencystretch}{2em}\n"
         "\\pagestyle{empty}\n"
     )
     if "\\begin{document}" in content:
@@ -4648,6 +4676,55 @@ def _normalize_manual_cover_letter_header(latex: str) -> str:
         + "\n\\end{tabular}\n\\vspace{1em}\n"
     )
     return latex[: header_match.start()] + header + latex[header_match.end() :]
+
+
+def _ensure_cover_letter_role_title_header(latex: str, *, role_title: str | None) -> str:
+    title = " ".join(str(role_title or "").split())
+    if not title:
+        return latex
+
+    escaped_title = _escape_latex_role_title(title)
+    document_start = latex.find("\\begin{document}")
+    salutation_match = re.search(r"(?:\\noindent\s+)?Dear\s+|\\opening\{", latex)
+    header_end = salutation_match.start() if salutation_match is not None else len(latex)
+    header_start = document_start if document_start >= 0 else 0
+
+    date_pattern = re.compile(
+        r"(?m)^(?P<indent>[ \t]*)(?P<date>"
+        r"(?:(?:January|February|March|April|May|June|July|August|September|October|"
+        r"November|December)\s+\d{1,2},\s+\d{4}|\\today)"
+        r"(?P<suffix>\\par)?[ \t]*)$"
+    )
+    date_matches = list(date_pattern.finditer(latex, header_start, header_end))
+    if not date_matches:
+        return latex
+    date_match = date_matches[-1]
+    recipient_start = max(
+        header_start,
+        latex.rfind("\\vspace", header_start, date_match.start()),
+        latex.rfind("\\noindent", header_start, date_match.start()),
+        latex.rfind("\\begin{tabular}", header_start, date_match.start()),
+    )
+    if escaped_title in latex[recipient_start : date_match.start()]:
+        return latex
+
+    title_line = f"{date_match.group('indent')}{escaped_title}\\\\\n"
+    return latex[: date_match.start()] + title_line + latex[date_match.start() :]
+
+
+def _escape_latex_role_title(value: str) -> str:
+    escaped = value.replace("\\", r"\textbackslash{}")
+    for character, replacement in (
+        ("&", r"\&"),
+        ("%", r"\%"),
+        ("$", r"\$"),
+        ("#", r"\#"),
+        ("_", r"\_"),
+        ("{", r"\{"),
+        ("}", r"\}"),
+    ):
+        escaped = escaped.replace(character, replacement)
+    return escaped
 
 
 def _latex_header_lines(address: str) -> list[str]:
@@ -4984,6 +5061,12 @@ def _clean_applicant_profile_text(key: str, value: object) -> str:
         local_part, separator, domain = cleaned.partition("@")
         if not separator or not local_part or "." not in domain:
             raise ValueError("Applicant email must be a valid email address")
+    if key == APPLICANT_PHONE_CONFIG_KEY and cleaned:
+        if re.search(r"[^0-9+().\- ]", cleaned):
+            raise ValueError("Applicant phone number contains unsupported characters")
+        digit_count = sum(character.isdigit() for character in cleaned)
+        if not 7 <= digit_count <= 15:
+            raise ValueError("Applicant phone number must contain 7 to 15 digits")
     return cleaned
 
 

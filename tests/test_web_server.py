@@ -351,8 +351,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=react-ts-20260829-13" in index_markup
-        assert "/assets/build/app.js?v=react-ts-20260829-16" in index_markup
+        assert "/assets/app.css?v=react-ts-20260829-14" in index_markup
+        assert "/assets/build/app.js?v=react-ts-20260829-18" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -388,8 +388,18 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
             app_javascript
         )
         assert "autoprepJobHasGenerationFailure(job)" in app_javascript
+        assert "autoprepCoverLetterIsGenerating(job)" in app_javascript
+        assert '" is-cover-letter-generating"' in app_javascript
+        assert (
+            "const coverLetterGenerating =\n"
+            "      !hasGenerationFailure && autoprepCoverLetterIsGenerating(job);"
+        ) in app_javascript
+        assert ".prepped-list-item.is-cover-letter-generating" in app_styles
+        assert "@keyframes prepped-cover-letter-pulse" in app_styles
+        assert "prefers-reduced-motion: reduce" in app_styles
         failed_list_item_class = (
-            'class="prepped-list-item${hasGenerationFailure ? '
+            'class="prepped-list-item${coverLetterGenerating ? '
+            '" is-cover-letter-generating" : ""}${hasGenerationFailure ? '
             '" has-generation-failure" : ""}${activeClass}"'
         )
         assert failed_list_item_class in app_javascript
@@ -1068,6 +1078,7 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
             "first_name": "Jake",
             "last_name": "Yeo",
             "email": "jake@example.com",
+            "phone": "",
             "institution": "University of Victoria",
             "degree": "Software Engineering",
         }
@@ -1360,7 +1371,55 @@ def test_cover_letter_latex_normalizer_adds_compact_one_page_layout() -> None:
     assert "\\setlength{\\parindent}{1.5em}" in normalized
     assert "\\linespread{0.97}" not in normalized
     assert "\\pagestyle{empty}" in normalized
+    assert "\\hyphenpenalty=10000" in normalized
+    assert "\\exhyphenpenalty=10000" in normalized
+    assert "\\setlength{\\emergencystretch}{2em}" in normalized
     assert normalized.index("\\setlength{\\parskip}") < normalized.index("\\begin{document}")
+
+
+def test_cover_letter_latex_normalizer_adds_role_title_to_recipient_header() -> None:
+    normalized = web_server._normalize_cover_letter_latex(
+        "\\documentclass[11pt]{article}\n"
+        "\\begin{document}\n"
+        "\\noindent Apple\\\\\n"
+        "Remote\\\\\n"
+        "August 29, 2026\\par\n"
+        "\\vspace{1.1em}\n"
+        "\\noindent Dear Hiring Manager,\\par\n"
+        "Body.\n"
+        "\\end{document}",
+        role_title="Software Engineering Intern",
+    )
+
+    recipient_header = normalized[
+        normalized.index("\\noindent Apple") : normalized.index("Dear Hiring Manager")
+    ]
+    assert "Remote\\\\\nSoftware Engineering Intern\\\\\nAugust 29, 2026" in recipient_header
+    assert normalized.count("Software Engineering Intern") == 1
+
+
+def test_cover_letter_latex_normalizer_does_not_mistake_sender_degree_for_role_title() -> None:
+    normalized = web_server._normalize_cover_letter_latex(
+        "\\documentclass[letterpaper,11pt]{article}\n"
+        "\\begin{document}\n"
+        "\\noindent Jane Doe\\\\\n"
+        "Software Engineer\\\\\n"
+        "jane@example.com\\par\n"
+        "\\vspace{1em}\n"
+        "\\noindent Acme\\\\\n"
+        "Remote\\\\\n"
+        "August 29, 2026\\par\n"
+        "\\vspace{1em}\n"
+        "\\noindent Dear Hiring Manager,\\par\n"
+        "Body.\n"
+        "\\end{document}",
+        role_title="Software Engineer",
+    )
+
+    recipient_header = normalized[
+        normalized.index("\\noindent Acme") : normalized.index("Dear Hiring Manager")
+    ]
+    assert "Remote\\\\\nSoftware Engineer\\\\\nAugust 29, 2026" in recipient_header
 
 
 def test_cover_letter_latex_normalizer_separates_and_professionalizes_salutation() -> None:
@@ -2665,6 +2724,17 @@ def test_config_payload_returns_current_settings(
             "editable": True,
         },
         {
+            "key": "applicant_phone",
+            "label": "phone number",
+            "description": "shown below the email in the cover letter sender block",
+            "control": "text",
+            "input_type": "tel",
+            "autocomplete": "tel",
+            "value": "",
+            "default": "",
+            "editable": True,
+        },
+        {
             "key": "applicant_institution",
             "label": "institution",
             "description": "school or university used in cover letters",
@@ -2838,6 +2908,7 @@ def test_config_endpoint_updates_settings(
                     "applicant_first_name": "Callum",
                     "applicant_last_name": "Mackenzie",
                     "applicant_email": "callum@example.com",
+                    "applicant_phone": "+1 (250) 555-0123",
                     "applicant_institution": "University of Victoria",
                     "applicant_degree": "Bachelor of Engineering in Software Engineering",
                     "cover_letter_model": "gpt-5.6-terra",
@@ -2866,6 +2937,7 @@ def test_config_endpoint_updates_settings(
             "applicant_first_name": "Callum",
             "applicant_institution": "University of Victoria",
             "applicant_last_name": "Mackenzie",
+            "applicant_phone": "+1 (250) 555-0123",
             "autoprep_tailor_resume": "false",
             "autoprep_resume_prompt": "Prioritize product leadership evidence.",
             "autoprep_cover_letter_prompt": "Review every indexed source first.",
@@ -2884,6 +2956,7 @@ def test_config_endpoint_updates_settings(
             "applicant_first_name": "Callum",
             "applicant_institution": "University of Victoria",
             "applicant_last_name": "Mackenzie",
+            "applicant_phone": "+1 (250) 555-0123",
             "autoprep_tailor_resume": False,
             "autoprep_resume_prompt": "Prioritize product leadership evidence.",
             "autoprep_cover_letter_prompt": "Review every indexed source first.",
