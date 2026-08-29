@@ -3748,7 +3748,10 @@ def _load_applicant_profile(connection: Any) -> ApplicantProfile:
 def save_role_cover_letter(role: dict[str, Any], latex: str) -> dict[str, Any]:
     return _write_role_cover_letter(
         role,
-        _normalize_cover_letter_latex(latex),
+        _normalize_cover_letter_latex(
+            latex,
+            hiring_contact=find_named_hiring_contact(role.get("description")),
+        ),
         source="edited_cover_letter",
         example_ids=[],
         tweaks=None,

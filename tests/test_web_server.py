@@ -1040,6 +1040,12 @@ def test_cover_letter_save_endpoint_writes_edited_latex(
         env=env,
     )
     db.ensure_initialized()
+    with db.connect() as connection:
+        connection.execute(
+            "UPDATE roles SET description = ? WHERE id = 1",
+            ("Hiring Manager: Jane Doe\nApply by Friday.",),
+        )
+        connection.commit()
 
     server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -1053,6 +1059,7 @@ def test_cover_letter_save_endpoint_writes_edited_latex(
                     "latex": (
                         "\\documentclass{letter}\n"
                         "\\begin{document}\n"
+                        "Dear Hiring Manager,\n\n"
                         "Edited Acme letter\n"
                         "\\end{document}"
                     )
@@ -1071,6 +1078,8 @@ def test_cover_letter_save_endpoint_writes_edited_latex(
         assert cover_letter["summary"] == "Saved edited cover letter for Backend Intern at Acme."
         assert cover_letter["pdf_base64"]
         assert "Edited Acme letter" in cover_letter["latex"]
+        assert "Dear Jane Doe" in cover_letter["latex"]
+        assert "Dear Hiring Manager" not in cover_letter["latex"]
         assert (resume_root / "role-1" / "cover-letter.tex").read_text() == cover_letter["latex"]
     finally:
         server.shutdown()
