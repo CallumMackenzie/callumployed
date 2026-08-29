@@ -3305,6 +3305,7 @@ def _prepare_autoprep_resume(
                 "ready",
                 artifact_path=counterpart_path,
                 artifact_directory=str(artifact_directory),
+                commit=False,
             )
         mark_autoprep_document(
             connection,
@@ -3385,6 +3386,7 @@ def _prepare_autoprep_cover_letter(
                 "ready",
                 artifact_path=counterpart_path,
                 artifact_directory=str(artifact_directory),
+                commit=False,
             )
         mark_autoprep_document(
             connection,

@@ -111,6 +111,42 @@ def test_enqueue_rejects_roles_that_are_not_interested(tmp_path: Path) -> None:
             enqueue_autoprep_jobs(connection, [role_id], idempotency_key="attempt")
 
 
+def test_document_updates_can_share_one_atomic_transaction(tmp_path: Path) -> None:
+    database = tmp_path / "autoprep-atomic-documents.sqlite3"
+    with db.connect(database) as connection:
+        db.run_migrations(connection)
+        ensure_autoprep_schema(connection)
+        role_id = _interested_role(connection)
+        [job] = enqueue_autoprep_jobs(connection, [role_id], idempotency_key="atomic")
+
+        mark_autoprep_document(
+            connection,
+            job["id"],
+            "resume",
+            "ready",
+            artifact_path="/old/resume.pdf",
+            artifact_directory="/old",
+        )
+        mark_autoprep_document(
+            connection,
+            job["id"],
+            "cover_letter",
+            "ready",
+            artifact_path="/new/cover-letter.pdf",
+            artifact_directory="/new",
+            commit=False,
+        )
+        pending = get_autoprep_job(connection, job["id"])
+        assert pending["cover_letter_artifact_path"] == "/new/cover-letter.pdf"
+        assert pending["artifact_directory"] == "/new"
+
+        connection.rollback()
+        restored = get_autoprep_job(connection, job["id"])
+        assert restored["resume_artifact_path"] == "/old/resume.pdf"
+        assert restored["cover_letter_artifact_path"] is None
+        assert restored["artifact_directory"] == "/old"
+
+
 def test_partial_failure_preserves_resume_and_retries_only_cover_letter(tmp_path: Path) -> None:
     database = tmp_path / "autoprep-partial.sqlite3"
     resume_pdf = tmp_path / "resume.pdf"

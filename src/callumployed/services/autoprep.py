@@ -442,6 +442,7 @@ def mark_autoprep_document(
     artifact_directory: str | None = None,
     resume_latex: str | None = None,
     error: str | None = None,
+    commit: bool = True,
 ) -> dict[str, Any]:
     _validate_document_status(document_kind, status)
     prefix = _document_prefix(document_kind)
@@ -465,7 +466,8 @@ def mark_autoprep_document(
         tuple(values),
     )
     _refresh_overall_status(connection, job_id)
-    connection.commit()
+    if commit:
+        connection.commit()
     return get_autoprep_job(connection, job_id)
 
 
