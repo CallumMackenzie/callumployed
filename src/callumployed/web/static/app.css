@@ -1175,10 +1175,10 @@ h1 {
 }
 
 .status-pane[data-bucket="applied"] {
-  --bucket: #2257ad;
-  --bucket-bg: #e7f0fb;
-  --bucket-line: #bfd4ec;
-  --bucket-glow: rgb(34 87 173 / 0.18);
+  --bucket: var(--purple);
+  --bucket-bg: var(--purple-soft);
+  --bucket-line: #d3c1ef;
+  --bucket-glow: rgb(95 43 216 / 0.2);
 }
 
 .status-pane[data-bucket="OA"] {
@@ -1210,10 +1210,10 @@ h1 {
 }
 
 .status-pane[data-bucket="closed"] {
-  --bucket: #53606b;
-  --bucket-bg: #eceff1;
-  --bucket-line: #d1d8dd;
-  --bucket-glow: rgb(83 96 107 / 0.16);
+  --bucket: #4b3d78;
+  --bucket-bg: #f2edff;
+  --bucket-line: #d6c8f0;
+  --bucket-glow: rgb(75 61 120 / 0.18);
 }
 
 .status-pane[data-bucket="archived"] {

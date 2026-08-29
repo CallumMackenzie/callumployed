@@ -50,6 +50,37 @@ MAX_COVER_LETTER_EXAMPLE_CONTEXT_CHARS = 12000
 MAX_REGENERATION_TWEAKS_CHARS = 3000
 MAX_PREVIOUS_COVER_LETTER_CHARS = 12000
 
+_PERSON_NAME = r"[A-Z][A-Za-z'’-]+(?:[ \t]+[A-Z][A-Za-z'’-]+){1,3}"
+_TITLE_CASE_PERSON_NAME = r"[A-Z][a-z'’-]+(?:[ \t]+[A-Z][a-z'’-]+){1,3}"
+_HIRING_CONTACT_PATTERNS = (
+    re.compile(
+        rf"(?m)^\s*(?i:hiring manager|recruiter|contact(?: person)?)\s*[:\-]\s*"
+        rf"(?P<name>{_PERSON_NAME})\b"
+    ),
+    re.compile(
+        rf"(?i:\bcontact)\s+(?P<name>{_TITLE_CASE_PERSON_NAME})\b"
+        r"(?=\s+(?i:for|at|with|regarding)\b|[.,;\n])"
+    ),
+)
+_NON_PERSON_CONTACT_NAMES = {
+    "Hiring Team",
+    "Our Team",
+    "Recruiting Team",
+    "Talent Acquisition",
+}
+_NON_PERSON_CONTACT_TOKENS = {
+    "acquisition",
+    "apply",
+    "careers",
+    "department",
+    "details",
+    "human",
+    "job",
+    "now",
+    "resources",
+    "team",
+}
+
 
 def _bounded_context_text(value: object, limit: int) -> str:
     text = str(value or "")
@@ -61,6 +92,22 @@ def _bounded_context_text(value: object, limit: int) -> str:
     available = limit - len(marker)
     head_length = available * 2 // 3
     return f"{text[:head_length]}{marker}{text[-(available - head_length):]}"
+
+
+def find_named_hiring_contact(description: object) -> str | None:
+    text = str(description or "")
+    for pattern in _HIRING_CONTACT_PATTERNS:
+        match = pattern.search(text)
+        if match is None:
+            continue
+        name = " ".join(match.group("name").split())
+        name_tokens = {token.casefold() for token in name.split()}
+        if (
+            name not in _NON_PERSON_CONTACT_NAMES
+            and name_tokens.isdisjoint(_NON_PERSON_CONTACT_TOKENS)
+        ):
+            return name
+    return None
 
 
 def _bounded_context_items(
@@ -159,6 +206,12 @@ the retrieved examples:
   or extra links in the sender/contact header
 - use proper LaTeX line breaks (`\\`) for stacked header/contact/signature
   lines; never use a single trailing backslash as a line break
+- inspect the complete job description for an explicitly named hiring contact,
+  recruiter, or hiring manager. If one is clearly identified, address that person
+  as `Dear <name>,`; otherwise use `Dear Hiring Manager,`. Never use
+  `Dear Hiring Team,`, and never guess a person's name
+- keep the salutation in its own flush-left paragraph. Never place the first body
+  sentence on the same line or in the same LaTeX paragraph as the salutation
 - do not put manual `\\` line breaks after body paragraphs; separate body
   paragraphs with blank lines
 - do not use the fullpage or parskip packages
@@ -185,18 +238,22 @@ recipient lines, greeting if needed, and body paragraphs:
 \\documentclass[letterpaper,11pt]{article}
 \\usepackage[margin=1in]{geometry}
 \\usepackage[hidelinks]{hyperref}
-\\setlength{\\parskip}{0.85em}
-\\setlength{\\parindent}{0pt}
+\\setlength{\\parskip}{0.55em}
+\\setlength{\\parindent}{1.5em}
 \\pagestyle{empty}
 \\begin{document}
-<applicant_profile.latex_sender_block>\\\\[12pt]
-<recipient/company lines>\\\\[12pt]
+\\noindent <applicant_profile.latex_sender_block>\\par
+\\vspace{1.1em}
+\\noindent <recipient/company lines, including date>\\par
+\\vspace{1.1em}
 
-Dear Hiring Team,
+\\noindent Dear <explicitly named hiring contact, or Hiring Manager>,\\par
+\\vspace{0.35em}
 
-<three short body paragraphs>
+<three or four concise body paragraphs>
 
-Sincerely,\\\\[12pt]
+\\vspace{0.35em}
+\\noindent Sincerely,\\\\[12pt]
 <applicant_profile.signature_name>
 \\end{document}
 
@@ -349,6 +406,10 @@ def build_cover_letter_prompt(
             "title": role.get("title"),
             "url": role.get("role_url"),
             "location": role.get("location"),
+            "description": _bounded_context_text(
+                role.get("description"), MAX_ROLE_CONTEXT_CHARS
+            ),
+            "named_hiring_contact": find_named_hiring_contact(role.get("description")),
             "role_context_chunks": _bounded_context_items(
                 role_context or [], MAX_ROLE_CONTEXT_CHARS, include_similarity=True
             ),

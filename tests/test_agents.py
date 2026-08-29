@@ -12,6 +12,7 @@ from callumployed.agents.cover_letter import (
     ApplicantProfile,
     CoverLetterAgent,
     build_cover_letter_prompt,
+    find_named_hiring_contact,
 )
 from callumployed.agents.posting_link_classifier import (
     PostingLinkClassificationBatch,
@@ -185,9 +186,10 @@ def test_cover_letter_prompt_includes_resume_job_and_tool_results() -> None:
     assert "job_context" in prompt
     assert "other_experience_context" in prompt
     assert "projects / employment history" in prompt
-    assert "may or may not already be on the resume" in prompt
+    assert "may or may not already" in prompt
     assert "Built a BLE sensor network for motion analysis." in prompt
     assert "cover_letter_example_tool_results" in prompt
+    assert '"description": "Python distributed systems internship"' in prompt
     assert "Python distributed systems internship" in prompt
     assert "Dear Stripe" in prompt
     assert "fits on one page" in prompt
@@ -211,6 +213,9 @@ def test_cover_letter_prompt_includes_resume_job_and_tool_results() -> None:
     assert "specific responsibilities or requirements from the posting" in prompt
     assert "avoid generic filler" in prompt
     assert "Use this exact LaTeX scaffold" in prompt
+    assert "named hiring contact" in prompt
+    assert "Dear Hiring Manager" in prompt
+    assert prompt.count("Dear Hiring Team") == 1
     assert "\\documentclass[letterpaper,11pt]{article}" in prompt
     assert "\\pdfgentounicode" in prompt
     assert "plain ASCII apostrophes and quotes" in prompt
@@ -223,6 +228,22 @@ def test_cover_letter_prompt_includes_resume_job_and_tool_results() -> None:
     assert "previous_cover_letter_context" in prompt
     assert "revise this prior draft according to regeneration_tweaks" in prompt
     assert "Old draft" in prompt
+
+
+@pytest.mark.parametrize(
+    ("description", "expected"),
+    [
+        ("Hiring Manager: Jane Doe\nApply by Friday.", "Jane Doe"),
+        ("Recruiter - Jordan Lee\nApplications are open.", "Jordan Lee"),
+        ("Questions? Contact Priya Shah for details.", "Priya Shah"),
+        ("Recruiter: Apply Now\nApplications are open.", None),
+        ("Your recruiter can explain compensation.", None),
+    ],
+)
+def test_find_named_hiring_contact_requires_an_explicit_person(
+    description: str, expected: str | None
+) -> None:
+    assert find_named_hiring_contact(description) == expected
 
 
 def test_applicant_profile_omits_unset_optional_sender_lines() -> None:

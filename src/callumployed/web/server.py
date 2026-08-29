@@ -37,6 +37,7 @@ from pypdf import PdfReader
 
 from callumployed.agents.cover_letter import (
     ApplicantProfile,
+    find_named_hiring_contact,
     generate_cover_letter,
     strip_cover_letter_dash_punctuation,
 )
@@ -3609,7 +3610,10 @@ def build_role_cover_letter(
                 settings=llm_settings,
             )
         )
-        latex = _normalize_cover_letter_latex(draft.latex)
+        latex = _normalize_cover_letter_latex(
+            draft.latex,
+            hiring_contact=find_named_hiring_contact(role_for_prompt.get("description")),
+        )
         example_ids = draft.example_ids
         source = "ai_cover_letter"
     except Exception:
@@ -3622,7 +3626,8 @@ def build_role_cover_letter(
                 resume,
                 applicant_profile=applicant_profile,
                 other_experience_context=experience_context,
-            )
+            ),
+            hiring_contact=find_named_hiring_contact(role_for_prompt.get("description")),
         )
         example_ids = []
         source = "local_cover_letter_fallback"
@@ -3693,7 +3698,10 @@ def build_role_cover_letter(
                 raise RuntimeError(
                     "AI cover letter regeneration was unavailable."
                 ) from generation_error
-            latex = _normalize_cover_letter_latex(draft.latex)
+            latex = _normalize_cover_letter_latex(
+                draft.latex,
+                hiring_contact=find_named_hiring_contact(role_for_prompt.get("description")),
+            )
             example_ids = draft.example_ids
     raise AssertionError("bounded cover letter generation loop did not return")
 
@@ -4202,18 +4210,23 @@ def _cover_letter_body_word_count(latex: str) -> int:
     if "\\begin{document}" not in latex or "\\end{document}" not in latex:
         return 0
     document = latex.split("\\begin{document}", 1)[1].split("\\end{document}", 1)[0]
-    salutation = re.search(r"(?im)^\s*Dear\s+[^,\n]+,\s*", document)
+    salutation = re.search(
+        r"(?im)^\s*(?:\\noindent\s+)?Dear\s+[^,\n]+,\s*(?:\\par)?\s*",
+        document,
+    )
     if salutation is None:
         return 0
     body = document[salutation.end() :]
     closing = re.search(
-        r"(?im)^\s*(?:Sincerely|Best regards|Regards|Respectfully|Warm regards)[,:]?\s*",
+        r"(?im)^\s*(?:\\noindent\s+)?"
+        r"(?:Sincerely|Best regards|Regards|Respectfully|Warm regards)[,:]?\s*",
         body,
     )
     if closing is None:
         return 0
     body = body[: closing.start()]
     body = re.sub(r"(?m)(?<!\\)%.*$", "", body)
+    body = re.sub(r"\\(?:vspace|hspace)\*?\{[^{}]*\}", " ", body)
     body = re.sub(r"\\[A-Za-z@]+(?:\[[^\]]*\])?", " ", body)
     body = re.sub(r"\\([%&#_$])", r"\1", body)
     return len(re.findall(r"[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*", body))
@@ -4326,7 +4339,9 @@ def _write_role_cover_letter(
     }
 
 
-def _normalize_cover_letter_latex(latex: str) -> str:
+def _normalize_cover_letter_latex(
+    latex: str, *, hiring_contact: str | None = None
+) -> str:
     content = _normalize_cover_letter_text_characters(latex.strip())
     content = _strip_cover_letter_em_dashes(content)
     content = _strip_resume_pdf_compatibility_commands(content)
@@ -4334,6 +4349,13 @@ def _normalize_cover_letter_latex(latex: str) -> str:
     content = _escape_unescaped_latex_percent(content)
     content = _escape_unescaped_latex_ampersands(content)
     content = _repair_single_cover_letter_line_breaks(content)
+    content = _normalize_cover_letter_salutation(content, hiring_contact=hiring_contact)
+    content = re.sub(
+        r"(?:\\vspace\{0\.35em\}\s*){2,}",
+        "\\\\vspace{0.35em}\n\n",
+        content,
+    )
+    content = _normalize_cover_letter_closing(content)
     content = _remove_cover_letter_website_header_lines(content)
     if "\\documentclass" not in content:
         content = (
@@ -4438,7 +4460,11 @@ def _normalize_cover_letter_page_layout(latex: str) -> str:
     content = re.sub(r"\\ragged(?:bottom|right)\s*", "", content)
     content = re.sub(r"\\setlength\{\\tabcolsep\}\{[^}]*\}\s*", "", content)
     content = re.sub(r"\\titleformat\{\\section\}.*?\n", "", content)
-    layout = "\\setlength{\\parskip}{0.85em}\n\\setlength{\\parindent}{0pt}\n\\pagestyle{empty}\n"
+    layout = (
+        "\\setlength{\\parskip}{0.55em}\n"
+        "\\setlength{\\parindent}{1.5em}\n"
+        "\\pagestyle{empty}\n"
+    )
     if "\\begin{document}" in content:
         return content.replace("\\begin{document}", f"{layout}\\begin{{document}}", 1)
     return f"{layout}{content}"
@@ -4449,6 +4475,56 @@ def _repair_single_cover_letter_line_breaks(latex: str) -> str:
         r"(?m)(\S.*?)\s+\\$",
         lambda match: f"{match.group(1)}\\\\",
         latex,
+    )
+
+
+def _normalize_cover_letter_salutation(
+    latex: str, *, hiring_contact: str | None = None
+) -> str:
+    content = re.sub(
+        r"\\opening\{Dear\s+Hiring\s+Team,?\}",
+        r"\\opening{Dear Hiring Manager,}",
+        latex,
+        flags=re.IGNORECASE,
+    )
+    if hiring_contact:
+        content = re.sub(
+            r"\\opening\{Dear\s+[^{}]+,?\}",
+            lambda _match: f"\\opening{{Dear {hiring_contact},}}",
+            content,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+    salutation_pattern = re.compile(
+        r"(?m)^[ \t]*(?:\\noindent[ \t]+)?"
+        r"(?P<salutation>Dear[ \t]+[^,\n{}]{1,100})[,;:]"
+        r"(?:[ \t]*\\par)?[ \t]*(?P<body>[^\n]*)$",
+        flags=re.IGNORECASE,
+    )
+
+    def replace_salutation(match: re.Match[str]) -> str:
+        salutation = (
+            f"Dear {hiring_contact}"
+            if hiring_contact
+            else re.sub(
+                r"(?i)^Dear\s+Hiring\s+Team$",
+                "Dear Hiring Manager",
+                match.group("salutation").strip(),
+            )
+        )
+        rendered = f"\\noindent {salutation},\\par\n\\vspace{{0.35em}}"
+        body = match.group("body").strip()
+        return f"{rendered}\n\n{body}" if body else rendered
+
+    return salutation_pattern.sub(replace_salutation, content, count=1)
+
+
+def _normalize_cover_letter_closing(latex: str) -> str:
+    return re.sub(
+        r"(?mi)^[ \t]*(?:\\noindent[ \t]+)?(Sincerely|Best regards|Kind regards),",
+        r"\\noindent \1,",
+        latex,
+        count=1,
     )
 
 

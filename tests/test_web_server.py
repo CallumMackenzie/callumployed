@@ -344,8 +344,12 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=react-ts-20260828-10" in index_markup
+        assert "/assets/app.css?v=react-ts-20260828-11" in index_markup
         assert "/assets/build/app.js?v=react-ts-20260828-10" in index_markup
+        assert '.status-pane[data-bucket="applied"]' in app_styles
+        assert "--bucket: var(--purple);" in app_styles
+        assert '.status-pane[data-bucket="closed"]' in app_styles
+        assert "--bucket: #4b3d78;" in app_styles
         assert "résumé" not in markup
         assert "résumé" not in app_javascript
         assert "grid-template-columns: minmax(0, 1fr);" in app_styles
@@ -974,7 +978,8 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         assert settings.model == "gpt-5.6-terra"
         saved_latex = (resume_root / "role-1" / "cover-letter.tex").read_text()
         assert "Dear Acme" in saved_latex
-        assert "\\setlength{\\parskip}{0.85em}" in saved_latex
+        assert "\\setlength{\\parskip}{0.55em}" in saved_latex
+        assert "\\setlength{\\parindent}{1.5em}" in saved_latex
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -1243,11 +1248,55 @@ def test_cover_letter_latex_normalizer_adds_compact_one_page_layout() -> None:
 
     assert "\\documentclass{letter}" in normalized
     assert "\\usepackage[margin=1in]{geometry}" in normalized
-    assert "\\setlength{\\parskip}{0.85em}" in normalized
-    assert "\\setlength{\\parindent}{0pt}" in normalized
+    assert "\\setlength{\\parskip}{0.55em}" in normalized
+    assert "\\setlength{\\parindent}{1.5em}" in normalized
     assert "\\linespread{0.97}" not in normalized
     assert "\\pagestyle{empty}" in normalized
     assert normalized.index("\\setlength{\\parskip}") < normalized.index("\\begin{document}")
+
+
+def test_cover_letter_latex_normalizer_separates_and_professionalizes_salutation() -> None:
+    normalized = web_server._normalize_cover_letter_latex(
+        "\\documentclass[11pt]{article}\n"
+        "\\begin{document}\n"
+        "Dear Hiring Team, I am applying for the role.\n\n"
+        "Second paragraph.\n\n"
+        "Sincerely,\\\\[12pt]\nJake Yeo\n"
+        "\\end{document}"
+    )
+
+    assert "Dear Hiring Team" not in normalized
+    assert (
+        "\\noindent Dear Hiring Manager,\\par\n"
+        "\\vspace{0.35em}\n\n"
+        "I am applying for the role."
+    ) in normalized
+
+
+def test_cover_letter_latex_normalizer_deduplicates_salutation_spacing() -> None:
+    normalized = web_server._normalize_cover_letter_latex(
+        "\\documentclass[11pt]{article}\n"
+        "\\begin{document}\n"
+        "\\noindent Dear Hiring Manager,\\par\n"
+        "\\vspace{0.35em}\n\n"
+        "First paragraph.\n"
+        "\\end{document}"
+    )
+
+    assert normalized.count("\\vspace{0.35em}") == 1
+
+
+def test_cover_letter_latex_normalizer_uses_explicit_hiring_contact() -> None:
+    normalized = web_server._normalize_cover_letter_latex(
+        "\\documentclass[11pt]{article}\n"
+        "\\begin{document}\n"
+        "Dear Hiring Manager, I am applying for the role.\n"
+        "\\end{document}",
+        hiring_contact="Jane Doe",
+    )
+
+    assert "\\noindent Dear Jane Doe,\\par" in normalized
+    assert "Dear Hiring Manager" not in normalized
 
 
 def test_cover_letter_latex_normalizer_strips_em_dashes() -> None:
@@ -1471,7 +1520,8 @@ def test_cover_letter_latex_normalizer_repairs_single_slash_article_header() -> 
     assert "mailto:callum@camackenzie.com" in normalized
     assert "\\href{mailto:callum@camackenzie.com}{callum@camackenzie.com}\\\\[12pt]" in normalized
     assert "50\\%." in normalized
-    assert "\\setlength{\\parskip}{0.85em}" in normalized
+    assert "\\setlength{\\parskip}{0.55em}" in normalized
+    assert "\\setlength{\\parindent}{1.5em}" in normalized
     assert "Callum Mackenzie\\\\\nUniversity of British Columbia\\\\" in normalized
     assert "Sincerely,\\\\\nCallum Mackenzie" in normalized
 
@@ -1864,6 +1914,19 @@ Email: owner@example.com
         source.replace("https://example.com/proof", "https://example.com/other"),
     ):
         assert web_server._missing_source_resume_entries(source, candidate)
+
+
+def test_cover_letter_body_word_count_handles_professional_layout_commands() -> None:
+    latex = (
+        "\\documentclass{article}\n\\begin{document}\n"
+        "\\noindent Dear Hiring Manager,\\par\n"
+        "\\vspace{0.35em}\n\n"
+        "First body paragraph has five words.\n\n"
+        "\\noindent Sincerely,\\\\[12pt]\nJake Yeo\n"
+        "\\end{document}\n"
+    )
+
+    assert web_server._cover_letter_body_word_count(latex) == 6
 
 
 @pytest.mark.parametrize("body_words", [324, 401])
