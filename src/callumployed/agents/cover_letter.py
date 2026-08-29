@@ -123,6 +123,8 @@ Integrate the context deliberately:
   the final letter grounded in resume_context and job_context
 - select the 2-3 strongest overlaps between the resume and posting; do not try
   to mention every relevant technology or project
+- synthesize those experiences into smooth prose in the user's voice; do not dump
+  resume bullets into paragraphs or awkwardly combine unrelated experiences
 - tailor every body paragraph to the specific position; a paragraph that could
   be sent unchanged to another company is too generic
 - the first body paragraph must name the exact company and role, then connect
@@ -160,8 +162,9 @@ the retrieved examples:
   such as `R\\&D` and `\\%` for percentages such as `50\\%`
 - include opening and closing lines
 - keep paragraphs visually separated with vertical space
-- ensure the generated PDF fits on one page at 11pt; keep the body to 3 short
-  paragraphs plus the opening and closing, roughly 225-275 words total
+- ensure the generated PDF fits on one page at 11pt and uses the page effectively;
+  write 3-4 cohesive body paragraphs, roughly 325-400 words total, with enough
+  source-supported detail to avoid a large empty lower half of the page
 - keep it concise, specific, and honest
 - mention only experience supported by resume_context or other_experience_context
 - align wording with the posting's strongest requirements

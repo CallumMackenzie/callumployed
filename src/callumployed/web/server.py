@@ -162,10 +162,12 @@ APPLICANT_EMAIL_CONFIG_KEY = "applicant_email"
 APPLICANT_INSTITUTION_CONFIG_KEY = "applicant_institution"
 APPLICANT_DEGREE_CONFIG_KEY = "applicant_degree"
 COVER_LETTER_MODEL_CONFIG_KEY = "cover_letter_model"
+AUTOPREP_TAILOR_RESUME_CONFIG_KEY = "autoprep_tailor_resume"
 LLM_PROVIDER_CONFIG_KEY = "llm_provider"
 SCAN_HEADLESS_CONFIG_KEY = "scan_headless"
 DEFAULT_LLM_PROVIDER = "openai"
 DEFAULT_COVER_LETTER_MODEL = "gpt-4.1-mini"
+DEFAULT_AUTOPREP_TAILOR_RESUME = True
 DEFAULT_SCAN_HEADLESS = False
 LLM_PROVIDER_OPTIONS = (
     ("openai", "OpenAI API key"),
@@ -2052,6 +2054,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 APPLICANT_LAST_NAME_CONFIG_KEY,
                 *APPLICANT_PROFILE_TEXT_CONFIG_KEYS,
                 COVER_LETTER_MODEL_CONFIG_KEY,
+                AUTOPREP_TAILOR_RESUME_CONFIG_KEY,
                 LLM_PROVIDER_CONFIG_KEY,
                 SCAN_HEADLESS_CONFIG_KEY,
                 "central_api_url",
@@ -2078,6 +2081,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 "internship_mode",
                 "require_software_keywords",
                 SCAN_HEADLESS_CONFIG_KEY,
+                AUTOPREP_TAILOR_RESUME_CONFIG_KEY,
             }
             if not all(
                 isinstance(value, bool) if key in bool_keys else isinstance(value, str)
@@ -2178,6 +2182,12 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                             connection,
                             COVER_LETTER_MODEL_CONFIG_KEY,
                             _clean_cover_letter_model(payload[COVER_LETTER_MODEL_CONFIG_KEY]),
+                        )
+                    if AUTOPREP_TAILOR_RESUME_CONFIG_KEY in payload:
+                        set_config_value(
+                            connection,
+                            AUTOPREP_TAILOR_RESUME_CONFIG_KEY,
+                            "true" if payload[AUTOPREP_TAILOR_RESUME_CONFIG_KEY] else "false",
                         )
                     if LLM_PROVIDER_CONFIG_KEY in payload:
                         set_config_value(
@@ -2360,6 +2370,7 @@ def build_config_payload() -> dict[str, Any]:
         configured_llm_provider = DEFAULT_LLM_PROVIDER
     llm_provider = configured_llm_provider
     cover_letter_model = DEFAULT_COVER_LETTER_MODEL
+    autoprep_tailor_resume = DEFAULT_AUTOPREP_TAILOR_RESUME
     scan_headless = DEFAULT_SCAN_HEADLESS
     with db.connect() as connection:
         db.run_migrations(connection)
@@ -2400,6 +2411,10 @@ def build_config_payload() -> dict[str, Any]:
             )
         except ValueError:
             cover_letter_model = DEFAULT_COVER_LETTER_MODEL
+        autoprep_tailor_resume = _config_bool(
+            get_config_value(connection, AUTOPREP_TAILOR_RESUME_CONFIG_KEY),
+            default=DEFAULT_AUTOPREP_TAILOR_RESUME,
+        )
         scan_headless = _config_bool(
             get_config_value(connection, SCAN_HEADLESS_CONFIG_KEY),
             default=DEFAULT_SCAN_HEADLESS,
@@ -2501,6 +2516,17 @@ def build_config_payload() -> dict[str, Any]:
                 "options": [
                     {"value": value, "label": label} for value, label in COVER_LETTER_MODEL_OPTIONS
                 ],
+            },
+            {
+                "key": AUTOPREP_TAILOR_RESUME_CONFIG_KEY,
+                "label": "tailor resumes",
+                "description": (
+                    "when off, Autoprep copies the master resume and only tailors the cover letter"
+                ),
+                "control": "toggle",
+                "value": autoprep_tailor_resume,
+                "default": DEFAULT_AUTOPREP_TAILOR_RESUME,
+                "editable": True,
             },
             {
                 "key": SCAN_HEADLESS_CONFIG_KEY,
@@ -3057,31 +3083,45 @@ def _prepare_autoprep_resume(
     role_payload: dict[str, Any],
     resume: MasterResume,
 ) -> None:
-    """Generate a tailored resume through the configured LangChain provider only."""
+    """Tailor the resume or publish the unchanged master copy, according to Settings."""
     instruction = ""
     previous_latex: str | None = None
+    tailor_resume = DEFAULT_AUTOPREP_TAILOR_RESUME
     with db.connect() as connection:
         current_job = get_autoprep_job(connection, job_id)
         instruction = str(current_job.get("resume_instruction") or "").strip()
         previous_latex = get_autoprep_resume_latex(connection, job_id)
+        tailor_resume = _config_bool(
+            get_config_value(connection, AUTOPREP_TAILOR_RESUME_CONFIG_KEY),
+            default=DEFAULT_AUTOPREP_TAILOR_RESUME,
+        )
         mark_autoprep_document(
             connection,
             job_id,
             "resume",
             "regenerating" if instruction else "generating_tweaks",
         )
-    tweaks = instruction or (
-        "Tailor this resume truthfully for the saved role context. Preserve the current "
-        "LaTeX structure, prioritize directly relevant supported experience, and do not "
-        "invent claims."
-    )
-    generated = build_role_resume(
-        role_payload,
-        resume,
-        tweaks=tweaks,
-        previous_latex=previous_latex if instruction else None,
-        required_page_count=1,
-    )
+    if tailor_resume:
+        tweaks = instruction or (
+            "Tailor this resume truthfully for the saved role context. Preserve every employer, "
+            "project, education entry, date, and link while actively improving the wording. "
+            "Do not invent claims or awkwardly combine unrelated experiences."
+        )
+        generated = build_role_resume(
+            role_payload,
+            resume,
+            tweaks=tweaks,
+            previous_latex=previous_latex if instruction else None,
+            required_page_count=1,
+        )
+    else:
+        generated = save_role_resume(
+            role_payload,
+            resume,
+            resume.content,
+            required_page_count=1,
+            minimum_page_fill_ratio=0.82,
+        )
     source_pdf = _required_generated_pdf(generated, "resume")
     artifact_directory, artifact_path = _copy_autoprep_pdf(
         role_payload, source_pdf, kind="resume"
@@ -3503,20 +3543,45 @@ def build_role_cover_letter(
                 example_ids=example_ids,
                 tweaks=tweaks,
                 required_page_count=required_page_count,
+                minimum_page_fill_ratio=0.65,
+                minimum_body_word_count=325,
+                maximum_body_word_count=400,
             )
-        except GeneratedDocumentPageCountError as error:
+        except (
+            GeneratedDocumentPageCountError,
+            GeneratedDocumentLayoutError,
+            GeneratedDocumentLengthError,
+        ) as error:
             if attempt == 2 or source != "ai_cover_letter":
                 raise RuntimeError(
-                    "Cover letter generation could not produce exactly one PDF page after "
-                    "three bounded attempts. Shorten the requested content or adjust the source."
+                    "Cover letter generation could not produce a balanced, full one-page PDF "
+                    "after three bounded attempts."
                 ) from error
-            retry_tweaks = (
-                f"{tweaks or ''}\n\n"
-                "The compiled cover letter exceeded one page. Return a complete letter that fits "
-                "exactly one PDF page. Preserve all applicant facts and the role-specific "
-                "rationale. "
-                "Tighten prose and remove repetition only; never truncate text or invent facts."
-            )
+            if isinstance(error, GeneratedDocumentLengthError):
+                direction = "expand" if error.word_count < error.minimum else "tighten"
+                retry_tweaks = (
+                    f"{tweaks or ''}\n\n"
+                    f"The cover letter body was {error.word_count} words. {direction.capitalize()} "
+                    f"the smooth, source-supported prose to {error.minimum}-{error.maximum} words. "
+                    "Do not add filler, dump resume bullets, combine unrelated experiences, or "
+                    "invent facts."
+                )
+            elif isinstance(error, GeneratedDocumentLayoutError):
+                retry_tweaks = (
+                    f"{tweaks or ''}\n\n"
+                    "The compiled cover letter was materially underfilled. Rewrite it as smooth, "
+                    "natural prose in the applicant's voice with enough source-supported detail "
+                    "to use the page effectively. Develop the strongest relevant experiences "
+                    "instead of adding filler, dumping resume bullets, or combining unrelated work."
+                )
+            else:
+                retry_tweaks = (
+                    f"{tweaks or ''}\n\n"
+                    "The compiled cover letter exceeded one page. Return a complete letter that "
+                    "fits exactly one PDF page. Preserve all applicant facts and the role-specific "
+                    "rationale. Tighten prose and remove repetition only; never truncate text or "
+                    "invent facts."
+                )
             try:
                 draft = asyncio.run(
                     generate_cover_letter(
@@ -3568,6 +3633,17 @@ class GeneratedDocumentLayoutError(RuntimeError):
     pass
 
 
+class GeneratedDocumentLengthError(RuntimeError):
+    def __init__(self, word_count: int, minimum: int, maximum: int) -> None:
+        self.word_count = word_count
+        self.minimum = minimum
+        self.maximum = maximum
+        super().__init__(
+            f"Generated cover letter body was {word_count} words; "
+            f"required range: {minimum}-{maximum}."
+        )
+
+
 def _pdf_page_fill_ratio(pdf_path: Path) -> float | None:
     reader = PdfReader(str(pdf_path))
     if len(reader.pages) != 1:
@@ -3606,41 +3682,75 @@ def _pdf_page_fill_ratio(pdf_path: Path) -> float | None:
     return min(1.0, max(0.0, (upper_y - lower_y) / page_height))
 
 
-def _strip_latex_comment(line: str) -> str:
-    for index, character in enumerate(line):
-        if character != "%":
-            continue
-        backslashes = 0
-        cursor = index - 1
-        while cursor >= 0 and line[cursor] == "\\":
-            backslashes += 1
-            cursor -= 1
-        if backslashes % 2 == 0:
-            return line[:index]
-    return line
+def _latex_command_arguments(
+    latex: str,
+    command: str,
+    argument_count: int,
+) -> list[tuple[str, ...]]:
+    results: list[tuple[str, ...]] = []
+    marker = f"\\{command}"
+    cursor = 0
+    while (start := latex.find(marker, cursor)) >= 0:
+        position = start + len(marker)
+        arguments: list[str] = []
+        for _ in range(argument_count):
+            while position < len(latex) and latex[position].isspace():
+                position += 1
+            if position >= len(latex) or latex[position] != "{":
+                break
+            depth = 1
+            argument_start = position + 1
+            position += 1
+            while position < len(latex) and depth:
+                if latex[position] == "{" and latex[position - 1] != "\\":
+                    depth += 1
+                elif latex[position] == "}" and latex[position - 1] != "\\":
+                    depth -= 1
+                position += 1
+            if depth:
+                break
+            arguments.append(latex[argument_start : position - 1])
+        if len(arguments) == argument_count:
+            results.append(tuple(arguments))
+        cursor = start + len(marker)
+    return results
 
 
-def _material_resume_lines(latex: str) -> Counter[str]:
-    begin_marker = "\\begin{document}"
-    end_marker = "\\end{document}"
-    begin = latex.find(begin_marker)
-    end = latex.rfind(end_marker)
-    if begin < 0 or end < begin:
-        return Counter({"<malformed document body>": 1})
-    return Counter(
-        line
-        for raw_line in latex.splitlines()
-        if (line := _strip_latex_comment(raw_line).strip())
-    )
+def _normalized_latex_arguments(arguments: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(re.sub(r"\s+", " ", argument).strip() for argument in arguments)
 
 
-def _missing_source_resume_content(source_latex: str, candidate_latex: str) -> list[str]:
-    source_lines = _material_resume_lines(source_latex)
-    candidate_lines = _material_resume_lines(candidate_latex)
-    malformed_marker = "<malformed document body>"
-    if malformed_marker in source_lines or malformed_marker in candidate_lines:
-        return [malformed_marker]
-    return list((source_lines - candidate_lines).elements())
+def _missing_source_resume_entries(source_latex: str, candidate_latex: str) -> list[str]:
+    """Protect experience identities while deliberately allowing stronger rewritten bullets."""
+    missing: list[str] = []
+    for command, argument_count in (
+        ("section", 1),
+        ("resumeProjectHeading", 2),
+        ("resumeSubheading", 4),
+        ("resumeSubSubheading", 2),
+    ):
+        source_units = Counter(
+            _normalized_latex_arguments(arguments)
+            for arguments in _latex_command_arguments(source_latex, command, argument_count)
+        )
+        candidate_units = Counter(
+            _normalized_latex_arguments(arguments)
+            for arguments in _latex_command_arguments(candidate_latex, command, argument_count)
+        )
+        for arguments, count in (source_units - candidate_units).items():
+            missing.extend([f"\\{command}{{{arguments[0]}}}"] * count)
+    for command, argument_count in (("href", 2), ("url", 1)):
+        source_links = Counter(
+            _normalized_latex_arguments((arguments[0],))
+            for arguments in _latex_command_arguments(source_latex, command, argument_count)
+        )
+        candidate_links = Counter(
+            _normalized_latex_arguments((arguments[0],))
+            for arguments in _latex_command_arguments(candidate_latex, command, argument_count)
+        )
+        for arguments, count in (source_links - candidate_links).items():
+            missing.extend([f"\\{command}{{{arguments}}}"] * count)
+    return missing
 
 
 def _commit_resume_artifact_pair(
@@ -3845,7 +3955,7 @@ def build_role_resume(
         except Exception as error:  # noqa: BLE001 - surface a concise UI failure.
             raise RuntimeError("AI resume regeneration was unavailable.") from error
 
-        missing_experience = _missing_source_resume_content(
+        missing_experience = _missing_source_resume_entries(
             authoritative_latex,
             draft.latex,
         )
@@ -3868,17 +3978,18 @@ def build_role_resume(
                     **generated,
                     "summary": (
                         "Preserved the complete source resume because the generated draft "
-                        "changed or omitted source content."
+                        "omitted an employer, project, education entry, date, or section."
                     ),
                     "tweaks": tweaks,
                 }
             candidate_source = authoritative_latex
             candidate_tweaks = (
                 f"{tweaks}\n\n"
-                "The previous draft was rejected because it changed or removed source content. "
-                "Preserve every existing source line verbatim. You may reorder complete entries "
-                "or add source-supported material, but never delete, shorten, summarize, or "
-                "paraphrase source content. Fit one page through LaTeX layout and spacing only."
+                "The previous draft was rejected because it removed a source employer, project, "
+                "education entry, date, or section. Keep every source entry and identity, but "
+                "actively rewrite its bullets for relevance, clarity, and smoothness. Select the "
+                "strongest source-supported accomplishments without inventing facts or awkwardly "
+                "combining unrelated experiences. Use balanced writing and layout to fill one page."
             )
             continue
 
@@ -3916,10 +4027,11 @@ def build_role_resume(
             candidate_source = authoritative_latex
             candidate_tweaks = (
                 f"{tweaks}\n\n"
-                "The generated resume failed compiled-artifact validation. Preserve every "
-                "existing source line verbatim. Do not delete, shorten, summarize, or paraphrase "
-                "source content. Fit exactly one PDF page through LaTeX margins, spacing, line "
-                "leading, and bounded legible typography only."
+                "The generated resume failed one-page layout validation. Keep every employer, "
+                "project, education entry, date, and section, while rewriting bullets naturally. "
+                "If sparse, add useful source-supported specificity and improve readable spacing. "
+                "If crowded, tighten wording within each experience. Never invent facts or combine "
+                "unrelated experiences merely to fit the page."
             )
             continue
         return {
@@ -3957,9 +4069,11 @@ def build_role_chat_context(role_id: int) -> dict[str, Any]:
 
 def _one_page_cover_letter_candidates(latex: str) -> list[str]:
     candidates = [latex]
-    for margin, parskip, font_size in (
-        ("0.85in", "0.7em", None),
-        ("0.75in", "0.55em", "10pt"),
+    for margin, parskip, font_size, line_spread in (
+        ("1in", "1.05em", None, "1.08"),
+        ("1in", "1.2em", None, "1.12"),
+        ("0.85in", "0.7em", None, None),
+        ("0.75in", "0.55em", "10pt", None),
     ):
         candidate = re.sub(
             r"\\usepackage\[margin=[^\]]+\]\{geometry\}",
@@ -3980,9 +4094,36 @@ def _one_page_cover_letter_candidates(latex: str) -> list[str]:
                 candidate,
                 count=1,
             )
+        if line_spread is not None:
+            candidate = candidate.replace(
+                "\\begin{document}",
+                f"\\linespread{{{line_spread}}}\\selectfont\n\\begin{{document}}",
+                1,
+            )
         if candidate not in candidates:
             candidates.append(candidate)
     return candidates
+
+
+def _cover_letter_body_word_count(latex: str) -> int:
+    if "\\begin{document}" not in latex or "\\end{document}" not in latex:
+        return 0
+    document = latex.split("\\begin{document}", 1)[1].split("\\end{document}", 1)[0]
+    salutation = re.search(r"(?im)^\s*Dear\s+[^,\n]+,\s*", document)
+    if salutation is None:
+        return 0
+    body = document[salutation.end() :]
+    closing = re.search(
+        r"(?im)^\s*(?:Sincerely|Best regards|Regards|Respectfully|Warm regards)[,:]?\s*",
+        body,
+    )
+    if closing is None:
+        return 0
+    body = body[: closing.start()]
+    body = re.sub(r"(?m)(?<!\\)%.*$", "", body)
+    body = re.sub(r"\\[A-Za-z@]+(?:\[[^\]]*\])?", " ", body)
+    body = re.sub(r"\\([%&#_$])", r"\1", body)
+    return len(re.findall(r"[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*", body))
 
 
 def _write_role_cover_letter(
@@ -3993,6 +4134,9 @@ def _write_role_cover_letter(
     example_ids: list[int],
     tweaks: str | None,
     required_page_count: int | None = None,
+    minimum_page_fill_ratio: float | None = None,
+    minimum_body_word_count: int | None = None,
+    maximum_body_word_count: int | None = None,
 ) -> dict[str, Any]:
     role_id = role.get("id")
     if not isinstance(role_id, int):
@@ -4002,6 +4146,17 @@ def _write_role_cover_letter(
         source=source,
         example_count=len(example_ids),
     )
+    body_word_count = _cover_letter_body_word_count(latex)
+    if (
+        minimum_body_word_count is not None
+        and maximum_body_word_count is not None
+        and not minimum_body_word_count <= body_word_count <= maximum_body_word_count
+    ):
+        raise GeneratedDocumentLengthError(
+            body_word_count,
+            minimum_body_word_count,
+            maximum_body_word_count,
+        )
 
     cover_letter_path = _role_cover_letter_tex_path(role_id)
     cover_letter_path.parent.mkdir(parents=True, exist_ok=True)
@@ -4014,6 +4169,7 @@ def _write_role_cover_letter(
         selected_pdf: Path | None = None
         selected_pdf_base64 = ""
         page_counts: list[int] = []
+        page_fill_ratios: list[float | None] = []
         candidates = (
             _one_page_cover_letter_candidates(latex)
             if required_page_count == 1
@@ -4024,12 +4180,30 @@ def _write_role_cover_letter(
             candidate_pdf, pdf_base64 = _generate_cover_letter_pdf_preview(candidate_path)
             page_count = len(PdfReader(str(candidate_pdf)).pages)
             page_counts.append(page_count)
+            page_fill_ratio = _pdf_page_fill_ratio(candidate_pdf) if page_count == 1 else None
+            page_fill_ratios.append(page_fill_ratio)
             if required_page_count is None or page_count == required_page_count:
+                if (
+                    minimum_page_fill_ratio is not None
+                    and (page_fill_ratio is None or page_fill_ratio < minimum_page_fill_ratio)
+                ):
+                    continue
                 selected_latex = candidate_latex
                 selected_pdf = candidate_pdf
                 selected_pdf_base64 = pdf_base64
                 break
         if selected_latex is None or selected_pdf is None:
+            one_page_fill_ratios = [
+                ratio
+                for page_count, ratio in zip(page_counts, page_fill_ratios, strict=True)
+                if page_count == 1 and ratio is not None
+            ]
+            if minimum_page_fill_ratio is not None and 1 in page_counts:
+                raise GeneratedDocumentLayoutError(
+                    "Generated cover letter was materially underfilled "
+                    f"(page fill attempts: {[round(ratio, 3) for ratio in one_page_fill_ratios]}; "
+                    f"minimum: {minimum_page_fill_ratio:.3f})."
+                )
             raise GeneratedDocumentPageCountError(
                 "Generated cover letter did not fit exactly "
                 f"{required_page_count} PDF page (attempts: {page_counts})."

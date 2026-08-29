@@ -191,7 +191,7 @@ def test_cover_letter_prompt_includes_resume_job_and_tool_results() -> None:
     assert "Python distributed systems internship" in prompt
     assert "Dear Stripe" in prompt
     assert "fits on one page" in prompt
-    assert "225-275 words" in prompt
+    assert "325-400 words" in prompt
     assert "1in margins" in prompt
     assert "sender block, recipient/date block" in prompt
     assert "sender/contact header must contain only" in prompt
@@ -261,8 +261,9 @@ def test_resume_tweak_prompt_includes_existing_resume_and_tweaks() -> None:
     assert "Built a Kubernetes scheduler" in prompt
     assert "full," in prompt
     assert "compilable replacement LaTeX document" in prompt
-    assert "preserve every existing experience item verbatim" in prompt
-    assert "never delete, shorten, summarize, or paraphrase source experience" in prompt
+    assert "rewrite bullets and descriptions" in prompt
+    assert "preserve every employer, role, project, education entry, date, and link" in prompt
+    assert "strongest source-supported accomplishments" in prompt
 
 
 def test_role_chat_prompt_includes_role_material_contexts() -> None:

@@ -834,7 +834,11 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         compile_attempts += 1
         cwd = Path(kwargs["cwd"])
         (cwd / "cover-letter.pdf").write_bytes(
-            _valid_pdf_bytes(2 if compile_attempts <= 3 else 1)
+            _positioned_text_pdf_bytes(
+                (740, 670, 600, 530)
+                if compile_attempts <= 5
+                else (740, 600, 450, 300, 150, 60)
+            )
         )
 
         class Completed:
@@ -859,6 +863,7 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         return Draft()
 
     monkeypatch.setattr(web_server, "generate_cover_letter", fake_generate_cover_letter)
+    monkeypatch.setattr(web_server, "_cover_letter_body_word_count", lambda _latex: 350)
     env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
     runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
     runner.invoke(
@@ -932,15 +937,19 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         assert cover_letter["path"] == str(resume_root / "role-1" / "cover-letter.tex")
         assert cover_letter["pdf_path"] == str(resume_root / "role-1" / "cover-letter.pdf")
         assert cover_letter["pdf_base64"]
-        assert base64.b64decode(cover_letter["pdf_base64"]) == _valid_pdf_bytes()
-        assert compile_attempts == 4
+        assert base64.b64decode(cover_letter["pdf_base64"]) == _positioned_text_pdf_bytes(
+            (740, 600, 450, 300, 150, 60)
+        )
+        assert compile_attempts == 6
         assert len(captured_calls) == 2
         assert cover_letter["tweaks"] == "Make it warmer and shorten the Amazon paragraph."
         assert captured_calls[0]["tweaks"] == "Make it warmer and shorten the Amazon paragraph."
         assert captured_calls[0]["previous_cover_letter_latex"] == (
             "\\documentclass{letter}\\begin{document}Previous Acme draft\\end{document}"
         )
-        assert "exactly one PDF page" in str(captured_calls[1]["tweaks"])
+        assert "materially underfilled" in str(captured_calls[1]["tweaks"])
+        assert "smooth, natural prose" in str(captured_calls[1]["tweaks"])
+        assert "source-supported detail" in str(captured_calls[1]["tweaks"])
         assert "Dear Acme" in str(captured_calls[1]["previous_cover_letter_latex"])
         indexed_context = captured_calls[0]["other_experience_context"]
         assert isinstance(indexed_context, list)
@@ -1740,8 +1749,9 @@ Master resume
         assert len(captured_calls) == 2
         assert captured_calls[0]["resume_content"] == "Current editor latex"
         assert captured_calls[0]["tweaks"] == "Emphasize distributed systems."
-        assert "exactly one PDF page" in str(captured_calls[1]["tweaks"])
-        assert "Do not delete, shorten, summarize, or paraphrase" in str(
+        assert "failed one-page layout validation" in str(captured_calls[1]["tweaks"])
+        assert "rewriting bullets naturally" in str(captured_calls[1]["tweaks"])
+        assert "Never invent facts or combine unrelated experiences" in str(
             captured_calls[1]["tweaks"]
         )
         assert captured_calls[1]["resume_content"] == (
@@ -1826,27 +1836,62 @@ def test_pdf_page_fill_ratio_uses_real_positioned_text_and_fails_closed(
     assert web_server._pdf_page_fill_ratio(blank) is None
 
 
-def test_source_resume_fidelity_requires_every_material_line_verbatim() -> None:
+def test_source_resume_fidelity_preserves_entries_while_allowing_bullet_rewrites() -> None:
     source = r"""\documentclass{article}
 \begin{document}
 \section{Work}
 Email: owner@example.com
 \resumeProjectHeading{\textbf{Employer \{Platform\}}}{2026}
 \resumeItem{Built nested \textbf{systems} at 70\% scale.}
+\resumeItem{Published \href{https://example.com/proof}{project proof}.}
 \section{Technical Skills}
 \item{Python, TypeScript}
 \end{document}
 """
-    assert web_server._missing_source_resume_content(source, source) == []
+    rewritten = source.replace(
+        "Built nested \\textbf{systems} at 70\\% scale.",
+        "Improved source-supported systems at documented scale.",
+    ).replace("Python, TypeScript", "TypeScript, Python")
+    rewritten = rewritten.replace("project proof", "supporting evidence")
+    assert web_server._missing_source_resume_entries(source, rewritten) == []
     for candidate in (
-        source.replace("\\documentclass{article}\n", ""),
-        source.replace("Email: owner@example.com\n", ""),
         source.replace("\\section{Technical Skills}\n", ""),
-        source.replace("Built nested", "Built scalable nested"),
-        source.replace("Python, TypeScript", "Python"),
+        source.replace(
+            "\\resumeProjectHeading{\\textbf{Employer \\{Platform\\}}}{2026}\n",
+            "",
+        ),
         source.replace("2026", "2025"),
+        source.replace("https://example.com/proof", "https://example.com/other"),
     ):
-        assert web_server._missing_source_resume_content(source, candidate)
+        assert web_server._missing_source_resume_entries(source, candidate)
+
+
+@pytest.mark.parametrize("body_words", [324, 401])
+def test_write_role_cover_letter_rejects_body_outside_professional_range(
+    body_words: int,
+) -> None:
+    latex = (
+        "\\documentclass{article}\n\\begin{document}\n"
+        "Jake Yeo\\\\\njake@example.com\n\n"
+        "August 28, 2026\n\n"
+        "Acme Inc.\\\\\nVancouver, BC\n\n"
+        "Dear Hiring Team, "
+        + " ".join(["grounded"] * body_words)
+        + "\n\nSincerely,\\\\\nJake Yeo\n\\end{document}\n"
+    )
+    assert web_server._cover_letter_body_word_count(latex) == body_words
+    with pytest.raises(web_server.GeneratedDocumentLengthError):
+        web_server._write_role_cover_letter(
+            {"id": 1, "company_name": "Acme", "title": "Product Intern"},
+            latex,
+            source="ai_cover_letter",
+            example_ids=[],
+            tweaks=None,
+            required_page_count=1,
+            minimum_page_fill_ratio=0.65,
+            minimum_body_word_count=325,
+            maximum_body_word_count=400,
+        )
 
 
 def test_save_role_resume_rejects_unmeasurable_fill_and_rolls_back_pair(
@@ -2473,6 +2518,17 @@ def test_config_payload_returns_current_settings(
             ],
         },
         {
+            "key": "autoprep_tailor_resume",
+            "label": "tailor resumes",
+            "description": (
+                "when off, Autoprep copies the master resume and only tailors the cover letter"
+            ),
+            "control": "toggle",
+            "value": True,
+            "default": True,
+            "editable": True,
+        },
+        {
             "key": "scan_headless",
             "label": "headless job scanning",
             "description": "run scan browsers without opening visible browser windows",
@@ -2567,6 +2623,7 @@ def test_config_endpoint_updates_settings(
                     "applicant_institution": "University of Victoria",
                     "applicant_degree": "Bachelor of Engineering in Software Engineering",
                     "cover_letter_model": "gpt-5.6-terra",
+                    "autoprep_tailor_resume": False,
                     "llm_provider": "codex",
                     "scan_headless": False,
                     "require_software_keywords": False,
@@ -2589,6 +2646,7 @@ def test_config_endpoint_updates_settings(
             "applicant_first_name": "Callum",
             "applicant_institution": "University of Victoria",
             "applicant_last_name": "Mackenzie",
+            "autoprep_tailor_resume": "false",
             "cover_letter_model": "gpt-5.6-terra",
             "llm_provider": "codex",
             "include_graduate_degree_roles": "true",
@@ -2604,6 +2662,7 @@ def test_config_endpoint_updates_settings(
             "applicant_first_name": "Callum",
             "applicant_institution": "University of Victoria",
             "applicant_last_name": "Mackenzie",
+            "autoprep_tailor_resume": False,
             "cover_letter_model": "gpt-5.6-terra",
             "llm_provider": "codex",
             "include_graduate_degree_roles": True,

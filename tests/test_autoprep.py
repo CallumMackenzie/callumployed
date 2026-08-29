@@ -626,3 +626,60 @@ def test_autoprep_worker_uses_direct_generation_and_preserves_document_artifacts
     web_server._process_autoprep_job(job["id"])
     assert len(cover_calls) == 2
     assert cover_calls[-1]["tweaks"] == "Make the opening direct."
+
+
+def test_autoprep_cover_letter_only_mode_copies_master_resume_with_role_filename(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "autoprep-cover-letter-only.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    master_latex = "\\documentclass{article}\\begin{document}Master resume\\end{document}"
+    with db.connect() as connection:
+        ensure_autoprep_schema(connection)
+        role_id = _interested_role(connection, title="Data Science Intern")
+        upsert_master_resume(connection, filename="resume.tex", content=master_latex)
+        web_server.set_config_value(connection, "autoprep_tailor_resume", "false")
+        [job] = enqueue_autoprep_jobs(connection, [role_id], idempotency_key="cover-only")
+        assert claim_next_autoprep_job(connection) is not None
+
+    resume_pdf = tmp_path / "master-resume.pdf"
+    cover_pdf = tmp_path / "generated-cover.pdf"
+    for path in (resume_pdf, cover_pdf):
+        writer = PdfWriter()
+        writer.add_blank_page(width=612, height=792)
+        writer.write(path)
+    copied_latex: list[str] = []
+    cover_resume_content: list[str] = []
+    monkeypatch.setattr(web_server, "user_data_path", lambda *_args, **_kwargs: tmp_path / "data")
+    monkeypatch.setattr(
+        web_server,
+        "build_role_resume",
+        lambda *_args, **_kwargs: pytest.fail("cover-letter-only mode called the AI resume path"),
+    )
+    monkeypatch.setattr(
+        web_server,
+        "save_role_resume",
+        lambda _role, _resume, latex, **_kwargs: copied_latex.append(latex)
+        or {"pdf_path": str(resume_pdf), "latex": latex},
+    )
+    monkeypatch.setattr(
+        web_server,
+        "build_role_cover_letter",
+        lambda _role, resume, **_kwargs: cover_resume_content.append(resume.content)
+        or {"pdf_path": str(cover_pdf)},
+    )
+
+    web_server._process_autoprep_job(job["id"])
+
+    with db.connect() as connection:
+        completed = get_autoprep_job(connection, job["id"])
+    assert completed["overall_status"] == "ready"
+    assert copied_latex == [master_latex]
+    assert cover_resume_content == [master_latex]
+    assert Path(completed["resume_artifact_path"]).name == (
+        f"acme-data-science-intern-role-{role_id}-resume.pdf"
+    )
+    assert Path(completed["resume_artifact_path"]).is_file()
+    assert Path(completed["cover_letter_artifact_path"]).is_file()

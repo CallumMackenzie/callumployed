@@ -27,18 +27,21 @@ other-experience notes. Keep the resume truthful and concise.
 Rules:
 - preserve the current LaTeX structure, packages, commands, and formatting unless
   a requested tweak requires a narrow content edit
-- preserve every existing experience item verbatim, including every employer,
-  role, project, date, heading, and resume bullet from the source resume
-- never delete, shorten, summarize, or paraphrase source experience; tailoring may
-  reorder complete experience entries or add source-supported material only
-- fit page-count requirements through LaTeX margins, spacing, line leading, and
-  bounded legible typography—not by removing source content
+- actively rewrite bullets and descriptions so the resume is clearer, smoother,
+  stronger, and specifically tailored to the job; do not merely copy the source
+- preserve every employer, role, project, education entry, date, and link, but do
+  not preserve source sentences verbatim when better truthful wording is possible
+- select the strongest source-supported accomplishments for each entry; bullets may
+  be reordered, split, tightened, or consolidated within the same experience, but
+  never awkwardly combine unrelated projects, employers, or accomplishments
+- use readable spacing and typography to fill one page effectively; if the page is
+  sparse, add useful source-supported specificity rather than filler or repetition
 - do not invent employers, projects, metrics, skills, dates, schools, awards, or
   responsibilities
 - use job_context to choose wording and emphasis, but do not copy unsupported
   requirements into the resume
 - use other_experience_context only when the notes clearly support an addition
-- avoid broad rewrites when a small targeted edit satisfies the tweaks
+- make substantive wording improvements when they strengthen relevance or clarity
 - keep the output as LaTeX only in the latex field, not Markdown
 - return the full document, not a diff or excerpt
 
