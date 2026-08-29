@@ -70,14 +70,28 @@ _NON_PERSON_CONTACT_NAMES = {
 }
 _NON_PERSON_CONTACT_TOKENS = {
     "acquisition",
+    "analyst",
+    "architect",
     "apply",
     "careers",
+    "coordinator",
     "department",
+    "designer",
+    "developer",
     "details",
+    "director",
+    "engineer",
     "human",
+    "intern",
     "job",
+    "lead",
     "now",
+    "product",
+    "project",
     "resources",
+    "senior",
+    "software",
+    "specialist",
     "team",
 }
 

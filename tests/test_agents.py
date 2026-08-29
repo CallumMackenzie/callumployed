@@ -237,6 +237,7 @@ def test_cover_letter_prompt_includes_resume_job_and_tool_results() -> None:
         ("Recruiter - Jordan Lee\nApplications are open.", "Jordan Lee"),
         ("Questions? Contact Priya Shah for details.", "Priya Shah"),
         ("Recruiter: Apply Now\nApplications are open.", None),
+        ("Recruiter: Senior Software Engineer\nApplications are open.", None),
         ("Your recruiter can explain compensation.", None),
     ],
 )

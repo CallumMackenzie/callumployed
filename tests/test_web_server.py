@@ -858,7 +858,11 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         captured_calls.append(dict(kwargs))
 
         class Draft:
-            latex = "\\documentclass{letter}\\begin{document}Dear Acme\\end{document}"
+            latex = (
+                "\\documentclass{letter}\\begin{document}\n"
+                "Dear Acme,\n\nBody.\n\nSincerely,\\\\\nJake Yeo\n"
+                "\\end{document}"
+            )
             summary = "generated from examples"
             example_ids = [1]
 
@@ -954,7 +958,9 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         assert "materially underfilled" in str(captured_calls[1]["tweaks"])
         assert "smooth, natural prose" in str(captured_calls[1]["tweaks"])
         assert "source-supported detail" in str(captured_calls[1]["tweaks"])
-        assert "Dear Acme" in str(captured_calls[1]["previous_cover_letter_latex"])
+        assert "Dear Hiring Manager" in str(
+            captured_calls[1]["previous_cover_letter_latex"]
+        )
         indexed_context = captured_calls[0]["other_experience_context"]
         assert isinstance(indexed_context, list)
         assert len(indexed_context) == 1
@@ -977,7 +983,8 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         assert isinstance(settings, web_server.LlmSettings)
         assert settings.model == "gpt-5.6-terra"
         saved_latex = (resume_root / "role-1" / "cover-letter.tex").read_text()
-        assert "Dear Acme" in saved_latex
+        assert "Dear Hiring Manager" in saved_latex
+        assert "Dear Acme" not in saved_latex
         assert "\\setlength{\\parskip}{0.55em}" in saved_latex
         assert "\\setlength{\\parindent}{1.5em}" in saved_latex
     finally:
@@ -1923,6 +1930,18 @@ def test_cover_letter_body_word_count_handles_professional_layout_commands() -> 
         "\\vspace{0.35em}\n\n"
         "First body paragraph has five words.\n\n"
         "\\noindent Sincerely,\\\\[12pt]\nJake Yeo\n"
+        "\\end{document}\n"
+    )
+
+    assert web_server._cover_letter_body_word_count(latex) == 6
+
+
+def test_cover_letter_body_word_count_handles_letter_class_commands() -> None:
+    latex = (
+        "\\documentclass{letter}\n\\begin{document}\n"
+        "\\opening{Dear Hiring Manager,}\n"
+        "First body paragraph has five words.\n\n"
+        "\\closing{Sincerely,}\n"
         "\\end{document}\n"
     )
 

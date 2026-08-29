@@ -4211,15 +4211,21 @@ def _cover_letter_body_word_count(latex: str) -> int:
         return 0
     document = latex.split("\\begin{document}", 1)[1].split("\\end{document}", 1)[0]
     salutation = re.search(
-        r"(?im)^\s*(?:\\noindent\s+)?Dear\s+[^,\n]+,\s*(?:\\par)?\s*",
+        r"(?im)^\s*(?:"
+        r"\\opening\{Dear\s+[^{}\n]+,?\}"
+        r"|(?:\\noindent\s+)?Dear\s+[^,\n]+,\s*(?:\\par)?"
+        r")\s*",
         document,
     )
     if salutation is None:
         return 0
     body = document[salutation.end() :]
     closing = re.search(
-        r"(?im)^\s*(?:\\noindent\s+)?"
-        r"(?:Sincerely|Best regards|Regards|Respectfully|Warm regards)[,:]?\s*",
+        r"(?im)^\s*(?:"
+        r"\\closing\{(?:Sincerely|Best regards|Regards|Respectfully|Warm regards)[,:]?\}"
+        r"|(?:\\noindent\s+)?"
+        r"(?:Sincerely|Best regards|Regards|Respectfully|Warm regards)[,:]?"
+        r")\s*",
         body,
     )
     if closing is None:
@@ -4481,20 +4487,14 @@ def _repair_single_cover_letter_line_breaks(latex: str) -> str:
 def _normalize_cover_letter_salutation(
     latex: str, *, hiring_contact: str | None = None
 ) -> str:
+    resolved_contact = hiring_contact or "Hiring Manager"
     content = re.sub(
-        r"\\opening\{Dear\s+Hiring\s+Team,?\}",
-        r"\\opening{Dear Hiring Manager,}",
+        r"\\opening\{Dear\s+[^{}]+,?\}",
+        lambda _match: f"\\opening{{Dear {resolved_contact},}}",
         latex,
+        count=1,
         flags=re.IGNORECASE,
     )
-    if hiring_contact:
-        content = re.sub(
-            r"\\opening\{Dear\s+[^{}]+,?\}",
-            lambda _match: f"\\opening{{Dear {hiring_contact},}}",
-            content,
-            count=1,
-            flags=re.IGNORECASE,
-        )
     salutation_pattern = re.compile(
         r"(?m)^[ \t]*(?:\\noindent[ \t]+)?"
         r"(?P<salutation>Dear[ \t]+[^,\n{}]{1,100})[,;:]"
@@ -4503,15 +4503,7 @@ def _normalize_cover_letter_salutation(
     )
 
     def replace_salutation(match: re.Match[str]) -> str:
-        salutation = (
-            f"Dear {hiring_contact}"
-            if hiring_contact
-            else re.sub(
-                r"(?i)^Dear\s+Hiring\s+Team$",
-                "Dear Hiring Manager",
-                match.group("salutation").strip(),
-            )
-        )
+        salutation = f"Dear {resolved_contact}"
         rendered = f"\\noindent {salutation},\\par\n\\vspace{{0.35em}}"
         body = match.group("body").strip()
         return f"{rendered}\n\n{body}" if body else rendered
