@@ -1,4 +1,5 @@
 import hashlib
+from collections import Counter
 
 import turso
 
@@ -40,6 +41,26 @@ def build_scan_metrics(
         int((scan_run.finished_at - scan_run.started_at).total_seconds() * 1000),
         0,
     )
+    page_confidence_counts = Counter(page.confidence or "unknown" for page in pages)
+    candidate_confidence_counts = Counter(
+        _confidence_bucket(candidate.confidence) for candidate in candidates
+    )
+    candidate_selection_counts = Counter(
+        "selected" if candidate.selected else "rejected" for candidate in candidates
+    )
+    candidate_discovery_method_counts = Counter(
+        candidate.discovery_method or "unclassified" for candidate in candidates
+    )
+    verification_status_counts = Counter(attempt.status.value for attempt in attempts)
+    verification_outcome_counts = Counter(_verification_outcome(attempt) for attempt in attempts)
+    extraction_method_counts = Counter(
+        attempt.assessment_extraction_method or "unknown" for attempt in attempts
+    )
+    rejection_reason_counts = Counter(
+        attempt.assessment_rejection_reason or "unspecified"
+        for attempt in attempts
+        if attempt.assessment_is_role is not True or attempt.assessment_is_closed is True
+    )
 
     return ScanMetricsRequest(
         client_id=client_id,
@@ -67,6 +88,15 @@ def build_scan_metrics(
         failed_role_visits=sum(
             attempt.status is RoleDiscoveryStatus.FAILED for attempt in attempts
         ),
+        page_confidence_counts=dict(page_confidence_counts),
+        candidate_confidence_counts=dict(candidate_confidence_counts),
+        candidate_selection_counts=dict(candidate_selection_counts),
+        candidate_discovery_method_counts=dict(candidate_discovery_method_counts),
+        verification_status_counts=dict(verification_status_counts),
+        verification_outcome_counts=dict(verification_outcome_counts),
+        extraction_method_counts=dict(extraction_method_counts),
+        rejection_reason_counts=dict(rejection_reason_counts),
+        agent_trace_present=bool(scan_run.agent_trace),
         error_type="scan_failed" if scan_run.scan_status is ScanStatus.FAILED else None,
         app_version=__version__,
     )
@@ -78,4 +108,25 @@ def publish_scan_metrics(company: Company, scan_run: ScanRun) -> None:
         if api_url is None:
             return
         metrics = build_scan_metrics(connection, company, scan_run)
+    assert api_url is not None
     CentralStoreClient(api_url=api_url, timeout=3.0).submit_scan_metrics(metrics)
+
+
+def _confidence_bucket(confidence: float) -> str:
+    if confidence >= 0.8:
+        return "high"
+    if confidence >= 0.5:
+        return "medium"
+    return "low"
+
+
+def _verification_outcome(attempt: object) -> str:
+    is_role = getattr(attempt, "assessment_is_role", None)
+    is_closed = getattr(attempt, "assessment_is_closed", None)
+    if is_role is True and is_closed is not True:
+        return "open_role"
+    if is_role is True and is_closed is True:
+        return "closed_role"
+    if is_role is False:
+        return "not_a_role"
+    return "indeterminate"

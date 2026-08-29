@@ -205,12 +205,14 @@ passkey auth, company matching, and the shared role feed. Python talks to it onl
 the HTTP API. Set `CALLUMPLOYED_CENTRAL_API_URL` or run
 `callumployed central configure --api-url ...` only when overriding the default store.
 
-Every completed company scan also submits an idempotent aggregate to the public
-`POST /v1/scan-metrics` endpoint. These records are stored in Firestore's
+Every completed company scan also submits idempotent performance telemetry to the
+public `POST /v1/scan-metrics` endpoint. These records are stored in Firestore's
 `scan_metrics` collection and do not require the Central passkey. Metrics include a
 pseudonymous client ID, company identity, scan timing/status, page and candidate
-counts, role-verification counts, failed visits, and app version. They do not include
-role URLs, raw errors, filters, notes, application state, or application materials.
+counts, confidence distributions, selection and discovery-method breakdowns,
+role-verification outcomes, extraction methods, rejection categories, failed visits,
+agent usage, and app version. They do not include role URLs, role text, raw errors,
+filters, notes, application state, or application materials.
 Central submission failures are logged but never fail the local scan.
 
 The Central role models and pull/bulk-upsert endpoints are present, but automatic role
