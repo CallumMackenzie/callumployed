@@ -138,6 +138,7 @@ from callumployed.services.autoprep import (
     list_autoprep_jobs,
     list_interested_autoprep_roles,
     mark_autoprep_document,
+    queue_all_prepped_cover_letter_regenerations,
     queue_autoprep_regeneration,
     recover_interrupted_autoprep_jobs,
     retry_autoprep_document,
@@ -629,6 +630,9 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:
             parsed_url = urlparse(self.path)
             path_parts = [part for part in PurePosixPath(parsed_url.path).parts if part != "/"]
+            if path_parts == ["api", "autoprep", "cover-letters", "regenerate"]:
+                self._regenerate_all_prepped_cover_letters()
+                return
             if path_parts == ["api", "autoprep", "jobs"]:
                 self._enqueue_autoprep()
                 return
@@ -970,6 +974,31 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
             _wake_autoprep_coordinator()
             self._send_json_with_status({"accepted": True, "jobs": jobs}, HTTPStatus.ACCEPTED)
+
+        def _regenerate_all_prepped_cover_letters(self) -> None:
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            idempotency_key = payload.get("idempotency_key")
+            if not isinstance(idempotency_key, str):
+                self.send_error(HTTPStatus.BAD_REQUEST, "idempotency_key is required")
+                return
+            result: dict[str, Any] = {}
+            try:
+                with db.connect() as connection:
+                    ensure_autoprep_schema(connection)
+                    result = queue_all_prepped_cover_letter_regenerations(
+                        connection,
+                        idempotency_key=idempotency_key,
+                    )
+            except ValueError as error:
+                self._send_json_with_status({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            if result["queued_count"]:
+                _wake_autoprep_coordinator()
+            result["accepted"] = bool(result["queued_count"])
+            status = HTTPStatus.ACCEPTED if result["accepted"] else HTTPStatus.OK
+            self._send_json_with_status(result, status)
 
         def _retry_autoprep_document(self, role_id_text: str, document_kind: str) -> None:
             try:

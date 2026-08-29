@@ -344,8 +344,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=react-ts-20260828-11" in index_markup
-        assert "/assets/build/app.js?v=react-ts-20260828-10" in index_markup
+        assert "/assets/app.css?v=react-ts-20260829-12" in index_markup
+        assert "/assets/build/app.js?v=react-ts-20260829-13" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -363,6 +363,25 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         )
         assert 'data-autoprep-view="${documentKind}"' in app_javascript
         assert ">View PDF</a>" in app_javascript
+        assert 'id="regenerate-all-cover-letters"' in markup
+        assert 'id="prepped-bulk-status"' in markup
+        assert 'data-autoprep-disinterested' in app_javascript
+        assert 'updateRoleStatusById(roleId, "disinterested")' in app_javascript
+        assert 'fetch("/api/autoprep/cover-letters/regenerate", {' in app_javascript
+        assert 'idempotency_key: autoprepActionKey("regenerate-all-cover-letters")' in (
+            app_javascript
+        )
+        assert "Cover-letter regeneration in progress:" in app_javascript
+        assert "Cover-letter regeneration complete:" in app_javascript
+        assert "Queued regeneration failures:" in app_javascript
+        assert '["failed", "interrupted"].includes(job.cover_letter_status)' in (
+            app_javascript
+        )
+        bulk_function = app_javascript[
+            app_javascript.index("async function regenerateAllPreppedCoverLetters()") :
+            app_javascript.index("async function retryAutoprepDocument")
+        ]
+        assert "await refreshPreppedRoles();\n    startPreppedPolling();" in bulk_function
         assert ".prep-role-hero" in app_styles
         assert ".prep-document-workspace" in app_styles
         assert ".prepped-document.has-open-preview" in app_styles

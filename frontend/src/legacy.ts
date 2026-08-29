@@ -51,6 +51,8 @@ const preppedRolesButton = document.querySelector("#prepped-roles");
 const preppedView = document.querySelector("#prepped-view");
 const closePreppedButton = document.querySelector("#close-prepped");
 const preppedSummary = document.querySelector("#prepped-summary");
+const regenerateAllCoverLettersButton = document.querySelector("#regenerate-all-cover-letters");
+const preppedBulkStatus = document.querySelector("#prepped-bulk-status");
 const preppedList = document.querySelector("#prepped-list");
 const preppedDetail = document.querySelector("#prepped-detail");
 const scanAllButton = document.querySelector("#scan-all-button");
@@ -143,6 +145,10 @@ let prepCoverLetterSaveStateByRoleId = new Map();
 let preppedJobs = [];
 let selectedPreppedRoleId = null;
 let preppedPoll = null;
+let bulkCoverLetterRegenerationPending = false;
+let preppedBulkMessage = "";
+let preppedBulkRegeneration = null;
+const preppedStatusChangeRoleIds = new Set();
 const preppedCommentsByDocument = new Map();
 const openPreppedPreviews = new Set();
 const preppedPreviewBlobUrls = new Map();
@@ -3690,12 +3696,66 @@ function discardStalePreppedPreviews() {
   });
 }
 
+function updatePreppedBulkRegenerationMessage() {
+  if (!preppedBulkRegeneration) return;
+  const jobsByRoleId = new Map(
+    preppedJobs.map((job) => [Number(job.role_id), job]),
+  );
+  const trackedJobs = preppedBulkRegeneration.roleIds.map(
+    (roleId) => jobsByRoleId.get(Number(roleId)),
+  );
+  const completedCount = trackedJobs.filter(
+    (job) => job?.worker_state === "idle" && job.cover_letter_status === "ready",
+  ).length;
+  const failedJobs = trackedJobs.filter(
+    (job) => !job || (
+      job.worker_state === "idle"
+      && ["failed", "interrupted"].includes(job.cover_letter_status)
+    ),
+  );
+  const remainingCount = trackedJobs.length - completedCount - failedJobs.length;
+  const skippedDetails = preppedBulkRegeneration.skipped.length
+    ? ` Skipped before queueing: ${preppedBulkRegeneration.skipped
+      .map((item) => `${item.company_name} — ${item.title}: ${item.reason}`)
+      .join(" · ")}`
+    : "";
+  const failureDetails = failedJobs.length
+    ? ` Queued regeneration failures: ${failedJobs.map((job) => (
+      job
+        ? `${job.company_name} — ${job.title}: ${job.cover_letter_error || "generation failed"}`
+        : "A role left the Prepped queue before regeneration completed"
+    )).join(" · ")}`
+    : "";
+  if (!trackedJobs.length) {
+    preppedBulkMessage = `No cover letters were queued.${skippedDetails}`;
+  } else if (remainingCount > 0) {
+    preppedBulkMessage = `Cover-letter regeneration in progress: ${completedCount} of ${trackedJobs.length} complete · ${remainingCount} remaining.${skippedDetails}${failureDetails}`;
+  } else {
+    preppedBulkMessage = `Cover-letter regeneration complete: ${completedCount} succeeded, ${failedJobs.length} failed.${skippedDetails}${failureDetails}`;
+  }
+}
+
 function renderPreppedRoles() {
   discardStalePreppedPreviews();
+  updatePreppedBulkRegenerationMessage();
   const activeCount = preppedJobs.filter(autoprepJobIsActive).length;
+  const regeneratableCount = preppedJobs.filter(
+    (job) => job.worker_state === "idle" && job.cover_letter_status === "ready",
+  ).length;
   preppedSummary.textContent = preppedJobs.length
     ? `${preppedJobs.length} prepped ${preppedJobs.length === 1 ? "role" : "roles"}${activeCount ? ` · ${activeCount} in progress` : ""}`
     : "No queued or prepared roles.";
+  regenerateAllCoverLettersButton.disabled = (
+    bulkCoverLetterRegenerationPending || regeneratableCount === 0
+  );
+  regenerateAllCoverLettersButton.setAttribute(
+    "aria-busy",
+    bulkCoverLetterRegenerationPending ? "true" : "false",
+  );
+  regenerateAllCoverLettersButton.textContent = bulkCoverLetterRegenerationPending
+    ? "queuing cover letters..."
+    : "regenerate all cover letters";
+  preppedBulkStatus.textContent = preppedBulkMessage;
   preppedList.innerHTML = preppedJobs.map((job) => `
     <button type="button" class="prepped-list-item${Number(job.role_id) === Number(selectedPreppedRoleId) ? " is-active" : ""}" data-prepped-role="${job.role_id}">
       <strong>${escapeUiText(job.company_name)}</strong><span>${escapeUiText(job.title)}</span>
@@ -3723,6 +3783,7 @@ function renderPreppedDetail() {
     ["Last seen", formatCompactDate(job.last_seen_at) || "Unavailable"],
     ["Posting ID", job.posting_id || "Unavailable"],
   ];
+  const movingToDisinterested = preppedStatusChangeRoleIds.has(Number(job.role_id));
   preppedDetail.innerHTML = `
     <header class="prepped-detail-heading">
       <div><p class="eyebrow">${escapeUiText(job.company_name)}</p><h3>${roleLink}</h3></div>
@@ -3742,6 +3803,7 @@ function renderPreppedDetail() {
       <button type="button" data-prepped-nav="previous" ${currentIndex <= 0 ? "disabled" : ""}>Previous</button>
       <button type="button" data-prepped-nav="next" ${currentIndex >= preppedJobs.length - 1 ? "disabled" : ""}>Next</button>
       <button type="button" data-autoprep-open-folder ${job.artifact_directory ? "" : "disabled"}>Open Documents Folder</button>
+      <button class="prepped-disinterested" type="button" data-autoprep-disinterested aria-busy="${movingToDisinterested ? "true" : "false"}" ${movingToDisinterested ? "disabled" : ""}>${movingToDisinterested ? "Moving to Disinterested..." : "Move to Disinterested"}</button>
       <button class="success" type="button" data-autoprep-applied ${job.overall_status === "ready" ? "" : "disabled"}>Applied</button>
     </div>
     <p class="prepped-safety-note">Autoprep prepares files only. It never submits an application.</p>`;
@@ -3862,6 +3924,52 @@ async function regenerateAutoprepDocument(job, documentKind, button) {
   }
 }
 
+async function regenerateAllPreppedCoverLetters() {
+  if (bulkCoverLetterRegenerationPending) return;
+  bulkCoverLetterRegenerationPending = true;
+  preppedBulkRegeneration = null;
+  preppedBulkMessage = "Queuing eligible cover letters...";
+  renderPreppedRoles();
+  try {
+    const response = await fetch("/api/autoprep/cover-letters/regenerate", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        idempotency_key: autoprepActionKey("regenerate-all-cover-letters"),
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Bulk regeneration request failed");
+    const queuedCount = Number(payload.queued_count || 0);
+    const skipped = Array.isArray(payload.skipped) ? payload.skipped : [];
+    preppedBulkRegeneration = {
+      roleIds: (payload.jobs || []).map((job) => Number(job.role_id)),
+      skipped,
+    };
+    if (!queuedCount && !skipped.length) {
+      preppedBulkRegeneration = null;
+      preppedBulkMessage = "No prepped roles are available to regenerate.";
+    }
+    (payload.jobs || []).forEach((updatedJob) => {
+      const index = preppedJobs.findIndex(
+        (job) => Number(job.role_id) === Number(updatedJob.role_id),
+      );
+      if (index >= 0) preppedJobs[index] = updatedJob;
+      discardPreppedPreview(`${updatedJob.role_id}:cover-letter`, {close: true});
+    });
+    await refreshPreppedRoles();
+    startPreppedPolling();
+  } catch (error) {
+    preppedBulkRegeneration = null;
+    preppedBulkMessage = error instanceof Error
+      ? error.message
+      : "Bulk regeneration request failed";
+  } finally {
+    bulkCoverLetterRegenerationPending = false;
+    renderPreppedRoles();
+  }
+}
+
 async function retryAutoprepDocument(roleId, documentKind, button) {
   if (button.disabled) return;
   button.disabled = true;
@@ -3878,6 +3986,40 @@ async function retryAutoprepDocument(roleId, documentKind, button) {
     if (index >= 0) preppedJobs[index] = payload.job;
     renderPreppedRoles();
   } catch { await refreshPreppedRoles(); }
+}
+
+async function markPreppedRoleDisinterested(roleId, button) {
+  const numericRoleId = Number(roleId);
+  if (preppedStatusChangeRoleIds.has(numericRoleId)) return;
+  preppedStatusChangeRoleIds.add(numericRoleId);
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  button.textContent = "Moving to Disinterested...";
+  const currentIndex = preppedJobs.findIndex(
+    (job) => Number(job.role_id) === numericRoleId,
+  );
+  try {
+    await updateRoleStatusById(roleId, "disinterested");
+    discardPreppedPreview(`${roleId}:resume`, {close: true});
+    discardPreppedPreview(`${roleId}:cover-letter`, {close: true});
+    if (currentIndex >= 0) preppedJobs.splice(currentIndex, 1);
+    selectedPreppedRoleId = preppedJobs[
+      Math.min(currentIndex, preppedJobs.length - 1)
+    ]?.role_id ?? null;
+    preppedBulkMessage = "Role moved to Disinterested.";
+    renderPreppedRoles();
+    loadInitialTrackerData();
+  } catch (error) {
+    preppedBulkMessage = error instanceof Error
+      ? error.message
+      : "Could not move this role to Disinterested.";
+    await refreshPreppedRoles();
+  } finally {
+    preppedStatusChangeRoleIds.delete(numericRoleId);
+    if (preppedJobs.some((job) => Number(job.role_id) === numericRoleId)) {
+      renderPreppedRoles();
+    }
+  }
 }
 
 async function markPreppedRoleApplied(roleId, button) {
@@ -3906,6 +4048,8 @@ prepInterestedButton.addEventListener("click", openPrepView);
 preppedRolesButton.addEventListener("click", () => openPreppedView());
 
 closePreppedButton.addEventListener("click", closePreppedView);
+
+regenerateAllCoverLettersButton.addEventListener("click", regenerateAllPreppedCoverLetters);
 
 preppedList.addEventListener("click", (event) => {
   const roleButton = event.target.closest("[data-prepped-role]");
@@ -3979,6 +4123,11 @@ preppedDetail.addEventListener("click", async (event) => {
       folderButton.textContent = error instanceof Error ? error.message : "Could not open folder";
       folderButton.disabled = false;
     }
+    return;
+  }
+  const disinterestedButton = event.target.closest("[data-autoprep-disinterested]");
+  if (disinterestedButton) {
+    markPreppedRoleDisinterested(job.role_id, disinterestedButton);
     return;
   }
   const appliedButton = event.target.closest("[data-autoprep-applied]");

@@ -14,6 +14,10 @@ from callumployed.data import db
 
 DocumentKind = Literal["resume", "cover_letter"]
 LOGGER = logging.getLogger(__name__)
+BULK_COVER_LETTER_REGENERATION_INSTRUCTION = (
+    "Refresh this cover letter using the current role description and approved application "
+    "materials. Preserve source fidelity and professional one-page formatting."
+)
 
 _RESUME_STATUSES = {
     "queued",
@@ -194,6 +198,12 @@ def ensure_autoprep_schema(connection: turso.Connection) -> None:
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             FOREIGN KEY (job_id) REFERENCES autoprep_jobs(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS autoprep_bulk_cover_letter_requests (
+            idempotency_key TEXT PRIMARY KEY,
+            result_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
         """
     )
     job_columns = {
@@ -275,7 +285,7 @@ def list_autoprep_jobs(
     *,
     include_applied: bool = False,
 ) -> list[dict[str, Any]]:
-    where_clause = "" if include_applied else "WHERE r.role_status != 'applied'"
+    where_clause = "" if include_applied else "WHERE r.role_status = 'interested'"
     rows = connection.execute(
         f"""
         SELECT
@@ -567,6 +577,65 @@ def retry_autoprep_document(
     return get_autoprep_job(connection, job["id"])
 
 
+def _queue_autoprep_regeneration_in_transaction(
+    connection: turso.Connection,
+    job: dict[str, Any],
+    document_kind: DocumentKind,
+    *,
+    clean_instruction: str,
+    clean_key: str,
+) -> int:
+    prefix = _document_prefix(document_kind)
+    instruction_hash = hashlib.sha256(clean_instruction.encode()).hexdigest()
+    existing = connection.execute(
+        """
+        SELECT job_id, document_kind, instruction_hash
+        FROM autoprep_regenerations
+        WHERE idempotency_key = ?
+        """,
+        (clean_key,),
+    ).fetchone()
+    if existing is not None:
+        if (
+            int(existing["job_id"]) != job["id"]
+            or str(existing["document_kind"]) != document_kind
+            or str(existing["instruction_hash"]) != instruction_hash
+        ):
+            raise AutoprepConflictError(
+                "This regeneration key was already used for another action."
+            )
+        return int(existing["job_id"])
+    if job["worker_state"] != "idle":
+        raise AutoprepConflictError("This role is already being prepared.")
+    if str(job[f"{prefix}_status"]) != "ready":
+        raise AutoprepConflictError("Only a ready document can be regenerated with comments.")
+    connection.execute(
+        """
+        INSERT INTO autoprep_regenerations (
+            idempotency_key, job_id, document_kind, instruction_hash
+        ) VALUES (?, ?, ?, ?)
+        """,
+        (clean_key, job["id"], document_kind, instruction_hash),
+    )
+    connection.execute(
+        f"""
+        UPDATE autoprep_jobs
+        SET {prefix}_status = 'queued',
+            {prefix}_error = NULL,
+            {prefix}_instruction = ?,
+            {prefix}_attempt = {prefix}_attempt + 1,
+            overall_status = 'queued',
+            worker_state = 'queued',
+            completed_at = NULL,
+            queued_at = datetime('now'),
+            updated_at = datetime('now')
+        WHERE id = ?
+        """,  # noqa: S608
+        (clean_instruction, job["id"]),
+    )
+    return int(job["id"])
+
+
 def queue_autoprep_regeneration(
     connection: turso.Connection,
     role_id: int,
@@ -583,65 +652,102 @@ def queue_autoprep_regeneration(
         raise ValueError("Add comments before regenerating the document.")
     if len(clean_instruction) > 4000:
         raise ValueError("Regeneration comments must be 4000 characters or fewer.")
-    prefix = _document_prefix(document_kind)
-    instruction_hash = hashlib.sha256(clean_instruction.encode()).hexdigest()
     try:
         connection.execute("BEGIN IMMEDIATE")
         job = get_role_autoprep_job(connection, role_id)
         if job is None:
             raise ValueError("No Autoprep job exists for this role.")
-        existing = connection.execute(
-            """
-            SELECT job_id, document_kind, instruction_hash
-            FROM autoprep_regenerations
-            WHERE idempotency_key = ?
-            """,
-            (clean_key,),
-        ).fetchone()
-        if existing is not None:
-            if (
-                int(existing["job_id"]) != job["id"]
-                or str(existing["document_kind"]) != document_kind
-                or str(existing["instruction_hash"]) != instruction_hash
-            ):
-                raise AutoprepConflictError(
-                    "This regeneration key was already used for another action."
-                )
-            connection.commit()
-            return get_autoprep_job(connection, job["id"])
-        if job["worker_state"] != "idle":
-            raise AutoprepConflictError("This role is already being prepared.")
-        if str(job[f"{prefix}_status"]) != "ready":
-            raise AutoprepConflictError("Only a ready document can be regenerated with comments.")
-        connection.execute(
-            """
-            INSERT INTO autoprep_regenerations (
-                idempotency_key, job_id, document_kind, instruction_hash
-            ) VALUES (?, ?, ?, ?)
-            """,
-            (clean_key, job["id"], document_kind, instruction_hash),
-        )
-        connection.execute(
-            f"""
-            UPDATE autoprep_jobs
-            SET {prefix}_status = 'queued',
-                {prefix}_error = NULL,
-                {prefix}_instruction = ?,
-                {prefix}_attempt = {prefix}_attempt + 1,
-                overall_status = 'queued',
-                worker_state = 'queued',
-                completed_at = NULL,
-                queued_at = datetime('now'),
-                updated_at = datetime('now')
-            WHERE id = ?
-            """,  # noqa: S608
-            (clean_instruction, job["id"]),
+        job_id = _queue_autoprep_regeneration_in_transaction(
+            connection,
+            job,
+            document_kind,
+            clean_instruction=clean_instruction,
+            clean_key=clean_key,
         )
         connection.commit()
     except Exception:
         connection.rollback()
         raise
-    return get_autoprep_job(connection, job["id"])
+    return get_autoprep_job(connection, job_id)
+
+
+def _bulk_cover_letter_result(
+    connection: turso.Connection,
+    saved: dict[str, Any],
+) -> dict[str, Any]:
+    queued_role_ids = [int(role_id) for role_id in saved["queued_role_ids"]]
+    skipped = list(saved["skipped"])
+    return {
+        "requested_count": int(saved["requested_count"]),
+        "queued_count": len(queued_role_ids),
+        "skipped_count": len(skipped),
+        "jobs": _jobs_for_role_ids(connection, queued_role_ids),
+        "skipped": skipped,
+    }
+
+
+def queue_all_prepped_cover_letter_regenerations(
+    connection: turso.Connection,
+    *,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    clean_key = idempotency_key.strip()
+    if not clean_key:
+        raise ValueError("An idempotency key is required.")
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        existing = connection.execute(
+            """
+            SELECT result_json
+            FROM autoprep_bulk_cover_letter_requests
+            WHERE idempotency_key = ?
+            """,
+            (clean_key,),
+        ).fetchone()
+        if existing is not None:
+            saved = json.loads(str(existing["result_json"]))
+            connection.commit()
+            return _bulk_cover_letter_result(connection, saved)
+
+        prepped_jobs = list_autoprep_jobs(connection)
+        queued_role_ids: list[int] = []
+        skipped: list[dict[str, Any]] = []
+        for job in prepped_jobs:
+            try:
+                _queue_autoprep_regeneration_in_transaction(
+                    connection,
+                    job,
+                    "cover_letter",
+                    clean_instruction=BULK_COVER_LETTER_REGENERATION_INSTRUCTION,
+                    clean_key=f"{clean_key}-role-{job['role_id']}",
+                )
+                queued_role_ids.append(int(job["role_id"]))
+            except (AutoprepConflictError, ValueError) as error:
+                skipped.append(
+                    {
+                        "role_id": int(job["role_id"]),
+                        "company_name": str(job["company_name"]),
+                        "title": str(job["title"]),
+                        "reason": str(error),
+                    }
+                )
+        saved = {
+            "requested_count": len(prepped_jobs),
+            "queued_role_ids": queued_role_ids,
+            "skipped": skipped,
+        }
+        connection.execute(
+            """
+            INSERT INTO autoprep_bulk_cover_letter_requests (idempotency_key, result_json)
+            VALUES (?, ?)
+            """,
+            (clean_key, json.dumps(saved, separators=(",", ":"))),
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return _bulk_cover_letter_result(connection, saved)
 
 
 def clear_autoprep_instruction(
