@@ -4397,6 +4397,14 @@ body.prepped-open {
   background: rgb(95 43 216 / 0.07);
 }
 
+.prepped-list-item.has-generation-failure,
+.prepped-list-item.has-generation-failure.is-active {
+  border-color: #b42318;
+  background: #fff1f0;
+  color: #7a271a;
+  box-shadow: 0 0 0 2px rgb(180 35 24 / 0.12);
+}
+
 .prepped-detail {
   min-height: 380px;
   padding: 22px;

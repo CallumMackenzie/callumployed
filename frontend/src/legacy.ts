@@ -3674,6 +3674,12 @@ function autoprepJobIsActive(job) {
   return ["queued", "generating_resume_tweaks", "regenerating_resume", "generating_cover_letter"].includes(job.overall_status);
 }
 
+function autoprepJobHasGenerationFailure(job) {
+  return [job.resume_status, job.cover_letter_status].some(
+    (status) => ["failed", "interrupted"].includes(status),
+  );
+}
+
 function autoprepStatusLabel(status) {
   return ({
     queued: "Queued", generating_resume_tweaks: "Generating resume tweaks", regenerating_resume: "Regenerating resume",
@@ -3768,11 +3774,15 @@ function renderPreppedRoles() {
     ? "queuing cover letters..."
     : "regenerate all cover letters";
   preppedBulkStatus.textContent = preppedBulkMessage;
-  preppedList.innerHTML = preppedJobs.map((job) => `
-    <button type="button" class="prepped-list-item${Number(job.role_id) === Number(selectedPreppedRoleId) ? " is-active" : ""}" data-prepped-role="${job.role_id}">
-      <strong>${escapeUiText(job.company_name)}</strong><span>${escapeUiText(job.title)}</span>
-      <small class="status-${escapeHtml(job.overall_status)}">${escapeHtml(autoprepStatusLabel(job.overall_status))}</small>
-    </button>`).join("");
+  preppedList.innerHTML = preppedJobs.map((job) => {
+    const hasGenerationFailure = autoprepJobHasGenerationFailure(job);
+    const activeClass = Number(job.role_id) === Number(selectedPreppedRoleId) ? " is-active" : "";
+    return `
+      <button type="button" class="prepped-list-item${hasGenerationFailure ? " has-generation-failure" : ""}${activeClass}" data-prepped-role="${job.role_id}">
+        <strong>${escapeUiText(job.company_name)}</strong><span>${escapeUiText(job.title)}</span>
+        <small class="status-${escapeHtml(job.overall_status)}">${escapeHtml(autoprepStatusLabel(job.overall_status))}</small>
+      </button>`;
+  }).join("");
   renderPreppedDetail();
   startPreppedPolling();
 }
@@ -3872,11 +3882,11 @@ function renderPreppedDocument(job, documentKind, label) {
   const commentsPlaceholder = documentKind === "cover-letter"
     ? "Optionally describe specific, truthful changes..."
     : "Describe specific, truthful changes...";
-  const canRegenerate = status === "ready" && (documentKind === "cover-letter" || String(comments).trim());
-  const active = ["queued", "generating", "generating_tweaks", "regenerating"].includes(status);
-  const retryButton = ["failed", "interrupted"].includes(status)
-    ? `<button type="button" data-autoprep-retry="${documentKind}">Retry ${escapeHtml(label.toLowerCase())}</button>`
-    : "";
+  const retryingFailedDocument = ["failed", "interrupted"].includes(status);
+  const active = job.worker_state !== "idle" || ["queued", "generating", "generating_tweaks", "regenerating"].includes(status);
+  const canRegenerate = !active
+    && (status === "ready" || retryingFailedDocument)
+    && (retryingFailedDocument || documentKind === "cover-letter" || String(comments).trim());
   const previewOpen = openPreppedPreviews.has(key);
   const previewUrl = `/api/autoprep/roles/${encodeURIComponent(job.role_id)}/documents/${documentKind}.pdf?v=${encodeURIComponent(job.updated_at || "")}`;
   const previewBlobUrl = preppedPreviewBlobUrls.get(key);
@@ -3893,7 +3903,6 @@ function renderPreppedDocument(job, documentKind, label) {
       <div class="prepped-document-actions">
         <button type="button" data-autoprep-preview="${documentKind}" ${artifactPath ? "" : "disabled"}>${previewOpen ? "Hide preview" : "Preview PDF"}</button>
         ${viewLink}
-        ${retryButton}
       </div>
       <div class="prepped-pdf-preview" data-autoprep-preview-panel="${documentKind}" ${previewOpen && artifactPath ? "" : "hidden"}>
         ${previewOpen && previewBlobUrl ? `<iframe title="${escapeHtml(label)} PDF preview" src="${escapeHtml(previewBlobUrl)}"></iframe>` : ""}
@@ -3909,9 +3918,12 @@ function renderPreppedDocument(job, documentKind, label) {
 async function regenerateAutoprepDocument(job, documentKind, button) {
   if (button.disabled) return;
   const key = `${job.role_id}:${documentKind}`;
+  const fieldKind = documentKind === "cover-letter" ? "cover_letter" : "resume";
+  const status = job[`${fieldKind}_status`];
+  const retryingFailedDocument = ["failed", "interrupted"].includes(status);
   const textarea = preppedDetail.querySelector(`[data-autoprep-comments="${documentKind}"]`);
   const comments = String(textarea?.value || preppedCommentsByDocument.get(key) || "").trim();
-  if (!comments && documentKind !== "cover-letter") {
+  if (!comments && documentKind !== "cover-letter" && !retryingFailedDocument) {
     textarea?.focus();
     return;
   }
@@ -3919,14 +3931,16 @@ async function regenerateAutoprepDocument(job, documentKind, button) {
   button.textContent = "Queuing regeneration...";
   try {
     const response = await fetch(
-      `/api/autoprep/roles/${encodeURIComponent(job.role_id)}/regenerate/${documentKind}`,
+      `/api/autoprep/roles/${encodeURIComponent(job.role_id)}/${retryingFailedDocument ? "retry" : "regenerate"}/${documentKind}`,
       {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({
-          comments,
-          idempotency_key: autoprepActionKey(`regenerate-${documentKind}`),
-        }),
+        body: JSON.stringify(retryingFailedDocument
+          ? {idempotency_key: autoprepActionKey(`retry-${documentKind}`)}
+          : {
+              comments,
+              idempotency_key: autoprepActionKey(`regenerate-${documentKind}`),
+            }),
       },
     );
     const payload = await response.json();
@@ -3987,24 +4001,6 @@ async function regenerateAllPreppedCoverLetters() {
     bulkCoverLetterRegenerationPending = false;
     renderPreppedRoles();
   }
-}
-
-async function retryAutoprepDocument(roleId, documentKind, button) {
-  if (button.disabled) return;
-  button.disabled = true;
-  button.textContent = "Queuing retry...";
-  try {
-    const response = await fetch(`/api/autoprep/roles/${encodeURIComponent(roleId)}/retry/${documentKind}`, {
-      method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({idempotency_key: autoprepActionKey(`retry-${documentKind}`)}),
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || "Retry request failed");
-    discardPreppedPreview(`${roleId}:${documentKind}`, {close: true});
-    const index = preppedJobs.findIndex((job) => Number(job.role_id) === Number(roleId));
-    if (index >= 0) preppedJobs[index] = payload.job;
-    renderPreppedRoles();
-  } catch { await refreshPreppedRoles(); }
 }
 
 async function markPreppedRoleDisinterested(roleId, button) {
@@ -4087,7 +4083,13 @@ preppedDetail.addEventListener("input", (event) => {
   );
   const job = preppedJobs.find((item) => Number(item.role_id) === Number(selectedPreppedRoleId));
   const fieldKind = comments.dataset.autoprepComments === "cover-letter" ? "cover_letter" : "resume";
-  if (regenerateButton) regenerateButton.disabled = job?.[`${fieldKind}_status`] !== "ready" || !comments.value.trim();
+  const status = job?.[`${fieldKind}_status`];
+  const retryingFailedDocument = ["failed", "interrupted"].includes(status);
+  if (regenerateButton) {
+    regenerateButton.disabled = job?.worker_state !== "idle"
+      || !["ready", "failed", "interrupted"].includes(status)
+      || (!retryingFailedDocument && comments.dataset.autoprepComments !== "cover-letter" && !comments.value.trim());
+  }
 });
 
 preppedDetail.addEventListener("click", async (event) => {
@@ -4120,11 +4122,7 @@ preppedDetail.addEventListener("click", async (event) => {
     regenerateAutoprepDocument(job, regenerateButton.dataset.autoprepRegenerate, regenerateButton);
     return;
   }
-  const retryButton = event.target.closest("[data-autoprep-retry]");
-  if (retryButton) {
-    retryAutoprepDocument(job.role_id, retryButton.dataset.autoprepRetry, retryButton);
-    return;
-  }
+
   const folderButton = event.target.closest("[data-autoprep-open-folder]");
   if (folderButton && !folderButton.disabled) {
     folderButton.disabled = true;

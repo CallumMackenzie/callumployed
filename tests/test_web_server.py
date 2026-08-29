@@ -351,8 +351,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=react-ts-20260829-12" in index_markup
-        assert "/assets/build/app.js?v=react-ts-20260829-15" in index_markup
+        assert "/assets/app.css?v=react-ts-20260829-13" in index_markup
+        assert "/assets/build/app.js?v=react-ts-20260829-16" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -387,14 +387,28 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'documentKind === "cover-letter" ? "Optional comments for the next version"' in (
             app_javascript
         )
-        assert 'documentKind === "cover-letter" || String(comments).trim()' in app_javascript
-        assert 'if (!comments && documentKind !== "cover-letter")' in app_javascript
+        assert "autoprepJobHasGenerationFailure(job)" in app_javascript
+        failed_list_item_class = (
+            'class="prepped-list-item${hasGenerationFailure ? '
+            '" has-generation-failure" : ""}${activeClass}"'
+        )
+        assert failed_list_item_class in app_javascript
+        assert ".prepped-list-item.has-generation-failure" in app_styles
+        assert 'data-autoprep-retry' not in app_javascript
+        assert "async function retryAutoprepDocument" not in app_javascript
+        assert 'const retryingFailedDocument = ["failed", "interrupted"].includes(status);' in (
+            app_javascript
+        )
+        assert 'retryingFailedDocument ? "retry" : "regenerate"' in app_javascript
+        assert 'if (!comments && documentKind !== "cover-letter" && !retryingFailedDocument)' in (
+            app_javascript
+        )
         assert '["failed", "interrupted"].includes(job.cover_letter_status)' in (
             app_javascript
         )
         bulk_function = app_javascript[
             app_javascript.index("async function regenerateAllPreppedCoverLetters()") :
-            app_javascript.index("async function retryAutoprepDocument")
+            app_javascript.index("async function markPreppedRoleDisinterested")
         ]
         assert "await refreshPreppedRoles();\n    startPreppedPolling();" in bulk_function
         assert ".prep-role-hero" in app_styles
