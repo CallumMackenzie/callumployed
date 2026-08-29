@@ -244,6 +244,41 @@ def test_cover_letter_prompt_includes_resume_job_and_tool_results() -> None:
     assert "Old draft" in prompt
 
 
+def test_cover_letter_prompt_requires_plain_language_project_introductions() -> None:
+    prompt = build_cover_letter_prompt(
+        applicant_profile=ApplicantProfile(first_name="Jake", last_name="Yeo"),
+        role={
+            "company_name": "Acme",
+            "title": "Software Engineering Intern",
+            "description": "Build user-facing software.",
+        },
+        resume_content="Built Nourish, a photo-first nutrition PWA.",
+        other_experience_context=[
+            {
+                "filename": "nourish.md",
+                "content": (
+                    "Nourish is a photo-first nutrition app that lets users review "
+                    "meal estimates before saving them to a diary."
+                ),
+            }
+        ],
+        cover_letter_examples=[],
+        previous_cover_letter_latex=(
+            "\\documentclass{article}\\begin{document}I built Nourish.\\end{document}"
+        ),
+        tweaks="Make the project example clearer.",
+    )
+
+    normalized_prompt = " ".join(prompt.split())
+    assert "recruiter cannot be expected to recognize a project name" in normalized_prompt
+    assert "first mention of every named project" in normalized_prompt
+    assert "recognizable product category" in normalized_prompt
+    assert "primary user or system purpose" in normalized_prompt
+    assert "same sentence" in normalized_prompt
+    assert "do not leave a project as an unexplained proper noun" in normalized_prompt
+    assert "previous draft" in normalized_prompt
+
+
 @pytest.mark.parametrize(
     ("description", "expected"),
     [

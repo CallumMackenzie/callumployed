@@ -223,6 +223,14 @@ Integrate the context deliberately:
   do not try to mention every relevant technology or project
 - synthesize those experiences into smooth prose in the user's voice; do not dump
   resume bullets into paragraphs or awkwardly combine unrelated experiences
+- a recruiter cannot be expected to recognize a project name. On the first mention
+  of every named project, explain in the same sentence both its recognizable product category
+  and its primary user or system purpose before discussing implementation details or outcomes.
+  For example, use the shape `<Project>, a <plain-language product category> that helps
+  <users or systems do something concrete>, ...`; do not leave a project as an unexplained
+  proper noun. If the approved context does not support that explanation, describe the
+  supported work generically without naming the project. Apply this rule to projects retained
+  from a previous draft during regeneration as well as to newly selected evidence
 - write exactly four cohesive body paragraphs with balanced purposes:
   1. Introduction: it must name the exact company and role, state direct interest, and
      mention how the role was found or a referral only when job_context or the
