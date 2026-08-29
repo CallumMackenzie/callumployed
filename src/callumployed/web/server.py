@@ -4552,15 +4552,15 @@ def _normalize_cover_letter_salutation(
     )
     salutation_pattern = re.compile(
         r"(?m)^[ \t]*(?:\\noindent[ \t]+)?"
-        r"(?P<salutation>Dear[ \t]+[^,\n{}]{1,100})[,;:]"
-        r"(?:[ \t]*\\par)?[ \t]*(?P<body>[^\n]*)$",
+        r"(?P<salutation>Dear[ \t]+[^,\n{}]{1,100})"
+        r"(?:[,;:](?:[ \t]*\\par)?[ \t]*(?P<body>[^\n]*)|[ \t]*(?=$))",
         flags=re.IGNORECASE,
     )
 
     def replace_salutation(match: re.Match[str]) -> str:
         salutation = f"Dear {resolved_contact}"
         rendered = f"\\noindent {salutation},\\par\n\\vspace{{0.35em}}"
-        body = match.group("body").strip()
+        body = (match.group("body") or "").strip()
         return f"{rendered}\n\n{body}" if body else rendered
 
     return salutation_pattern.sub(replace_salutation, content, count=1)

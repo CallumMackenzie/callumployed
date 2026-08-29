@@ -1311,6 +1311,20 @@ def test_cover_letter_latex_normalizer_separates_and_professionalizes_salutation
     ) in normalized
 
 
+def test_cover_letter_latex_normalizer_replaces_punctuationless_salutation() -> None:
+    normalized = web_server._normalize_cover_letter_latex(
+        "\\documentclass[11pt]{article}\n"
+        "\\begin{document}\n"
+        "Dear Acme\n\n"
+        "I am applying for the role.\n"
+        "\\end{document}"
+    )
+
+    assert "Dear Acme" not in normalized
+    assert "\\noindent Dear Hiring Manager,\\par" in normalized
+    assert "I am applying for the role." in normalized
+
+
 def test_cover_letter_latex_normalizer_deduplicates_salutation_spacing() -> None:
     normalized = web_server._normalize_cover_letter_latex(
         "\\documentclass[11pt]{article}\n"
