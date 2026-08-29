@@ -39,6 +39,8 @@ export function createDashboardSession(now = Date.now()): string {
 }
 
 export function hasValidDashboardSession(req: Request, now = Date.now()): boolean {
+  const secret = centralPasskeySha256.value();
+  if (!secret) return false;
   const token = parseCookies(req.header("cookie") ?? "")[DASHBOARD_SESSION_COOKIE];
   if (!token) return false;
   const [payload, signature, extra] = token.split(".");
