@@ -895,6 +895,24 @@ h1 {
   overflow-wrap: anywhere;
 }
 
+.material-index-link {
+  margin: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.material-index-link:hover,
+.material-index-link:focus-visible {
+  color: var(--green);
+}
+
 .materials-panel .material-row button {
   display: inline-grid;
   place-items: center;
@@ -2869,6 +2887,33 @@ a:hover .role-link-icon {
 }
 
 .setting-text-input:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.setting-option-prompt {
+  grid-template-columns: 1fr;
+  align-items: stretch;
+}
+
+.setting-prompt-input {
+  width: 100%;
+  min-height: 150px;
+  resize: vertical;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 12px;
+  background: var(--surface-solid);
+  color: var(--ink);
+  font: 750 0.82rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.setting-prompt-input:focus-visible {
+  outline: 3px solid rgb(45 224 111 / 0.38);
+  outline-offset: 2px;
+}
+
+.setting-prompt-input:disabled {
   cursor: wait;
   opacity: 0.72;
 }

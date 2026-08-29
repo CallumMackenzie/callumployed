@@ -72,6 +72,7 @@ const settingsCloseButton = document.querySelector("#settings-close");
 const settingsStatus = document.querySelector("#settings-status");
 const settingsForm = document.querySelector("#settings-form");
 const settingsProfileOptions = document.querySelector("#settings-profile-options");
+const settingsAutoprepOptions = document.querySelector("#settings-autoprep-options");
 const settingsOptions = document.querySelector("#settings-options");
 const centralStoreSummary = document.querySelector("#central-store-summary");
 const centralStoreSyncSummary = document.querySelector("#central-store-sync-summary");
@@ -144,7 +145,12 @@ let selectedPreppedRoleId = null;
 let preppedPoll = null;
 const preppedCommentsByDocument = new Map();
 const openPreppedPreviews = new Set();
+const preppedPreviewBlobUrls = new Map();
+const preppedPreviewVersions = new Map();
+const preppedPreviewErrors = new Map();
+const loadingPreppedPreviews = new Set();
 let materialsInitialized = false;
+let materialsRenderVersion = 0;
 let scanStatusPoll = null;
 let wasScanning = false;
 let scanStatusData = null;
@@ -486,13 +492,17 @@ function renderMaterialIndex(index, message = "") {
     const pageCount = Number(materialIndex?.document_count ?? 0);
     const skippedCount = Number(materialIndex?.skipped_source_count ?? 0);
     const indexedAt = formatCompactDate(materialIndex?.generated_at);
-    materialIndexStatus.textContent = [
+    const parts = [
       `${pageCount} indexed ${pageCount === 1 ? "page" : "pages"}`,
       skippedCount ? `${skippedCount} unreadable upload skipped` : "",
       indexedAt,
-    ]
-      .filter(Boolean)
-      .join(" | ");
+    ].filter(Boolean);
+    materialIndexStatus.innerHTML = parts
+      .map(
+        (part) =>
+          `<button type="button" class="material-index-link" data-open-material-index title="Reveal the application material index in Finder">${escapeUiText(part)}</button>`,
+      )
+      .join('<span aria-hidden="true"> | </span>');
   } else if (status === "stale") {
     materialIndexStatus.textContent = "index out of date";
   } else {
@@ -524,6 +534,10 @@ function renderResumeResources(resources, message = "") {
 }
 
 function renderApplicationMaterials(payload, options = {}) {
+  materialsRenderVersion += 1;
+  document.querySelectorAll("[data-preview-blob-url]").forEach((preview) => {
+    URL.revokeObjectURL(preview.dataset.previewBlobUrl);
+  });
   renderMasterResume(payload?.master_resume ?? null);
   renderResumeResources(payload?.resume_resources ?? []);
   renderCoverLetterExamples(payload?.cover_letter_examples ?? []);
@@ -573,6 +587,15 @@ function formatFileSize(bytes) {
   return `${Math.round(bytes / 1024)} kb`;
 }
 
+async function fetchPdfBlobUrl(url) {
+  const response = await fetch(url, {cache: "no-store"});
+  if (!response.ok) throw new Error("Preview unavailable");
+  const bytes = await response.arrayBuffer();
+  const signature = new TextDecoder("ascii").decode(bytes.slice(0, 5));
+  if (signature !== "%PDF-") throw new Error("The selected file is not a readable PDF.");
+  return URL.createObjectURL(new Blob([bytes], {type: "application/pdf"}));
+}
+
 async function toggleMaterialPreview(button) {
   const item = button.closest(".material-source-item");
   const preview = item?.querySelector("[data-material-preview-body]");
@@ -586,10 +609,18 @@ async function toggleMaterialPreview(button) {
   button.textContent = "loading...";
   const materialType = button.dataset.materialView;
   const identifier = button.dataset.materialId;
+  const renderVersion = materialsRenderVersion;
   const url = `/api/${encodeURIComponent(materialType)}/${encodeURIComponent(identifier)}`;
   try {
     if (button.dataset.materialBinary === "true") {
-      preview.innerHTML = `<iframe title="${escapeUiText(identifier)} preview" src="${escapeHtml(url)}"></iframe>`;
+      const blobUrl = await fetchPdfBlobUrl(url);
+      if (!preview.isConnected || materialsRenderVersion !== renderVersion) {
+        URL.revokeObjectURL(blobUrl);
+        return;
+      }
+      preview.dataset.previewBlobUrl = blobUrl;
+      preview.innerHTML = `<iframe title="${escapeUiText(identifier)} preview"></iframe>`;
+      preview.querySelector("iframe").src = blobUrl;
     } else {
       const response = await fetch(url);
       if (!response.ok) throw new Error("Preview unavailable");
@@ -613,8 +644,18 @@ async function toggleMaterialPreview(button) {
 async function removeApplicationMaterial(button) {
   const materialType = button.dataset.materialRemove;
   const identifier = button.dataset.materialId;
-  const filename = button.dataset.materialName || "this source";
-  if (!window.confirm(`Remove ${filename}? This removes it from future application preparation.`)) return;
+  if (button.dataset.confirmRemove !== "true") {
+    button.dataset.confirmRemove = "true";
+    button.textContent = "confirm remove";
+    button.classList.add("danger");
+    window.setTimeout(() => {
+      if (!button.isConnected || button.disabled) return;
+      delete button.dataset.confirmRemove;
+      button.textContent = "remove";
+      button.classList.remove("danger");
+    }, 6_000);
+    return;
+  }
   button.disabled = true;
   button.textContent = "removing...";
   try {
@@ -627,6 +668,8 @@ async function removeApplicationMaterial(button) {
     renderApplicationMaterials(payload);
   } catch (error) {
     button.disabled = false;
+    delete button.dataset.confirmRemove;
+    button.classList.remove("danger");
     button.textContent = "remove";
     window.alert(error instanceof Error ? error.message : "Remove failed");
   }
@@ -860,7 +903,10 @@ function renderSettings(payload, message = "") {
   settingsData = payload;
   const settings = Array.isArray(payload?.settings) ? payload.settings : [];
   const profileSettings = settings.filter((setting) => setting.key?.startsWith("applicant_"));
-  const filterSettings = settings.filter((setting) => !setting.key?.startsWith("applicant_"));
+  const autoprepSettings = settings.filter((setting) => setting.key?.startsWith("autoprep_"));
+  const filterSettings = settings.filter(
+    (setting) => !setting.key?.startsWith("applicant_") && !setting.key?.startsWith("autoprep_"),
+  );
   const central = payload?.central ?? {};
   settingsStatus.textContent = message;
   settingsStatus.classList.toggle("is-empty", !message);
@@ -872,6 +918,9 @@ function renderSettings(payload, message = "") {
   clearRecommendationHistoryButton.disabled = historyCount === 0;
   renderCentralSettings(central);
   settingsProfileOptions.innerHTML = profileSettings
+    .map((setting) => renderSettingOption(setting))
+    .join("");
+  settingsAutoprepOptions.innerHTML = autoprepSettings
     .map((setting) => renderSettingOption(setting))
     .join("");
   settingsOptions.innerHTML = filterSettings
@@ -898,6 +947,9 @@ function renderCentralSettings(central) {
 }
 
 function renderSettingOption(setting) {
+  if (setting.control === "textarea" && setting.editable !== false) {
+    return renderTextareaSettingOption(setting);
+  }
   if (setting.control === "text" && setting.editable !== false) {
     return renderTextSettingOption(setting);
   }
@@ -947,6 +999,24 @@ function renderTextSettingOption(setting) {
   `;
 }
 
+function renderTextareaSettingOption(setting) {
+  return `
+    <label class="setting-option setting-option-prompt">
+      <span class="setting-copy">
+        <span class="setting-label">${escapeUiText(setting.label)}</span>
+        <span class="setting-description">${escapeUiText(setting.description)}</span>
+      </span>
+      <textarea
+        class="setting-prompt-input"
+        data-setting-textarea
+        name="${escapeHtml(setting.key)}"
+        rows="7"
+        maxlength="8000"
+      >${escapeUiText(setting.value ?? "")}</textarea>
+    </label>
+  `;
+}
+
 function renderSelectSettingOption(setting) {
   const options = Array.isArray(setting.options) ? setting.options : [];
   const defaultText = `default: ${formatUiText(setting.default)}`;
@@ -985,7 +1055,7 @@ function renderComputedSettingOption(setting) {
 }
 
 function setSettingsDisabled(disabled) {
-  settingsForm.querySelectorAll("input, select").forEach((input) => {
+  settingsForm.querySelectorAll("input, select, textarea").forEach((input) => {
     input.disabled = disabled;
   });
   centralSaveButton.disabled = disabled;
@@ -2164,7 +2234,29 @@ materialsToggle.addEventListener("click", () => {
   setMaterialsCollapsed(materialsToggle.getAttribute("aria-expanded") === "true");
 });
 
+async function openApplicationMaterialIndex(button) {
+  button.disabled = true;
+  const originalText = button.textContent;
+  button.textContent = "opening...";
+  try {
+    const response = await fetch("/api/application-materials/index/open", {method: "POST"});
+    if (!response.ok) throw new Error("Could not open the application material index.");
+  } catch (error) {
+    materialIndexWarning.hidden = false;
+    materialIndexWarning.textContent =
+      error instanceof Error ? error.message : "Could not open the application material index.";
+  } finally {
+    button.disabled = false;
+    button.textContent = originalText;
+  }
+}
+
 materialsBody.addEventListener("click", (event) => {
+  const indexButton = event.target.closest("[data-open-material-index]");
+  if (indexButton) {
+    openApplicationMaterialIndex(indexButton);
+    return;
+  }
   const previewButton = event.target.closest("[data-material-view]");
   if (previewButton) {
     toggleMaterialPreview(previewButton);
@@ -3519,8 +3611,22 @@ function closePreppedView({clearHash = true} = {}) {
   preppedView.hidden = true;
   document.body.classList.remove("prepped-open");
   stopPreppedPolling();
+  openPreppedPreviews.clear();
+  preppedPreviewBlobUrls.forEach((blobUrl) => URL.revokeObjectURL(blobUrl));
+  preppedPreviewBlobUrls.clear();
+  preppedPreviewVersions.clear();
+  preppedPreviewErrors.clear();
   if (clearHash && window.location.hash === "#prepped-roles") setWorkspaceHash("");
 }
+
+window.addEventListener("pagehide", () => {
+  document.querySelectorAll("[data-preview-blob-url]").forEach((preview) => {
+    URL.revokeObjectURL(preview.dataset.previewBlobUrl);
+  });
+  preppedPreviewBlobUrls.forEach((blobUrl) => URL.revokeObjectURL(blobUrl));
+  preppedPreviewBlobUrls.clear();
+  preppedPreviewVersions.clear();
+});
 
 async function refreshPreppedRoles() {
   try {
@@ -3560,7 +3666,32 @@ function autoprepStatusLabel(status) {
   })[status] ?? formatUiText(status);
 }
 
+function preppedPreviewVersion(job, documentKind) {
+  const fieldKind = documentKind === "cover-letter" ? "cover_letter" : "resume";
+  return `${job.updated_at || ""}:${job[`${fieldKind}_artifact_path`] || ""}`;
+}
+
+function discardPreppedPreview(key, {close = false} = {}) {
+  const blobUrl = preppedPreviewBlobUrls.get(key);
+  if (blobUrl) URL.revokeObjectURL(blobUrl);
+  preppedPreviewBlobUrls.delete(key);
+  preppedPreviewVersions.delete(key);
+  preppedPreviewErrors.delete(key);
+  if (close) openPreppedPreviews.delete(key);
+}
+
+function discardStalePreppedPreviews() {
+  preppedPreviewVersions.forEach((version, key) => {
+    const [roleId, documentKind] = key.split(":");
+    const job = preppedJobs.find((item) => Number(item.role_id) === Number(roleId));
+    if (!job || preppedPreviewVersion(job, documentKind) !== version) {
+      discardPreppedPreview(key, {close: true});
+    }
+  });
+}
+
 function renderPreppedRoles() {
+  discardStalePreppedPreviews();
   const activeCount = preppedJobs.filter(autoprepJobIsActive).length;
   preppedSummary.textContent = preppedJobs.length
     ? `${preppedJobs.length} prepped ${preppedJobs.length === 1 ? "role" : "roles"}${activeCount ? ` · ${activeCount} in progress` : ""}`
@@ -3616,6 +3747,43 @@ function renderPreppedDetail() {
     <p class="prepped-safety-note">Autoprep prepares files only. It never submits an application.</p>`;
 }
 
+async function loadPreppedPdfPreview(job, documentKind) {
+  const key = `${job.role_id}:${documentKind}`;
+  const version = preppedPreviewVersion(job, documentKind);
+  if (
+    preppedPreviewVersions.get(key) === version
+    || loadingPreppedPreviews.has(key)
+  ) return;
+  discardPreppedPreview(key);
+  loadingPreppedPreviews.add(key);
+  preppedPreviewErrors.delete(key);
+  renderPreppedDetail();
+  try {
+    const url = `/api/autoprep/roles/${encodeURIComponent(job.role_id)}/documents/${documentKind}.pdf?v=${encodeURIComponent(job.updated_at || "")}`;
+    const blobUrl = await fetchPdfBlobUrl(url);
+    const currentJob = preppedJobs.find((item) => Number(item.role_id) === Number(job.role_id));
+    if (
+      !openPreppedPreviews.has(key)
+      || !currentJob
+      || preppedPreviewVersion(currentJob, documentKind) !== version
+    ) {
+      URL.revokeObjectURL(blobUrl);
+      openPreppedPreviews.delete(key);
+      return;
+    }
+    preppedPreviewBlobUrls.set(key, blobUrl);
+    preppedPreviewVersions.set(key, version);
+  } catch (error) {
+    preppedPreviewErrors.set(
+      key,
+      error instanceof Error ? error.message : "PDF preview unavailable",
+    );
+  } finally {
+    loadingPreppedPreviews.delete(key);
+    if (Number(selectedPreppedRoleId) === Number(job.role_id)) renderPreppedDetail();
+  }
+}
+
 function renderPreppedDocument(job, documentKind, label) {
   const fieldKind = documentKind === "cover-letter" ? "cover_letter" : "resume";
   const status = job[`${fieldKind}_status`];
@@ -3631,6 +3799,9 @@ function renderPreppedDocument(job, documentKind, label) {
     : "";
   const previewOpen = openPreppedPreviews.has(key);
   const previewUrl = `/api/autoprep/roles/${encodeURIComponent(job.role_id)}/documents/${documentKind}.pdf?v=${encodeURIComponent(job.updated_at || "")}`;
+  const previewBlobUrl = preppedPreviewBlobUrls.get(key);
+  const previewError = preppedPreviewErrors.get(key);
+  const previewLoading = loadingPreppedPreviews.has(key);
   const viewLink = artifactPath
     ? `<a class="prep-cover-pdf-link" data-autoprep-view="${documentKind}" href="${escapeHtml(previewUrl)}" target="_blank" rel="noreferrer" aria-label="View ${escapeHtml(label.toLowerCase())} PDF in browser">View PDF</a>`
     : "";
@@ -3645,7 +3816,9 @@ function renderPreppedDocument(job, documentKind, label) {
         ${retryButton}
       </div>
       <div class="prepped-pdf-preview" data-autoprep-preview-panel="${documentKind}" ${previewOpen && artifactPath ? "" : "hidden"}>
-        ${previewOpen && artifactPath ? `<iframe title="${escapeHtml(label)} PDF preview" src="${escapeHtml(previewUrl)}"></iframe>` : ""}
+        ${previewOpen && previewBlobUrl ? `<iframe title="${escapeHtml(label)} PDF preview" src="${escapeHtml(previewBlobUrl)}"></iframe>` : ""}
+        ${previewOpen && previewLoading ? `<p>Loading PDF preview...</p>` : ""}
+        ${previewOpen && previewError ? `<p class="prepped-error">${escapeUiText(previewError)}</p>` : ""}
       </div>
       <label class="prepped-comments-label" for="prepped-comments-${escapeHtml(key)}">Comments for the next version</label>
       <textarea id="prepped-comments-${escapeHtml(key)}" data-autoprep-comments="${documentKind}" rows="4" placeholder="Describe specific, truthful changes..." ${active ? "disabled" : ""}>${escapeUiText(comments)}</textarea>
@@ -3679,6 +3852,7 @@ async function regenerateAutoprepDocument(job, documentKind, button) {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Regeneration request failed");
     preppedCommentsByDocument.delete(key);
+    discardPreppedPreview(key, {close: true});
     const index = preppedJobs.findIndex((item) => Number(item.role_id) === Number(job.role_id));
     if (index >= 0) preppedJobs[index] = payload.job;
     renderPreppedRoles();
@@ -3699,6 +3873,7 @@ async function retryAutoprepDocument(roleId, documentKind, button) {
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Retry request failed");
+    discardPreppedPreview(`${roleId}:${documentKind}`, {close: true});
     const index = preppedJobs.findIndex((job) => Number(job.role_id) === Number(roleId));
     if (index >= 0) preppedJobs[index] = payload.job;
     renderPreppedRoles();
@@ -3713,6 +3888,8 @@ async function markPreppedRoleApplied(roleId, button) {
   try {
     const response = await fetch(`/api/autoprep/roles/${encodeURIComponent(roleId)}/applied`, {method: "POST"});
     if (!response.ok) throw new Error("Applied update failed");
+    discardPreppedPreview(`${roleId}:resume`, {close: true});
+    discardPreppedPreview(`${roleId}:cover-letter`, {close: true});
     preppedJobs.splice(currentIndex, 1);
     selectedPreppedRoleId = preppedJobs[Math.min(currentIndex, preppedJobs.length - 1)]?.role_id ?? null;
     renderPreppedRoles();
@@ -3763,10 +3940,16 @@ preppedDetail.addEventListener("click", async (event) => {
   }
   const previewButton = event.target.closest("[data-autoprep-preview]");
   if (previewButton) {
-    const key = `${job.role_id}:${previewButton.dataset.autoprepPreview}`;
-    if (openPreppedPreviews.has(key)) openPreppedPreviews.delete(key);
-    else openPreppedPreviews.add(key);
-    renderPreppedDetail();
+    const documentKind = previewButton.dataset.autoprepPreview;
+    const key = `${job.role_id}:${documentKind}`;
+    if (openPreppedPreviews.has(key)) {
+      openPreppedPreviews.delete(key);
+      renderPreppedDetail();
+    } else {
+      openPreppedPreviews.add(key);
+      renderPreppedDetail();
+      loadPreppedPdfPreview(job, documentKind);
+    }
     return;
   }
   const regenerateButton = event.target.closest("[data-autoprep-regenerate]");
@@ -3782,10 +3965,18 @@ preppedDetail.addEventListener("click", async (event) => {
   const folderButton = event.target.closest("[data-autoprep-open-folder]");
   if (folderButton && !folderButton.disabled) {
     folderButton.disabled = true;
+    folderButton.textContent = "Opening...";
     try {
       const response = await fetch(`/api/autoprep/roles/${encodeURIComponent(job.role_id)}/open-folder`, {method: "POST"});
-      if (!response.ok) throw new Error("Folder open failed");
-    } finally {
+      if (!response.ok) throw new Error("Could not open the documents folder.");
+      folderButton.textContent = "Opened in Finder";
+      window.setTimeout(() => {
+        if (!folderButton.isConnected) return;
+        folderButton.textContent = "Open Documents Folder";
+        folderButton.disabled = false;
+      }, 1_500);
+    } catch (error) {
+      folderButton.textContent = error instanceof Error ? error.message : "Could not open folder";
       folderButton.disabled = false;
     }
     return;
@@ -4241,7 +4432,9 @@ companiesList.addEventListener("click", (event) => {
 });
 
 settingsForm.addEventListener("change", (event) => {
-  const control = event.target.closest('input[type="checkbox"], select, input[data-setting-text]');
+  const control = event.target.closest(
+    'input[type="checkbox"], select, input[data-setting-text], textarea[data-setting-textarea]',
+  );
   if (!control) return;
   saveSetting(control);
 });
@@ -4250,7 +4443,7 @@ settingsForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const submitButton = settingsForm.querySelector('button[type="submit"]');
   const controls = settingsForm.querySelectorAll(
-    'input[type="checkbox"][name], select[name], input[data-setting-text][name]',
+    'input[type="checkbox"][name], select[name], input[data-setting-text][name], textarea[data-setting-textarea][name]',
   );
   const payload = {};
   controls.forEach((control) => {

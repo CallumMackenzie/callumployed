@@ -513,7 +513,11 @@ def test_autoprep_api_lists_only_interested_and_returns_accepted_jobs_immediatel
             finish_autoprep_worker(connection, accepted["jobs"][0]["id"])
 
         opened: list[list[str]] = []
-        monkeypatch.setattr(web_server.subprocess, "Popen", lambda command: opened.append(command))
+        monkeypatch.setattr(
+            web_server.subprocess,
+            "run",
+            lambda command, **_kwargs: opened.append(command),
+        )
         open_request = Request(
             f"{base_url}/api/autoprep/roles/{interested_id}/open-folder",
             data=b"",
@@ -566,6 +570,16 @@ def test_autoprep_worker_uses_direct_generation_and_preserves_document_artifacts
             filename="resume.tex",
             content="\\documentclass{article}\\begin{document}Python\\end{document}",
         )
+        web_server.set_config_value(
+            connection,
+            web_server.AUTOPREP_RESUME_PROMPT_CONFIG_KEY,
+            "Use the saved resume prompt.",
+        )
+        web_server.set_config_value(
+            connection,
+            web_server.AUTOPREP_COVER_LETTER_PROMPT_CONFIG_KEY,
+            "Review indexed evidence before drafting.",
+        )
         [job] = enqueue_autoprep_jobs(connection, [role_id], idempotency_key="worker")
         assert claim_next_autoprep_job(connection) is not None
 
@@ -611,6 +625,8 @@ def test_autoprep_worker_uses_direct_generation_and_preserves_document_artifacts
     )
     assert stored_resume_latex[1] is None and stored_resume_latex[2] is None
     assert resume_calls and cover_calls
+    assert resume_calls[0]["tweaks"] == "Use the saved resume prompt."
+    assert cover_calls[0]["tweaks"] == "Review indexed evidence before drafting."
     assert resume_calls[0]["required_page_count"] == 1
     assert cover_calls[0]["allow_local_fallback"] is False
     assert cover_calls[0]["required_page_count"] == 1
@@ -625,7 +641,11 @@ def test_autoprep_worker_uses_direct_generation_and_preserves_document_artifacts
         assert claim_next_autoprep_job(connection) is not None
     web_server._process_autoprep_job(job["id"])
     assert len(cover_calls) == 2
-    assert cover_calls[-1]["tweaks"] == "Make the opening direct."
+    assert cover_calls[-1]["tweaks"] == (
+        "Review indexed evidence before drafting.\n\n"
+        "User feedback for this specific document version:\n"
+        "Make the opening direct."
+    )
 
 
 def test_autoprep_cover_letter_only_mode_copies_master_resume_with_role_filename(

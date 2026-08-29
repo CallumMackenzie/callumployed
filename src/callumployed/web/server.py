@@ -163,11 +163,23 @@ APPLICANT_INSTITUTION_CONFIG_KEY = "applicant_institution"
 APPLICANT_DEGREE_CONFIG_KEY = "applicant_degree"
 COVER_LETTER_MODEL_CONFIG_KEY = "cover_letter_model"
 AUTOPREP_TAILOR_RESUME_CONFIG_KEY = "autoprep_tailor_resume"
+AUTOPREP_RESUME_PROMPT_CONFIG_KEY = "autoprep_resume_prompt"
+AUTOPREP_COVER_LETTER_PROMPT_CONFIG_KEY = "autoprep_cover_letter_prompt"
 LLM_PROVIDER_CONFIG_KEY = "llm_provider"
 SCAN_HEADLESS_CONFIG_KEY = "scan_headless"
 DEFAULT_LLM_PROVIDER = "openai"
 DEFAULT_COVER_LETTER_MODEL = "gpt-4.1-mini"
 DEFAULT_AUTOPREP_TAILOR_RESUME = True
+DEFAULT_AUTOPREP_RESUME_PROMPT = (
+    "Tailor this resume truthfully for the saved role context. Preserve every employer, "
+    "project, education entry, date, and link while actively improving the wording. "
+    "Do not invent claims or awkwardly combine unrelated experiences."
+)
+DEFAULT_AUTOPREP_COVER_LETTER_PROMPT = (
+    "Review the indexed application materials as well as the resume and job description. "
+    "Use the strongest relevant, source-supported evidence to write a specific cover letter "
+    "for this company and role. Avoid generic claims and do not invent experience."
+)
 DEFAULT_SCAN_HEADLESS = False
 LLM_PROVIDER_OPTIONS = (
     ("openai", "OpenAI API key"),
@@ -640,6 +652,9 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             ):
                 self._open_autoprep_folder(path_parts[3])
                 return
+            if path_parts == ["api", "application-materials", "index", "open"]:
+                self._open_application_material_index()
+                return
             if (
                 len(path_parts) == 5
                 and path_parts[:3] == ["api", "autoprep", "roles"]
@@ -1076,8 +1091,36 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             if not isinstance(directory_value, str) or not Path(directory_value).is_dir():
                 self.send_error(HTTPStatus.NOT_FOUND, "Documents folder is not available")
                 return
-            subprocess.Popen(["open", directory_value])
+            try:
+                subprocess.run(["open", directory_value], check=True, timeout=10)
+            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                LOGGER.exception("Could not open Autoprep documents folder %s", directory_value)
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Could not open documents folder")
+                return
             self._send_json({"opened": True, "path": directory_value})
+
+        def _open_application_material_index(self) -> None:
+            notes: list[ExperienceNote] = []
+            with db.connect() as connection:
+                db.run_migrations(connection)
+                notes = list_experience_notes(connection)
+            status = get_material_index_status(
+                [_experience_note_index_source(note) for note in notes]
+            )
+            index_path = Path(str(status["index_path"]))
+            if status["status"] != "ready" or not index_path.is_file():
+                self.send_error(HTTPStatus.NOT_FOUND, "Application material index is not available")
+                return
+            try:
+                subprocess.run(["open", "-R", str(index_path)], check=True, timeout=10)
+            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                LOGGER.exception("Could not reveal application material index %s", index_path)
+                self.send_error(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    "Could not open application material index",
+                )
+                return
+            self._send_json({"opened": True, "path": str(index_path)})
 
         def _mark_autoprep_applied(self, role_id_text: str) -> None:
             try:
@@ -2055,6 +2098,8 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 *APPLICANT_PROFILE_TEXT_CONFIG_KEYS,
                 COVER_LETTER_MODEL_CONFIG_KEY,
                 AUTOPREP_TAILOR_RESUME_CONFIG_KEY,
+                AUTOPREP_RESUME_PROMPT_CONFIG_KEY,
+                AUTOPREP_COVER_LETTER_PROMPT_CONFIG_KEY,
                 LLM_PROVIDER_CONFIG_KEY,
                 SCAN_HEADLESS_CONFIG_KEY,
                 "central_api_url",
@@ -2114,6 +2159,12 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                     validated_payload[LLM_PROVIDER_CONFIG_KEY] = _clean_llm_provider(
                         payload[LLM_PROVIDER_CONFIG_KEY]
                     )
+                for key in (
+                    AUTOPREP_RESUME_PROMPT_CONFIG_KEY,
+                    AUTOPREP_COVER_LETTER_PROMPT_CONFIG_KEY,
+                ):
+                    if key in payload:
+                        validated_payload[key] = _clean_autoprep_prompt(payload[key])
                 if "location_filter" in payload:
                     location_filter = payload["location_filter"].strip().lower().replace("-", "_")
                     if location_filter not in LOCATION_FILTER_VALUES:
@@ -2189,6 +2240,12 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                             AUTOPREP_TAILOR_RESUME_CONFIG_KEY,
                             "true" if payload[AUTOPREP_TAILOR_RESUME_CONFIG_KEY] else "false",
                         )
+                    for key in (
+                        AUTOPREP_RESUME_PROMPT_CONFIG_KEY,
+                        AUTOPREP_COVER_LETTER_PROMPT_CONFIG_KEY,
+                    ):
+                        if key in payload:
+                            set_config_value(connection, key, _clean_autoprep_prompt(payload[key]))
                     if LLM_PROVIDER_CONFIG_KEY in payload:
                         set_config_value(
                             connection,
@@ -2371,6 +2428,8 @@ def build_config_payload() -> dict[str, Any]:
     llm_provider = configured_llm_provider
     cover_letter_model = DEFAULT_COVER_LETTER_MODEL
     autoprep_tailor_resume = DEFAULT_AUTOPREP_TAILOR_RESUME
+    autoprep_resume_prompt = DEFAULT_AUTOPREP_RESUME_PROMPT
+    autoprep_cover_letter_prompt = DEFAULT_AUTOPREP_COVER_LETTER_PROMPT
     scan_headless = DEFAULT_SCAN_HEADLESS
     with db.connect() as connection:
         db.run_migrations(connection)
@@ -2414,6 +2473,14 @@ def build_config_payload() -> dict[str, Any]:
         autoprep_tailor_resume = _config_bool(
             get_config_value(connection, AUTOPREP_TAILOR_RESUME_CONFIG_KEY),
             default=DEFAULT_AUTOPREP_TAILOR_RESUME,
+        )
+        autoprep_resume_prompt = (
+            get_config_value(connection, AUTOPREP_RESUME_PROMPT_CONFIG_KEY)
+            or DEFAULT_AUTOPREP_RESUME_PROMPT
+        )
+        autoprep_cover_letter_prompt = (
+            get_config_value(connection, AUTOPREP_COVER_LETTER_PROMPT_CONFIG_KEY)
+            or DEFAULT_AUTOPREP_COVER_LETTER_PROMPT
         )
         scan_headless = _config_bool(
             get_config_value(connection, SCAN_HEADLESS_CONFIG_KEY),
@@ -2526,6 +2593,27 @@ def build_config_payload() -> dict[str, Any]:
                 "control": "toggle",
                 "value": autoprep_tailor_resume,
                 "default": DEFAULT_AUTOPREP_TAILOR_RESUME,
+                "editable": True,
+            },
+            {
+                "key": AUTOPREP_RESUME_PROMPT_CONFIG_KEY,
+                "label": "resume prompt",
+                "description": "base instructions used whenever Autoprep tailors a resume",
+                "control": "textarea",
+                "value": autoprep_resume_prompt,
+                "default": DEFAULT_AUTOPREP_RESUME_PROMPT,
+                "editable": True,
+            },
+            {
+                "key": AUTOPREP_COVER_LETTER_PROMPT_CONFIG_KEY,
+                "label": "cover letter prompt",
+                "description": (
+                    "base instructions used for Autoprep cover letters; indexed material is "
+                    "retrieved separately and supplied to the generator"
+                ),
+                "control": "textarea",
+                "value": autoprep_cover_letter_prompt,
+                "default": DEFAULT_AUTOPREP_COVER_LETTER_PROMPT,
                 "editable": True,
             },
             {
@@ -3087,6 +3175,7 @@ def _prepare_autoprep_resume(
     instruction = ""
     previous_latex: str | None = None
     tailor_resume = DEFAULT_AUTOPREP_TAILOR_RESUME
+    configured_prompt = DEFAULT_AUTOPREP_RESUME_PROMPT
     with db.connect() as connection:
         current_job = get_autoprep_job(connection, job_id)
         instruction = str(current_job.get("resume_instruction") or "").strip()
@@ -3095,6 +3184,9 @@ def _prepare_autoprep_resume(
             get_config_value(connection, AUTOPREP_TAILOR_RESUME_CONFIG_KEY),
             default=DEFAULT_AUTOPREP_TAILOR_RESUME,
         )
+        configured_prompt = (
+            get_config_value(connection, AUTOPREP_RESUME_PROMPT_CONFIG_KEY) or configured_prompt
+        )
         mark_autoprep_document(
             connection,
             job_id,
@@ -3102,11 +3194,7 @@ def _prepare_autoprep_resume(
             "regenerating" if instruction else "generating_tweaks",
         )
     if tailor_resume:
-        tweaks = instruction or (
-            "Tailor this resume truthfully for the saved role context. Preserve every employer, "
-            "project, education entry, date, and link while actively improving the wording. "
-            "Do not invent claims or awkwardly combine unrelated experiences."
-        )
+        tweaks = _autoprep_generation_prompt(configured_prompt, instruction)
         generated = build_role_resume(
             role_payload,
             resume,
@@ -3152,10 +3240,15 @@ def _prepare_autoprep_cover_letter(
     """
     instruction = ""
     tailored_resume_latex: str | None = None
+    configured_prompt = DEFAULT_AUTOPREP_COVER_LETTER_PROMPT
     with db.connect() as connection:
         current_job = get_autoprep_job(connection, job_id)
         instruction = str(current_job.get("cover_letter_instruction") or "").strip()
         tailored_resume_latex = get_autoprep_resume_latex(connection, job_id)
+        configured_prompt = (
+            get_config_value(connection, AUTOPREP_COVER_LETTER_PROMPT_CONFIG_KEY)
+            or configured_prompt
+        )
         mark_autoprep_document(connection, job_id, "cover_letter", "generating")
     role_id = int(role_payload["id"])
     resume_for_generation = MasterResume(
@@ -3167,7 +3260,7 @@ def _prepare_autoprep_cover_letter(
     generated = build_role_cover_letter(
         role_payload,
         resume_for_generation,
-        tweaks=instruction or None,
+        tweaks=_autoprep_generation_prompt(configured_prompt, instruction),
         previous_cover_letter_latex=(
             str((previous_cover_letter or {}).get("latex") or "") or None
         ),
@@ -4710,6 +4803,27 @@ def _clean_cover_letter_model(value: object) -> str:
     if cleaned not in SUPPORTED_COVER_LETTER_MODELS:
         raise ValueError("Choose a supported cover letter model")
     return cleaned
+
+
+def _clean_autoprep_prompt(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Autoprep prompts must be text")
+    cleaned = value.strip()
+    if len(cleaned) > 8_000:
+        raise ValueError("Autoprep prompts must be 8,000 characters or fewer")
+    return cleaned
+
+
+def _autoprep_generation_prompt(base_prompt: str, feedback: str) -> str:
+    cleaned_base = _clean_autoprep_prompt(base_prompt)
+    cleaned_feedback = feedback.strip()
+    if not cleaned_feedback:
+        return cleaned_base
+    return (
+        f"{cleaned_base}\n\n"
+        "User feedback for this specific document version:\n"
+        f"{cleaned_feedback}"
+    )
 
 
 def _configured_browser_profile_manager() -> BrowserProfileManager:

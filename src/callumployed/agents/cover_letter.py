@@ -95,11 +95,16 @@ letters as the primary writing-style reference. Match the user's voice from
 those examples: sentence length, directness, level of technical specificity,
 paragraph rhythm, and closing style. Do not copy company-specific claims that do
 not apply to the current job.
-When provided, use other_experience_context as projects / employment history
-notes that may or may not already be on the resume. Treat them as optional
-supporting experience for the current cover letter. You may draw from these
-notes when they are relevant to the posting and accurate, but do not imply an
-experience is on the resume unless resume_context also supports it.
+When provided, other_experience_context contains role-relevant projects / employment history
+pages retrieved from the indexed application materials; those details may or may not already
+be on the resume. Review every retrieved page before drafting.
+First identify the strongest concrete evidence in those pages, compare it with
+the posting requirements, and deliberately use the most relevant evidence when
+it strengthens the letter. Do not treat this context as decorative or ignore it
+in favor of generic prose. If none of the retrieved evidence is genuinely
+relevant, rely on the resume instead rather than forcing a weak connection. You
+may use indexed experience that is not already on the resume, but do not imply
+it appears on the resume unless resume_context also supports it.
 When regeneration tweaks are provided, treat them as direct user feedback and
 apply them while preserving the resume/job truthfulness constraints. When a
 previous_cover_letter_context block is provided, treat regeneration_tweaks as
