@@ -686,6 +686,25 @@ def _bulk_cover_letter_result(
     }
 
 
+def get_latest_bulk_cover_letter_regeneration(
+    connection: turso.Connection,
+) -> dict[str, Any] | None:
+    row = connection.execute(
+        """
+        SELECT idempotency_key, result_json, created_at
+        FROM autoprep_bulk_cover_letter_requests
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if row is None:
+        return None
+    result = _bulk_cover_letter_result(connection, json.loads(str(row["result_json"])))
+    result["idempotency_key"] = str(row["idempotency_key"])
+    result["created_at"] = str(row["created_at"])
+    return result
+
+
 def queue_all_prepped_cover_letter_regenerations(
     connection: turso.Connection,
     *,

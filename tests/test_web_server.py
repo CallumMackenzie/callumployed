@@ -345,7 +345,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
         assert "/assets/app.css?v=react-ts-20260829-12" in index_markup
-        assert "/assets/build/app.js?v=react-ts-20260829-13" in index_markup
+        assert "/assets/build/app.js?v=react-ts-20260829-14" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -374,6 +374,9 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "Cover-letter regeneration in progress:" in app_javascript
         assert "Cover-letter regeneration complete:" in app_javascript
         assert "Queued regeneration failures:" in app_javascript
+        assert "payload.bulk_cover_letter_regeneration" in app_javascript
+        assert "preppedBulkRegeneration.jobs || preppedJobs" in app_javascript
+        assert "movingToDisinterested || autoprepJobIsActive(job)" in app_javascript
         assert '["failed", "interrupted"].includes(job.cover_letter_status)' in (
             app_javascript
         )

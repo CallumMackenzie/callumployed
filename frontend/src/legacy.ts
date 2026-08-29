@@ -3638,7 +3638,18 @@ async function refreshPreppedRoles() {
   try {
     const response = await fetch("/api/autoprep/jobs");
     if (!response.ok) throw new Error("Prepped roles request failed");
-    preppedJobs = (await response.json()).jobs ?? [];
+    const payload = await response.json();
+    preppedJobs = payload.jobs ?? [];
+    const latestBulk = payload.bulk_cover_letter_regeneration;
+    if (latestBulk) {
+      const bulkJobs = Array.isArray(latestBulk.jobs) ? latestBulk.jobs : [];
+      preppedBulkRegeneration = {
+        idempotencyKey: latestBulk.idempotency_key,
+        roleIds: bulkJobs.map((job) => Number(job.role_id)),
+        jobs: bulkJobs,
+        skipped: Array.isArray(latestBulk.skipped) ? latestBulk.skipped : [],
+      };
+    }
     if (!preppedJobs.some((job) => Number(job.role_id) === Number(selectedPreppedRoleId))) {
       selectedPreppedRoleId = preppedJobs[0]?.role_id ?? null;
     }
@@ -3698,8 +3709,9 @@ function discardStalePreppedPreviews() {
 
 function updatePreppedBulkRegenerationMessage() {
   if (!preppedBulkRegeneration) return;
+  const currentBulkJobs = preppedBulkRegeneration.jobs || preppedJobs;
   const jobsByRoleId = new Map(
-    preppedJobs.map((job) => [Number(job.role_id), job]),
+    currentBulkJobs.map((job) => [Number(job.role_id), job]),
   );
   const trackedJobs = preppedBulkRegeneration.roleIds.map(
     (roleId) => jobsByRoleId.get(Number(roleId)),
@@ -3784,6 +3796,7 @@ function renderPreppedDetail() {
     ["Posting ID", job.posting_id || "Unavailable"],
   ];
   const movingToDisinterested = preppedStatusChangeRoleIds.has(Number(job.role_id));
+  const disinterestedUnavailable = movingToDisinterested || autoprepJobIsActive(job);
   preppedDetail.innerHTML = `
     <header class="prepped-detail-heading">
       <div><p class="eyebrow">${escapeUiText(job.company_name)}</p><h3>${roleLink}</h3></div>
@@ -3803,7 +3816,7 @@ function renderPreppedDetail() {
       <button type="button" data-prepped-nav="previous" ${currentIndex <= 0 ? "disabled" : ""}>Previous</button>
       <button type="button" data-prepped-nav="next" ${currentIndex >= preppedJobs.length - 1 ? "disabled" : ""}>Next</button>
       <button type="button" data-autoprep-open-folder ${job.artifact_directory ? "" : "disabled"}>Open Documents Folder</button>
-      <button class="prepped-disinterested" type="button" data-autoprep-disinterested aria-busy="${movingToDisinterested ? "true" : "false"}" ${movingToDisinterested ? "disabled" : ""}>${movingToDisinterested ? "Moving to Disinterested..." : "Move to Disinterested"}</button>
+      <button class="prepped-disinterested" type="button" data-autoprep-disinterested aria-busy="${movingToDisinterested ? "true" : "false"}" ${disinterestedUnavailable ? "disabled" : ""} title="${autoprepJobIsActive(job) ? "Wait for preparation to finish before moving this role" : "Move this role out of Prepped"}">${movingToDisinterested ? "Moving to Disinterested..." : "Move to Disinterested"}</button>
       <button class="success" type="button" data-autoprep-applied ${job.overall_status === "ready" ? "" : "disabled"}>Applied</button>
     </div>
     <p class="prepped-safety-note">Autoprep prepares files only. It never submits an application.</p>`;
@@ -3944,6 +3957,7 @@ async function regenerateAllPreppedCoverLetters() {
     const skipped = Array.isArray(payload.skipped) ? payload.skipped : [];
     preppedBulkRegeneration = {
       roleIds: (payload.jobs || []).map((job) => Number(job.role_id)),
+      jobs: payload.jobs || [],
       skipped,
     };
     if (!queuedCount && !skipped.length) {

@@ -2,6 +2,7 @@ import json
 import time
 from pathlib import Path
 from threading import Event, Thread
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import pytest
@@ -715,6 +716,23 @@ def test_bulk_cover_letter_regeneration_api_queues_prepped_cover_letters(
         assert payload["jobs"][0]["role_id"] == role_id
         assert payload["jobs"][0]["resume_status"] == "ready"
         assert payload["jobs"][0]["cover_letter_status"] == "queued"
+        with urlopen(f"{base_url}/api/autoprep/jobs", timeout=5) as response:
+            refreshed = json.loads(response.read())
+        latest_bulk = refreshed["bulk_cover_letter_regeneration"]
+        assert latest_bulk["idempotency_key"] == "bulk-cover-api-click"
+        assert latest_bulk["requested_count"] == 1
+        assert latest_bulk["jobs"][0]["role_id"] == role_id
+        assert latest_bulk["jobs"][0]["cover_letter_status"] == "queued"
+
+        disinterested_request = Request(
+            f"{base_url}/api/roles/{role_id}/status",
+            data=json.dumps({"status": "disinterested"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(HTTPError) as caught:
+            urlopen(disinterested_request, timeout=5)
+        assert caught.value.code == 409
         with db.connect() as connection:
             assert get_autoprep_job(connection, job_id)["role_status"] == "interested"
 

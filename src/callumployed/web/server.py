@@ -134,6 +134,7 @@ from callumployed.services.autoprep import (
     finish_autoprep_worker,
     get_autoprep_job,
     get_autoprep_resume_latex,
+    get_latest_bulk_cover_letter_regeneration,
     get_role_autoprep_job,
     list_autoprep_jobs,
     list_interested_autoprep_roles,
@@ -1218,6 +1219,22 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             role: Role | None = None
             try:
                 with db.connect() as connection:
+                    if status is RoleStatus.DISINTERESTED:
+                        ensure_autoprep_schema(connection)
+                        connection.execute("BEGIN IMMEDIATE")
+                        active_job = get_role_autoprep_job(connection, role_id)
+                        if active_job is not None and active_job["worker_state"] != "idle":
+                            connection.rollback()
+                            self._send_json_with_status(
+                                {
+                                    "error": (
+                                        "Wait for this role's active preparation to finish "
+                                        "before moving it to Disinterested."
+                                    )
+                                },
+                                HTTPStatus.CONFLICT,
+                            )
+                            return
                     previous_role = get_role(connection, role_id)
                     role = set_role_status(
                         connection,
@@ -3138,11 +3155,17 @@ def build_autoprep_interested_payload() -> dict[str, Any]:
 
 
 def build_prepped_roles_payload() -> dict[str, Any]:
+    jobs: list[dict[str, Any]] = []
+    bulk_regeneration: dict[str, Any] | None = None
     with db.connect() as connection:
         db.run_migrations(connection)
         ensure_autoprep_schema(connection)
         jobs = list_autoprep_jobs(connection)
-    return {"jobs": jobs}
+        bulk_regeneration = get_latest_bulk_cover_letter_regeneration(connection)
+    return {
+        "jobs": jobs,
+        "bulk_cover_letter_regeneration": bulk_regeneration,
+    }
 
 
 def _wake_autoprep_coordinator() -> None:
