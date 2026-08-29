@@ -16,6 +16,18 @@ from callumployed.data.repositories import (
     list_scan_pages,
 )
 
+_REJECTION_REASON_CATEGORIES = {
+    "closed role filtered by app config": "closed_role",
+    "deterministic evidence is weak; llm fallback recommended": "weak_evidence",
+    "graduate-degree role filtered by app config": "graduate_degree_filter",
+    "hardware-only role filtered by app config": "hardware_filter",
+    "intern keyword requirement filtered by app config": "internship_filter",
+    "location filtered by app config": "location_filter",
+    "page looks like a careers search/listing page": "listing_page",
+    "page rendered a transient error shell": "transient_page_error",
+    "software keyword requirement filtered by app config": "software_keyword_filter",
+}
+
 
 def build_scan_metrics(
     connection: turso.Connection,
@@ -57,7 +69,7 @@ def build_scan_metrics(
         attempt.assessment_extraction_method or "unknown" for attempt in attempts
     )
     rejection_reason_counts = Counter(
-        attempt.assessment_rejection_reason or "unspecified"
+        _rejection_reason_category(attempt.assessment_rejection_reason)
         for attempt in attempts
         if attempt.assessment_is_role is not True or attempt.assessment_is_closed is True
     )
@@ -118,6 +130,12 @@ def _confidence_bucket(confidence: float) -> str:
     if confidence >= 0.5:
         return "medium"
     return "low"
+
+
+def _rejection_reason_category(reason: str | None) -> str:
+    if reason is None or not reason.strip():
+        return "unspecified"
+    return _REJECTION_REASON_CATEGORIES.get(reason.strip().casefold(), "other")
 
 
 def _verification_outcome(attempt: object) -> str:

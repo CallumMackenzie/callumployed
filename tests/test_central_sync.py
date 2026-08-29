@@ -8,7 +8,7 @@ from callumployed.central.config import (
     get_central_api_url,
     set_central_api_url,
 )
-from callumployed.central.metrics import build_scan_metrics
+from callumployed.central.metrics import _rejection_reason_category, build_scan_metrics
 from callumployed.central.models import (
     CentralCompaniesResponse,
     CentralCompany,
@@ -318,3 +318,17 @@ def test_build_scan_metrics_aggregates_persisted_scan_data() -> None:
     assert metrics.candidate_selection_counts == {"selected": 1, "rejected": 1}
     assert metrics.candidate_discovery_method_counts == {"unclassified": 2}
     assert metrics.agent_trace_present is False
+
+
+def test_scan_metric_rejection_reasons_are_privacy_safe_categories() -> None:
+    assert _rejection_reason_category(None) == "unspecified"
+    assert (
+        _rejection_reason_category("location filtered by app config")
+        == "location_filter"
+    )
+    assert (
+        _rejection_reason_category(
+            "Rejected because jane@example.com appeared in the source posting"
+        )
+        == "other"
+    )
