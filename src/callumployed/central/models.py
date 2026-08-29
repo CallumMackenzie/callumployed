@@ -80,7 +80,7 @@ class BulkUpsertRolesResponse(CentralModel):
 
 
 class ScanMetricsRequest(CentralModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     client_id: str = Field(min_length=1, max_length=128)
     scan_event_id: str = Field(min_length=1, max_length=128)
     global_company_id: str | None = Field(default=None, max_length=128)
@@ -97,6 +97,15 @@ class ScanMetricsRequest(CentralModel):
     verified_open_roles: int = Field(ge=0, le=1_000_000)
     roles_saved: int = Field(ge=0, le=1_000_000)
     failed_role_visits: int = Field(ge=0, le=1_000_000)
+    page_confidence_counts: dict[str, int] = Field(default_factory=dict)
+    candidate_confidence_counts: dict[str, int] = Field(default_factory=dict)
+    candidate_selection_counts: dict[str, int] = Field(default_factory=dict)
+    candidate_discovery_method_counts: dict[str, int] = Field(default_factory=dict)
+    verification_status_counts: dict[str, int] = Field(default_factory=dict)
+    verification_outcome_counts: dict[str, int] = Field(default_factory=dict)
+    extraction_method_counts: dict[str, int] = Field(default_factory=dict)
+    rejection_reason_counts: dict[str, int] = Field(default_factory=dict)
+    agent_trace_present: bool = False
     error_type: str | None = Field(default=None, max_length=128)
     app_version: str = Field(min_length=1, max_length=64)
 

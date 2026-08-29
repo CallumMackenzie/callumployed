@@ -15,6 +15,17 @@ const COUNT_FIELDS = [
   "failed_role_visits",
 ] as const;
 
+const BREAKDOWN_FIELDS = [
+  "page_confidence_counts",
+  "candidate_confidence_counts",
+  "candidate_selection_counts",
+  "candidate_discovery_method_counts",
+  "verification_status_counts",
+  "verification_outcome_counts",
+  "extraction_method_counts",
+  "rejection_reason_counts",
+] as const;
+
 export async function submitScanMetrics(
   db: Firestore,
   input: Partial<ScanMetricsRequest>,
@@ -36,7 +47,9 @@ function validateScanMetrics(input: Partial<ScanMetricsRequest>): ScanMetricsReq
   const scanEventId = requiredString(input.scan_event_id, "scan_event_id", 128);
   const companyName = requiredString(input.company_name, "company_name", 256);
   const appVersion = requiredString(input.app_version, "app_version", 64);
-  if (input.schema_version !== 1) throw new Error("schema_version must be 1");
+  if (input.schema_version !== 1 && input.schema_version !== 2) {
+    throw new Error("schema_version must be 1 or 2");
+  }
   if (input.scan_status !== "succeeded" && input.scan_status !== "failed") {
     throw new Error("scan_status must be succeeded or failed");
   }
@@ -48,9 +61,12 @@ function validateScanMetrics(input: Partial<ScanMetricsRequest>): ScanMetricsReq
       nonNegativeInteger(input[field], field, field === "duration_ms" ? 86_400_000 : 1_000_000),
     ]),
   ) as Record<(typeof COUNT_FIELDS)[number], number>;
+  const breakdowns = Object.fromEntries(
+    BREAKDOWN_FIELDS.map((field) => [field, countBreakdown(input[field], field)]),
+  ) as Record<(typeof BREAKDOWN_FIELDS)[number], Record<string, number>>;
 
   return {
-    schema_version: 1,
+    schema_version: input.schema_version,
     client_id: clientId,
     scan_event_id: scanEventId,
     global_company_id: optionalString(input.global_company_id, 128),
@@ -67,9 +83,25 @@ function validateScanMetrics(input: Partial<ScanMetricsRequest>): ScanMetricsReq
     verified_open_roles: counts.verified_open_roles,
     roles_saved: counts.roles_saved,
     failed_role_visits: counts.failed_role_visits,
+    ...breakdowns,
+    agent_trace_present: input.agent_trace_present === true,
     error_type: optionalString(input.error_type, 128),
     app_version: appVersion,
   };
+}
+
+function countBreakdown(value: unknown, field: string): Record<string, number> {
+  if (value === undefined) return {};
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`${field} must be an object of non-negative integer counts`);
+  }
+  const entries = Object.entries(value);
+  if (entries.length > 100) throw new Error(`${field} has too many categories`);
+  return Object.fromEntries(entries.map(([rawKey, rawCount]) => {
+    const key = rawKey.trim();
+    if (!key || key.length > 256) throw new Error(`${field} contains an invalid category`);
+    return [key, nonNegativeInteger(rawCount, `${field}.${key}`, 1_000_000)];
+  }));
 }
 
 function requiredString(value: unknown, field: string, maxLength: number): string {

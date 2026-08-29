@@ -312,3 +312,9 @@ def test_build_scan_metrics_aggregates_persisted_scan_data() -> None:
     assert metrics.candidates_scanned == 4
     assert metrics.potential_roles_discovered == 1
     assert metrics.scan_status == "succeeded"
+    assert metrics.schema_version == 2
+    assert metrics.page_confidence_counts == {"low": 1}
+    assert metrics.candidate_confidence_counts == {"high": 1, "medium": 1}
+    assert metrics.candidate_selection_counts == {"selected": 1, "rejected": 1}
+    assert metrics.candidate_discovery_method_counts == {"unclassified": 2}
+    assert metrics.agent_trace_present is False
