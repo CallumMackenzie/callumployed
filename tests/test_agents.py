@@ -212,6 +212,20 @@ def test_cover_letter_prompt_includes_resume_job_and_tool_results() -> None:
     assert "must name the exact company and role" in prompt
     assert "specific responsibilities or requirements from the posting" in prompt
     assert "avoid generic filler" in prompt
+    assert "exactly four cohesive body paragraphs" in prompt
+    assert "how the role was found or a referral only when" in prompt
+    assert "task or problem, the action taken, and the result delivered" in prompt
+    assert "Never invent a number or metric" in prompt
+    assert "soft skills through concrete evidence" in prompt
+    assert "only when the posting asks for AI" in prompt
+    assert "one evidence paragraph must discuss source-supported AI work" in prompt
+    assert "Hermes or a relevant AI-enabled application by name" in prompt
+    normalized_prompt = " ".join(prompt.split())
+    assert "independently directed AI-enabled application" in normalized_prompt
+    assert "merely listing coding assistants used in an unrelated job" in normalized_prompt
+    assert "company values, mission, product, domain, or recent work" in prompt
+    assert "thank the reader for their time" in prompt
+    assert "invite an interview or conversation" in prompt
     assert "Use this exact LaTeX scaffold" in prompt
     assert "named hiring contact" in prompt
     assert "Dear Hiring Manager" in prompt

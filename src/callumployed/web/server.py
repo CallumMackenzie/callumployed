@@ -180,8 +180,13 @@ DEFAULT_AUTOPREP_RESUME_PROMPT = (
 )
 DEFAULT_AUTOPREP_COVER_LETTER_PROMPT = (
     "Review the indexed application materials as well as the resume and job description. "
-    "Use the strongest relevant, source-supported evidence to write a specific cover letter "
-    "for this company and role. Avoid generic claims and do not invent experience."
+    "Write a balanced, company-specific cover letter using the strongest 2-3 source-supported "
+    "examples. Explain the task or problem, action taken, and result delivered; demonstrate "
+    "relevant soft skills through evidence rather than generic claims. For AI-related roles, "
+    "use a source-supported, independently directed AI application and its outcome when "
+    "available, naming Hermes when the source supports it. Close by thanking the reader and "
+    "inviting an interview. Do not invent experience, referrals, company research, outcomes, "
+    "or metrics."
 )
 DEFAULT_SCAN_HEADLESS = False
 LLM_PROVIDER_OPTIONS = (
@@ -5456,17 +5461,31 @@ def _generation_experience_context(
             tweaks,
         )
     )
+    ai_role = _role_requests_ai_experience(role)
+    ai_project_context = _ai_project_experience_context(notes) if ai_role else None
+    if ai_role:
+        query = (
+            f"{query} independently directed AI-assisted projects "
+            "Hermes AI application product architecture testing outcome"
+        )
+    retrieval_content_limit = max(
+        1,
+        total_content_limit
+        - len(str(ai_project_context.get("content") or ""))
+        if ai_project_context
+        else total_content_limit,
+    )
     indexed = retrieve_indexed_materials(
         sources,
         query=query,
-        total_content_limit=total_content_limit,
+        total_content_limit=retrieval_content_limit,
     )
     if indexed:
-        return indexed
+        return [*indexed, ai_project_context] if ai_project_context else indexed
 
     if not notes:
         return []
-    per_note_limit = max(1, total_content_limit // min(len(notes), 5))
+    per_note_limit = max(1, retrieval_content_limit // min(len(notes), 5))
     bounded: list[dict[str, object]] = []
     for note in notes[:5]:
         content = _bounded_experience_text(note.content, per_note_limit)
@@ -5477,7 +5496,47 @@ def _generation_experience_context(
                 "updated_at": note.updated_at.isoformat() if note.updated_at else None,
             }
         )
+    if ai_project_context:
+        bounded.append(ai_project_context)
     return bounded
+
+
+def _role_requests_ai_experience(role: dict[str, Any]) -> bool:
+    role_text = " ".join(
+        str(role.get(key) or "") for key in ("title", "description")
+    )
+    return bool(
+        re.search(
+            r"(?i)\b(?:ai|artificial intelligence|machine learning|ml platform|llm|"
+            r"generative ai)\b",
+            role_text,
+        )
+    )
+
+
+def _ai_project_experience_context(
+    notes: list[ExperienceNote],
+    *,
+    limit: int = 6_000,
+) -> dict[str, object] | None:
+    preferred_patterns = (
+        r"(?im)^#{1,3}\s+.*independently directed AI-assisted projects.*$",
+        r"(?im)^#{1,3}\s+.*AI-enabled application.*$",
+        r"(?i)\bHermes Agent\b",
+    )
+    for pattern in preferred_patterns:
+        for note in notes:
+            match = re.search(pattern, note.content)
+            if match is None:
+                continue
+            content = note.content[match.start() : match.start() + limit].strip()
+            if content:
+                return {
+                    "filename": f"{note.filename} — AI project evidence",
+                    "content": content,
+                    "updated_at": note.updated_at.isoformat() if note.updated_at else None,
+                }
+    return None
 
 
 def _bounded_experience_text(content: str, limit: int) -> str:

@@ -3868,6 +3868,11 @@ function renderPreppedDocument(job, documentKind, label) {
   const instruction = job[`${fieldKind}_instruction`] || "";
   const key = `${job.role_id}:${documentKind}`;
   const comments = preppedCommentsByDocument.get(key) ?? instruction;
+  const commentsLabel = documentKind === "cover-letter" ? "Optional comments for the next version" : "Comments for the next version";
+  const commentsPlaceholder = documentKind === "cover-letter"
+    ? "Optionally describe specific, truthful changes..."
+    : "Describe specific, truthful changes...";
+  const canRegenerate = status === "ready" && (documentKind === "cover-letter" || String(comments).trim());
   const active = ["queued", "generating", "generating_tweaks", "regenerating"].includes(status);
   const retryButton = ["failed", "interrupted"].includes(status)
     ? `<button type="button" data-autoprep-retry="${documentKind}">Retry ${escapeHtml(label.toLowerCase())}</button>`
@@ -3895,9 +3900,9 @@ function renderPreppedDocument(job, documentKind, label) {
         ${previewOpen && previewLoading ? `<p>Loading PDF preview...</p>` : ""}
         ${previewOpen && previewError ? `<p class="prepped-error">${escapeUiText(previewError)}</p>` : ""}
       </div>
-      <label class="prepped-comments-label" for="prepped-comments-${escapeHtml(key)}">Comments for the next version</label>
-      <textarea id="prepped-comments-${escapeHtml(key)}" data-autoprep-comments="${documentKind}" rows="4" placeholder="Describe specific, truthful changes..." ${active ? "disabled" : ""}>${escapeUiText(comments)}</textarea>
-      <button class="prepped-regenerate" type="button" data-autoprep-regenerate="${documentKind}" ${status === "ready" && String(comments).trim() ? "" : "disabled"}>${active ? "Regenerating..." : `Regenerate ${escapeHtml(label)}`}</button>
+      <label class="prepped-comments-label" for="prepped-comments-${escapeHtml(key)}">${commentsLabel}</label>
+      <textarea id="prepped-comments-${escapeHtml(key)}" data-autoprep-comments="${documentKind}" rows="4" placeholder="${commentsPlaceholder}" ${active ? "disabled" : ""}>${escapeUiText(comments)}</textarea>
+      <button class="prepped-regenerate" type="button" data-autoprep-regenerate="${documentKind}" ${canRegenerate ? "" : "disabled"}>${active ? "Regenerating..." : `Regenerate ${escapeHtml(label)}`}</button>
     </section>`;
 }
 
@@ -3906,7 +3911,7 @@ async function regenerateAutoprepDocument(job, documentKind, button) {
   const key = `${job.role_id}:${documentKind}`;
   const textarea = preppedDetail.querySelector(`[data-autoprep-comments="${documentKind}"]`);
   const comments = String(textarea?.value || preppedCommentsByDocument.get(key) || "").trim();
-  if (!comments) {
+  if (!comments && documentKind !== "cover-letter") {
     textarea?.focus();
     return;
   }

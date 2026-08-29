@@ -218,16 +218,39 @@ Integrate the context deliberately:
   deliberately instead of starting from scratch; preserve strong targeted
   material, remove or rewrite the parts contradicted by the feedback, and keep
   the final letter grounded in resume_context and job_context
-- select the 2-3 strongest overlaps between the resume and posting; do not try
-  to mention every relevant technology or project
+- select the 2-3 strongest overlaps between the applicant's evidence and posting;
+  do not try to mention every relevant technology or project
 - synthesize those experiences into smooth prose in the user's voice; do not dump
   resume bullets into paragraphs or awkwardly combine unrelated experiences
+- write exactly four cohesive body paragraphs with balanced purposes:
+  1. Introduction: it must name the exact company and role, state direct interest, and
+     mention how the role was found or a referral only when job_context or the
+     approved applicant evidence explicitly supports that fact. Never invent a
+     discovery source, referral, or personal connection.
+  2. Relevant evidence: connect a primary job requirement to a concise story that
+     explains the task or problem, the action taken, and the result delivered.
+  3. Complementary evidence: connect another priority to a distinct project or job
+     example, and demonstrate relevant soft skills through concrete evidence of
+     collaboration, communication, ownership, adaptability, leadership, or problem
+     solving rather than merely claiming those traits. When an outcome is supported
+     but unquantified, describe it plainly. Never invent a number or metric.
+  4. Company fit and conclusion: explain specific interest using only supplied
+     evidence about company values, mission, product, domain, or recent work;
+     then thank the reader for their time and invite an interview or conversation.
+- use source-supported AI work only when the posting asks for AI, machine
+  learning, LLM, or closely related experience. For those roles, when the supplied
+  context contains relevant AI experience, one requirement applies:
+  one evidence paragraph must discuss source-supported AI work.
+  Name Hermes or a relevant AI-enabled application by name
+  when the source supports it, and explain what the applicant built, how they used AI
+  responsibly, and the supported result. If the context offers an independently
+  directed AI-enabled application, use that concrete product and outcome instead of
+  merely listing coding assistants used in an unrelated job. Mention Hermes when the
+  source identifies it as part of that workflow. Never imply an AI project exists from
+  this instruction alone
 - tailor every body paragraph to the specific position; a paragraph that could
   be sent unchanged to another company is too generic
-- the first body paragraph must name the exact company and role, then connect
-  the user's interest to concrete work, team, domain, or requirements from
-  job_context.description
-- the remaining body paragraphs must pair specific resume evidence with
+- evidence paragraphs must pair specific applicant evidence with
   specific responsibilities or requirements from the posting
 - reuse 1-2 distinctive phrases from the posting when they are truthful and
   natural, but do not invent company facts or unsupported enthusiasm
@@ -266,7 +289,7 @@ the retrieved examples:
 - include opening and closing lines
 - keep paragraphs visually separated with vertical space
 - ensure the generated PDF fits on one page at 11pt and uses the page effectively;
-  write 3-4 cohesive body paragraphs, roughly 325-400 words total, with enough
+  write exactly four cohesive body paragraphs, roughly 325-400 words total, with enough
   source-supported detail to avoid a large empty lower half of the page
 - keep it concise, specific, and honest
 - mention only experience supported by resume_context or other_experience_context
@@ -295,7 +318,7 @@ recipient lines, greeting if needed, and body paragraphs:
 \\noindent Dear <explicitly named hiring contact, or Hiring Manager>,\\par
 \\vspace{0.35em}
 
-<three or four concise body paragraphs>
+<exactly four concise body paragraphs>
 
 \\vspace{0.35em}
 \\noindent Sincerely,\\\\[12pt]

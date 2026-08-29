@@ -23,7 +23,14 @@ from callumployed.agents.cover_letter import ApplicantProfile
 from callumployed.central.config import DEFAULT_CENTRAL_API_URL
 from callumployed.cli import app
 from callumployed.data import db
-from callumployed.data.models import Company, Role, RoleDiscoveryAttempt, RoleStatus, ScanStatus
+from callumployed.data.models import (
+    Company,
+    ExperienceNote,
+    Role,
+    RoleDiscoveryAttempt,
+    RoleStatus,
+    ScanStatus,
+)
 from callumployed.data.repositories import (
     add_company,
     add_cover_letter_example,
@@ -345,7 +352,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
         assert "/assets/app.css?v=react-ts-20260829-12" in index_markup
-        assert "/assets/build/app.js?v=react-ts-20260829-14" in index_markup
+        assert "/assets/build/app.js?v=react-ts-20260829-15" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -377,6 +384,11 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "payload.bulk_cover_letter_regeneration" in app_javascript
         assert "preppedBulkRegeneration.jobs || preppedJobs" in app_javascript
         assert "movingToDisinterested || autoprepJobIsActive(job)" in app_javascript
+        assert 'documentKind === "cover-letter" ? "Optional comments for the next version"' in (
+            app_javascript
+        )
+        assert 'documentKind === "cover-letter" || String(comments).trim()' in app_javascript
+        assert 'if (!comments && documentKind !== "cover-letter")' in app_javascript
         assert '["failed", "interrupted"].includes(job.cover_letter_status)' in (
             app_javascript
         )
@@ -417,6 +429,50 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+def test_ai_role_experience_retrieval_requests_concrete_ai_project_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_retrieve(
+        _sources: list[dict[str, object]],
+        *,
+        query: str,
+        total_content_limit: int,
+    ) -> list[dict[str, object]]:
+        captured["query"] = query
+        return [{"filename": "ai-project.md", "content": "source-grounded AI project"}]
+
+    monkeypatch.setattr(web_server, "retrieve_indexed_materials", fake_retrieve)
+
+    note = ExperienceNote(
+        id=1,
+        filename="projects.md",
+        content=(
+            "## 3. Independently Directed AI-Assisted Projects\n\n"
+            "Used Hermes Agent responsibly while building Nourish, an AI-enabled application."
+        ),
+        content_sha256="abc123",
+        updated_at=None,
+    )
+    result = web_server._generation_experience_context(
+        [note],
+        role={
+            "title": "Software Engineer, AI Platform - Intern",
+            "company_name": "Nuro",
+            "description": "Build machine learning infrastructure.",
+        },
+        tweaks=None,
+    )
+
+    assert result[0]["filename"] == "ai-project.md"
+    assert result[1]["filename"] == "projects.md — AI project evidence"
+    assert "Nourish" in str(result[1]["content"])
+    assert "Hermes Agent" in str(result[1]["content"])
+    assert "independently directed AI-assisted projects" in captured["query"]
+    assert "Hermes AI application product architecture testing outcome" in captured["query"]
 
 
 def test_tracker_json_uses_gzip_when_client_accepts_it(

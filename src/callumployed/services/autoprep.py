@@ -14,9 +14,12 @@ from callumployed.data import db
 
 DocumentKind = Literal["resume", "cover_letter"]
 LOGGER = logging.getLogger(__name__)
-BULK_COVER_LETTER_REGENERATION_INSTRUCTION = (
+DEFAULT_COVER_LETTER_REGENERATION_INSTRUCTION = (
     "Refresh this cover letter using the current role description and approved application "
     "materials. Preserve source fidelity and professional one-page formatting."
+)
+BULK_COVER_LETTER_REGENERATION_INSTRUCTION = (
+    DEFAULT_COVER_LETTER_REGENERATION_INSTRUCTION
 )
 
 _RESUME_STATUSES = {
@@ -608,7 +611,7 @@ def _queue_autoprep_regeneration_in_transaction(
     if job["worker_state"] != "idle":
         raise AutoprepConflictError("This role is already being prepared.")
     if str(job[f"{prefix}_status"]) != "ready":
-        raise AutoprepConflictError("Only a ready document can be regenerated with comments.")
+        raise AutoprepConflictError("Only a ready document can be regenerated.")
     connection.execute(
         """
         INSERT INTO autoprep_regenerations (
@@ -649,7 +652,10 @@ def queue_autoprep_regeneration(
     if not clean_key:
         raise ValueError("An idempotency key is required.")
     if not clean_instruction:
-        raise ValueError("Add comments before regenerating the document.")
+        if document_kind == "cover_letter":
+            clean_instruction = DEFAULT_COVER_LETTER_REGENERATION_INSTRUCTION
+        else:
+            raise ValueError("Add comments before regenerating the document.")
     if len(clean_instruction) > 4000:
         raise ValueError("Regeneration comments must be 4000 characters or fewer.")
     try:

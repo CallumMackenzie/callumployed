@@ -256,6 +256,36 @@ def test_ready_document_can_be_regenerated_with_persisted_comments(tmp_path: Pat
         assert regenerated["description"] == "Build reliable Python services."
 
 
+def test_ready_cover_letter_can_be_regenerated_without_comments(tmp_path: Path) -> None:
+    database = tmp_path / "autoprep-cover-letter-regeneration.sqlite3"
+    with db.connect(database) as connection:
+        db.run_migrations(connection)
+        ensure_autoprep_schema(connection)
+        role_id = _interested_role(connection)
+        [job] = enqueue_autoprep_jobs(connection, [role_id], idempotency_key="attempt")
+        assert claim_next_autoprep_job(connection) is not None
+        mark_autoprep_document(connection, job["id"], "resume", "ready")
+        mark_autoprep_document(connection, job["id"], "cover_letter", "ready")
+        finish_autoprep_worker(connection, job["id"])
+
+        regenerated = queue_autoprep_regeneration(
+            connection,
+            role_id,
+            "cover_letter",
+            instruction="   ",
+            idempotency_key="regenerate-cover-letter-without-comments",
+        )
+
+        assert regenerated["worker_state"] == "queued"
+        assert regenerated["resume_status"] == "ready"
+        assert regenerated["cover_letter_status"] == "queued"
+        assert regenerated["cover_letter_instruction"] == (
+            "Refresh this cover letter using the current role description and approved "
+            "application materials. Preserve source fidelity and professional one-page "
+            "formatting."
+        )
+
+
 def test_startup_recovery_marks_unfinished_documents_interrupted(tmp_path: Path) -> None:
     database = tmp_path / "autoprep-recovery.sqlite3"
     with db.connect(database) as connection:
