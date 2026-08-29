@@ -351,8 +351,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=react-ts-20260829-14" in index_markup
-        assert "/assets/build/app.js?v=react-ts-20260829-18" in index_markup
+        assert "/assets/app.css?v=react-ts-20260829-16" in index_markup
+        assert "/assets/build/app.js?v=react-ts-20260829-20" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -389,18 +389,26 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         )
         assert "autoprepJobHasGenerationFailure(job)" in app_javascript
         assert "autoprepCoverLetterIsGenerating(job)" in app_javascript
-        assert '" is-cover-letter-generating"' in app_javascript
+        assert "autoprepJobIsGenerating(job)" in app_javascript
+        assert '" is-document-generating"' in app_javascript
         assert (
-            "const coverLetterGenerating =\n"
-            "      !hasGenerationFailure && autoprepCoverLetterIsGenerating(job);"
+            "const documentGenerating = !hasGenerationFailure && "
+            "autoprepJobIsGenerating(job);"
         ) in app_javascript
-        assert ".prepped-list-item.is-cover-letter-generating" in app_styles
+        assert ".prepped-list-item.is-document-generating" in app_styles
         assert "@keyframes prepped-cover-letter-pulse" in app_styles
+        assert "autoprepJobIsQueued(job)" in app_javascript
+        assert '" is-generation-queued"' in app_javascript
+        assert ".prepped-list-item.is-generation-queued" in app_styles
+        assert "@keyframes prepped-queue-breathe" in app_styles
         assert "prefers-reduced-motion: reduce" in app_styles
+        assert "openPreppedDetailSections" in app_javascript
+        assert 'data-prepped-detail-section="description"' in app_javascript
+        assert 'preppedDetail.addEventListener("toggle"' in app_javascript
         failed_list_item_class = (
-            'class="prepped-list-item${coverLetterGenerating ? '
-            '" is-cover-letter-generating" : ""}${hasGenerationFailure ? '
-            '" has-generation-failure" : ""}${activeClass}"'
+            'class="prepped-list-item${generationQueued ? " is-generation-queued" : ""}'
+            '${documentGenerating ? " is-document-generating" : ""}'
+            '${hasGenerationFailure ? " has-generation-failure" : ""}${activeClass}"'
         )
         assert failed_list_item_class in app_javascript
         assert ".prepped-list-item.has-generation-failure" in app_styles
@@ -453,6 +461,109 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+def test_effective_role_company_name_prefers_explicit_job_description_identity() -> None:
+    role = {
+        "company_name": "Ramp",
+        "role_url": "https://jobs.ashbyhq.com/cohere/example",
+        "description": (
+            "Who are we?\n"
+            "Cohere is the leading security-first enterprise AI company. "
+            "We build foundation models and end-to-end products."
+        ),
+    }
+
+    assert web_server._effective_role_company_name(role) == "Cohere"
+    assert web_server._role_with_effective_company(role)["company_name"] == "Cohere"
+    assert (
+        web_server._effective_role_company_name(
+            {
+                "company_name": "Ramp",
+                "description": "About Cohere\nCohere is an enterprise AI company.",
+            }
+        )
+        == "Cohere"
+    )
+
+
+def test_effective_role_company_name_does_not_use_incidental_company_mentions() -> None:
+    role = {
+        "company_name": "Ramp",
+        "description": (
+            "About Engineering\n"
+            "Engineering is central to this team.\n"
+            "Ramp works with Cohere and other AI vendors to serve finance teams."
+        ),
+    }
+
+    assert web_server._effective_role_company_name(role) == "Ramp"
+
+
+def test_autoprep_pdf_filename_uses_job_description_company_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source_pdf = tmp_path / "source.pdf"
+    source_pdf.write_bytes(_valid_pdf_bytes())
+    monkeypatch.setattr(web_server, "user_data_path", lambda *_args, **_kwargs: tmp_path)
+
+    directory, target = web_server._copy_autoprep_pdf(
+        {
+            "id": 312,
+            "company_name": "Ramp",
+            "title": "Machine Learning Intern Co-op",
+            "description": (
+                "Who are we?\n"
+                "Cohere is the leading security-first enterprise AI company."
+            ),
+        },
+        source_pdf,
+        kind="cover-letter",
+    )
+
+    assert directory.name == "cohere-machine-learning-intern-co-op-role-312"
+    assert target.name == (
+        "cohere-machine-learning-intern-co-op-role-312-cover-letter.pdf"
+    )
+
+    old_resume = tmp_path / "ramp-role-312-resume.pdf"
+    old_resume.write_bytes(_valid_pdf_bytes())
+    counterpart = web_server._copy_autoprep_counterpart(
+        {
+            "id": 312,
+            "company_name": "Ramp",
+            "title": "Machine Learning Intern Co-op",
+            "description": (
+                "Who are we?\n"
+                "Cohere is the leading security-first enterprise AI company."
+            ),
+        },
+        {"resume_status": "ready", "resume_artifact_path": str(old_resume)},
+        directory,
+        generated_kind="cover-letter",
+    )
+    assert counterpart == (
+        "resume",
+        str(directory / "cohere-machine-learning-intern-co-op-role-312-resume.pdf"),
+    )
+
+    resume_directory, resume_target = web_server._copy_autoprep_pdf(
+        {
+            "id": 312,
+            "company_name": "Ramp",
+            "title": "Machine Learning Intern Co-op",
+            "description": (
+                "Who are we?\n"
+                "Cohere is the leading security-first enterprise AI company."
+            ),
+        },
+        source_pdf,
+        kind="resume",
+    )
+
+    assert resume_directory == directory
+    assert resume_target.name == "cohere-machine-learning-intern-co-op-role-312-resume.pdf"
 
 
 def test_ai_role_experience_retrieval_requests_concrete_ai_project_context(

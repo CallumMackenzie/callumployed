@@ -1088,11 +1088,11 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
                 return
             document_paths = {
-                "resume.pdf": ("resume_artifact_path", "resume.pdf"),
-                "cover-letter.pdf": ("cover_letter_artifact_path", "cover-letter.pdf"),
+                "resume.pdf": "resume_artifact_path",
+                "cover-letter.pdf": "cover_letter_artifact_path",
             }
-            document = document_paths.get(document_name)
-            if document is None:
+            document_field = document_paths.get(document_name)
+            if document_field is None:
                 self.send_error(HTTPStatus.BAD_REQUEST, "Invalid document kind")
                 return
             with db.connect() as connection:
@@ -1101,7 +1101,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             if job is None:
                 self.send_error(HTTPStatus.NOT_FOUND, "Autoprep role not found")
                 return
-            path_value = job.get(document[0])
+            path_value = job.get(document_field)
             directory_value = job.get("artifact_directory")
             if not isinstance(path_value, str) or not isinstance(directory_value, str):
                 self.send_error(HTTPStatus.NOT_FOUND, "Prepared document is not available")
@@ -1111,7 +1111,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             if path.parent != directory or path.suffix.lower() != ".pdf" or not path.is_file():
                 self.send_error(HTTPStatus.NOT_FOUND, "Prepared document is not available")
                 return
-            self._send_pdf_file(path, filename=document[1])
+            self._send_pdf_file(path, filename=path.name)
 
         def _open_autoprep_folder(self, role_id_text: str) -> None:
             try:
@@ -3203,6 +3203,7 @@ def _process_autoprep_job(job_id: int) -> None:
         raise RuntimeError("No master resume is stored.")
     role_payload = role.model_dump(mode="json")
     role_payload["company_name"] = company.name
+    role_payload = _role_with_effective_company(role_payload)
 
     if job["resume_status"] == "queued":
         try:
@@ -3246,6 +3247,7 @@ def _prepare_autoprep_resume(
     """Tailor the resume or publish the unchanged master copy, according to Settings."""
     instruction = ""
     previous_latex: str | None = None
+    current_job: dict[str, Any] = {}
     tailor_resume = DEFAULT_AUTOPREP_TAILOR_RESUME
     configured_prompt = DEFAULT_AUTOPREP_RESUME_PROMPT
     with db.connect() as connection:
@@ -3286,8 +3288,24 @@ def _prepare_autoprep_resume(
     artifact_directory, artifact_path = _copy_autoprep_pdf(
         role_payload, source_pdf, kind="resume"
     )
+    counterpart = _copy_autoprep_counterpart(
+        role_payload,
+        current_job,
+        artifact_directory,
+        generated_kind="resume",
+    )
     latex = str(generated.get("latex") or "")
     with db.connect() as connection:
+        if counterpart is not None:
+            _, counterpart_path = counterpart
+            mark_autoprep_document(
+                connection,
+                job_id,
+                "cover_letter",
+                "ready",
+                artifact_path=counterpart_path,
+                artifact_directory=str(artifact_directory),
+            )
         mark_autoprep_document(
             connection,
             job_id,
@@ -3312,6 +3330,7 @@ def _prepare_autoprep_cover_letter(
     """
     instruction = ""
     tailored_resume_latex: str | None = None
+    current_job: dict[str, Any] = {}
     configured_prompt = DEFAULT_AUTOPREP_COVER_LETTER_PROMPT
     with db.connect() as connection:
         current_job = get_autoprep_job(connection, job_id)
@@ -3350,7 +3369,23 @@ def _prepare_autoprep_cover_letter(
         source_pdf,
         kind="cover-letter",
     )
+    counterpart = _copy_autoprep_counterpart(
+        role_payload,
+        current_job,
+        artifact_directory,
+        generated_kind="cover-letter",
+    )
     with db.connect() as connection:
+        if counterpart is not None:
+            _, counterpart_path = counterpart
+            mark_autoprep_document(
+                connection,
+                job_id,
+                "resume",
+                "ready",
+                artifact_path=counterpart_path,
+                artifact_directory=str(artifact_directory),
+            )
         mark_autoprep_document(
             connection,
             job_id,
@@ -3418,7 +3453,7 @@ def _copy_autoprep_pdf(
     role_id = role.get("id")
     if not isinstance(role_id, int):
         raise RuntimeError("Autoprep role did not include an ID.")
-    company = _safe_filename(str(role.get("company_name") or "company"))
+    company = _safe_filename(_effective_role_company_name(role))
     title = _safe_filename(str(role.get("title") or "role"))
     directory = (
         user_data_path("callumployed", appauthor=False)
@@ -3428,7 +3463,13 @@ def _copy_autoprep_pdf(
     directory.mkdir(parents=True, exist_ok=True)
     suffix = "resume" if kind == "resume" else "cover-letter"
     target = directory / f"{company}-{title}-role-{role_id}-{suffix}.pdf"
-    with tempfile.NamedTemporaryFile(dir=directory, suffix=".pdf", delete=False) as temporary:
+    _atomic_copy_verified_pdf(source_pdf, target)
+    return directory, target
+
+
+def _atomic_copy_verified_pdf(source_pdf: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=target.parent, suffix=".pdf", delete=False) as temporary:
         temporary_path = Path(temporary.name)
     try:
         shutil.copyfile(source_pdf, temporary_path)
@@ -3439,7 +3480,88 @@ def _copy_autoprep_pdf(
             raise RuntimeError("Prepared PDF could not be verified after its atomic write.")
     finally:
         temporary_path.unlink(missing_ok=True)
-    return directory, target
+
+
+def _copy_autoprep_counterpart(
+    role: dict[str, Any],
+    job: dict[str, Any],
+    directory: Path,
+    *,
+    generated_kind: str,
+) -> tuple[str, str] | None:
+    counterpart_kind = "cover_letter" if generated_kind == "resume" else "resume"
+    if job.get(f"{counterpart_kind}_status") != "ready":
+        return None
+    source_value = job.get(f"{counterpart_kind}_artifact_path")
+    if not isinstance(source_value, str):
+        return None
+    source = Path(source_value)
+    if not source.is_file():
+        return None
+    role_id = int(role["id"])
+    company = _safe_filename(_effective_role_company_name(role))
+    title = _safe_filename(str(role.get("title") or "role"))
+    suffix = "cover-letter" if counterpart_kind == "cover_letter" else "resume"
+    target = directory / f"{company}-{title}-role-{role_id}-{suffix}.pdf"
+    if source.resolve() != target.resolve():
+        _atomic_copy_verified_pdf(source, target)
+    return counterpart_kind, str(target)
+
+
+_SELF_IDENTIFIED_EMPLOYER_PATTERNS = (
+    re.compile(
+        r"(?im)^\s*(?:who are we\??|about us)\s*:?\s*(?:\r?\n)+\s*"
+        r"(?P<name>[A-Z][A-Za-z0-9&.'’+\-/]*(?:[ \t]+[A-Z][A-Za-z0-9&.'’+\-/]*){0,5})"
+        r"\s+(?:is|are)\b"
+    ),
+    re.compile(
+        r"(?im)^\s*about\s+"
+        r"(?P<name>[A-Z][A-Za-z0-9&.'’+\-/]*(?:[ \t]+[A-Z][A-Za-z0-9&.'’+\-/]*){0,5})"
+        r"\s*:?\s*(?:\r?\n)+\s*(?P=name)\s+(?:is|are)\b"
+    ),
+)
+
+
+def _effective_role_company_name(role: dict[str, Any]) -> str:
+    """Resolve only explicit employer self-identification in approved role text."""
+    fallback = str(role.get("company_name") or "company").strip() or "company"
+    description = role.get("description")
+    if not isinstance(description, str) or not description.strip():
+        return fallback
+    for pattern in _SELF_IDENTIFIED_EMPLOYER_PATTERNS:
+        match = pattern.search(description[:4000])
+        if match is None:
+            continue
+        candidate = " ".join(match.group("name").split()).strip(" .,:;–—-")
+        generic_headings = {
+            "we",
+            "us",
+            "the company",
+            "our company",
+            "the role",
+            "this role",
+            "the job",
+            "this job",
+            "the team",
+            "this team",
+            "engineering",
+            "product",
+            "sales",
+            "marketing",
+            "technology",
+            "the opportunity",
+            "the position",
+            "you",
+        }
+        if candidate.casefold() not in generic_headings:
+            return candidate
+    return fallback
+
+
+def _role_with_effective_company(role: dict[str, Any]) -> dict[str, Any]:
+    resolved = dict(role)
+    resolved["company_name"] = _effective_role_company_name(role)
+    return resolved
 
 
 def _autoprep_error(error: Exception) -> str:
@@ -3611,7 +3733,7 @@ def build_role_cover_letter(
     role_context: list[dict[str, object]] = []
     cover_letter_model = DEFAULT_COVER_LETTER_MODEL
     llm_settings = LlmSettings(model=cover_letter_model)
-    role_for_prompt = dict(role)
+    role_for_prompt = _role_with_effective_company(role)
     role_for_prompt.pop("description", None)
 
     def search_cover_letters(query: str, *, limit: int = 3) -> list[dict[str, object]]:
@@ -5432,7 +5554,7 @@ def _safe_filename(value: str) -> str:
 
 
 def _role_material_pdf_filename(role: dict[str, Any], *, kind: str) -> str:
-    company_name = role.get("company_name")
+    company_name = _effective_role_company_name(role)
     role_title = role.get("title")
     role_id = role.get("id")
     context_parts = [

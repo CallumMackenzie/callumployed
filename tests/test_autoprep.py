@@ -483,8 +483,8 @@ def test_autoprep_api_lists_only_interested_and_returns_accepted_jobs_immediatel
 
         documents = tmp_path / "prepared-documents"
         documents.mkdir()
-        resume_pdf = documents / "resume.pdf"
-        cover_pdf = documents / "cover-letter.pdf"
+        resume_pdf = documents / "cohere-backend-engineer-role-1-resume.pdf"
+        cover_pdf = documents / "cohere-backend-engineer-role-1-cover-letter.pdf"
         resume_pdf.write_bytes(b"resume")
         cover_pdf.write_bytes(b"cover")
         with db.connect() as connection:
@@ -508,12 +508,16 @@ def test_autoprep_api_lists_only_interested_and_returns_accepted_jobs_immediatel
             )
             finish_autoprep_worker(connection, accepted["jobs"][0]["id"])
 
-        for document_kind, expected in (("resume", b"resume"), ("cover-letter", b"cover")):
+        for document_kind, expected, expected_filename in (
+            ("resume", b"resume", resume_pdf.name),
+            ("cover-letter", b"cover", cover_pdf.name),
+        ):
             with urlopen(
                 f"{base_url}/api/autoprep/roles/{interested_id}/documents/{document_kind}.pdf",
                 timeout=5,
             ) as response:
                 assert response.headers["Content-Type"] == "application/pdf"
+                assert expected_filename in response.headers["Content-Disposition"]
                 assert response.read() == expected
 
         regenerate_request = Request(

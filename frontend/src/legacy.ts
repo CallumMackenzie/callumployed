@@ -151,6 +151,7 @@ let preppedBulkRegeneration = null;
 const preppedStatusChangeRoleIds = new Set();
 const preppedCommentsByDocument = new Map();
 const openPreppedPreviews = new Set();
+const openPreppedDetailSections = new Set();
 const preppedPreviewBlobUrls = new Map();
 const preppedPreviewVersions = new Map();
 const preppedPreviewErrors = new Map();
@@ -3618,6 +3619,7 @@ function closePreppedView({clearHash = true} = {}) {
   document.body.classList.remove("prepped-open");
   stopPreppedPolling();
   openPreppedPreviews.clear();
+  openPreppedDetailSections.clear();
   preppedPreviewBlobUrls.forEach((blobUrl) => URL.revokeObjectURL(blobUrl));
   preppedPreviewBlobUrls.clear();
   preppedPreviewVersions.clear();
@@ -3682,6 +3684,20 @@ function autoprepJobHasGenerationFailure(job) {
 
 function autoprepCoverLetterIsGenerating(job) {
   return job.cover_letter_status === "generating" || job.overall_status === "generating_cover_letter";
+}
+
+function autoprepJobIsGenerating(job) {
+  return (
+    autoprepCoverLetterIsGenerating(job) ||
+    job.resume_status === "generating_tweaks" ||
+    job.resume_status === "regenerating" ||
+    job.overall_status === "generating_resume_tweaks" ||
+    job.overall_status === "regenerating_resume"
+  );
+}
+
+function autoprepJobIsQueued(job) {
+  return job.worker_state === "queued" || job.overall_status === "queued";
 }
 
 function autoprepStatusLabel(status) {
@@ -3780,11 +3796,12 @@ function renderPreppedRoles() {
   preppedBulkStatus.textContent = preppedBulkMessage;
   preppedList.innerHTML = preppedJobs.map((job) => {
     const hasGenerationFailure = autoprepJobHasGenerationFailure(job);
-    const coverLetterGenerating =
-      !hasGenerationFailure && autoprepCoverLetterIsGenerating(job);
+    const documentGenerating = !hasGenerationFailure && autoprepJobIsGenerating(job);
+    const generationQueued =
+      !hasGenerationFailure && !documentGenerating && autoprepJobIsQueued(job);
     const activeClass = Number(job.role_id) === Number(selectedPreppedRoleId) ? " is-active" : "";
     return `
-      <button type="button" class="prepped-list-item${coverLetterGenerating ? " is-cover-letter-generating" : ""}${hasGenerationFailure ? " has-generation-failure" : ""}${activeClass}" data-prepped-role="${job.role_id}">
+      <button type="button" class="prepped-list-item${generationQueued ? " is-generation-queued" : ""}${documentGenerating ? " is-document-generating" : ""}${hasGenerationFailure ? " has-generation-failure" : ""}${activeClass}" data-prepped-role="${job.role_id}">
         <strong>${escapeUiText(job.company_name)}</strong><span>${escapeUiText(job.title)}</span>
         <small class="status-${escapeHtml(job.overall_status)}">${escapeHtml(autoprepStatusLabel(job.overall_status))}</small>
       </button>`;
@@ -3813,17 +3830,19 @@ function renderPreppedDetail() {
   ];
   const movingToDisinterested = preppedStatusChangeRoleIds.has(Number(job.role_id));
   const disinterestedUnavailable = movingToDisinterested || autoprepJobIsActive(job);
+  const descriptionKey = `${job.role_id}:description`;
+  const notesKey = `${job.role_id}:notes`;
   preppedDetail.innerHTML = `
     <header class="prepped-detail-heading">
       <div><p class="eyebrow">${escapeUiText(job.company_name)}</p><h3>${roleLink}</h3></div>
       <span class="prepped-status status-${escapeHtml(job.overall_status)}">${escapeHtml(autoprepStatusLabel(job.overall_status))}</span>
     </header>
     <dl class="prepped-role-facts">${roleFacts.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeUiText(value)}</dd></div>`).join("")}</dl>
-    <details class="prepped-role-description">
+    <details class="prepped-role-description" data-prepped-detail-section="description" ${openPreppedDetailSections.has(descriptionKey) ? "open" : ""}>
       <summary>Job description</summary>
       <div class="prepped-description-copy">${escapeUiText(job.description || "No job description was saved.").replaceAll("\n", "<br>")}</div>
     </details>
-    ${job.notes ? `<details class="prepped-role-description"><summary>Role notes</summary><div class="prepped-description-copy">${escapeUiText(job.notes).replaceAll("\n", "<br>")}</div></details>` : ""}
+    ${job.notes ? `<details class="prepped-role-description" data-prepped-detail-section="notes" ${openPreppedDetailSections.has(notesKey) ? "open" : ""}><summary>Role notes</summary><div class="prepped-description-copy">${escapeUiText(job.notes).replaceAll("\n", "<br>")}</div></details>` : ""}
     <div class="prepped-document-grid">
       ${renderPreppedDocument(job, "resume", "Resume")}
       ${renderPreppedDocument(job, "cover-letter", "Cover letter")}
@@ -4097,6 +4116,14 @@ preppedDetail.addEventListener("input", (event) => {
       || (!retryingFailedDocument && comments.dataset.autoprepComments !== "cover-letter" && !comments.value.trim());
   }
 });
+
+preppedDetail.addEventListener("toggle", (event) => {
+  const section = event.target.closest("[data-prepped-detail-section]");
+  if (!section) return;
+  const key = `${selectedPreppedRoleId}:${section.dataset.preppedDetailSection}`;
+  if (section.open) openPreppedDetailSections.add(key);
+  else openPreppedDetailSections.delete(key);
+}, true);
 
 preppedDetail.addEventListener("click", async (event) => {
   const job = preppedJobs.find((item) => Number(item.role_id) === Number(selectedPreppedRoleId));
