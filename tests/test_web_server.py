@@ -48,6 +48,7 @@ from callumployed.data.repositories import (
     record_resume_feedback_history,
     set_role_status,
 )
+from callumployed.services import autoprep as autoprep_service
 from callumployed.web.server import (
     LocalThreadingHTTPServer,
     ScanCoordinator,
@@ -129,6 +130,88 @@ def test_local_server_enables_address_reuse_before_binding() -> None:
         assert server.socket.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR) != 0
     finally:
         server.server_close()
+
+
+def test_application_answer_can_be_regenerated_and_deleted_through_role_scoped_api(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "application-answer-actions.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Acme"))
+        assert company.id is not None
+        role = add_role(
+            connection,
+            Role(
+                company_id=company.id,
+                title="Engineer",
+                role_url="https://example.com/engineer",
+                role_status=RoleStatus.INTERESTED,
+                description="Build reliable software.",
+            ),
+        )
+        assert role.id is not None
+        autoprep_service.ensure_autoprep_schema(connection)
+        pending = autoprep_service.create_application_answer(
+            connection,
+            role.id,
+            question="Why Acme?",
+            backend="openai",
+        )
+        saved = autoprep_service.complete_application_answer(
+            connection,
+            int(pending["id"]),
+            answer="The previous valid answer.",
+        )
+
+    monkeypatch.setattr(
+        web_server,
+        "generate_saved_application_answer",
+        lambda role_id, *, question, backend: {
+            "answer": "Acme Builds Reliable Products.",
+            "session_id": None,
+            "sources": [{"kind": "saved_material", "title": "Resume"}],
+            "research": {"used_web": False},
+        },
+    )
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        endpoint = (
+            f"http://127.0.0.1:{port}/api/autoprep/roles/{role.id}"
+            f"/application-answers/{saved['id']}"
+        )
+        request = Request(f"{endpoint}/regenerate", data=b"", method="POST")
+        with urlopen(request, timeout=5) as response:
+            regenerated = json.loads(response.read())["answer"]
+
+        assert regenerated["id"] == saved["id"]
+        assert regenerated["answer"] == "Acme Builds Reliable Products."
+        assert regenerated["status"] == "completed"
+
+        with urlopen(Request(endpoint, method="DELETE"), timeout=5) as response:
+            deleted = json.loads(response.read())
+        assert deleted == {"deleted_id": saved["id"]}
+
+        with urlopen(
+            f"http://127.0.0.1:{port}/api/autoprep/roles/{role.id}/application-answers",
+            timeout=5,
+        ) as response:
+            assert json.loads(response.read()) == {"answers": []}
+        with db.connect() as connection:
+            revision_count = connection.execute(
+                "SELECT COUNT(*) AS count FROM application_answer_revisions WHERE answer_id = ?",
+                (saved["id"],),
+            ).fetchone()["count"]
+        assert revision_count == 0
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def test_companies_payload_reports_zero_discovered_roles_after_scan(
@@ -351,8 +434,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=react-ts-20260830-24" in index_markup
-        assert "/assets/build/app.js?v=react-ts-20260830-24" in index_markup
+        assert "/assets/app.css?v=react-ts-20260830-27" in index_markup
+        assert "/assets/build/app.js?v=react-ts-20260830-27" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles

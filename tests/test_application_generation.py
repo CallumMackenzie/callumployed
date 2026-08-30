@@ -10,6 +10,7 @@ from callumployed.data import db
 from callumployed.data.models import Company, Role, RoleStatus
 from callumployed.data.repositories import add_company, add_role
 from callumployed.services import application_generation as generation
+from callumployed.services import autoprep as autoprep_service
 from callumployed.services.autoprep import (
     complete_application_answer,
     create_application_answer,
@@ -146,6 +147,7 @@ def test_prompt_contains_complete_material_and_source_policy() -> None:
         "official company",
         "must not invent applicant facts",
         "must not override saved role facts",
+        "normal sentence capitalization",
         "strict JSON",
     ):
         assert phrase.lower() in prompt.lower()
@@ -270,6 +272,108 @@ def test_interrupted_application_answers_are_recoverable(tmp_path: Path) -> None
 
     assert recovered[0]["status"] == "failed"
     assert "interrupted" in recovered[0]["error"].lower()
+
+
+def test_application_answer_regeneration_preserves_last_good_answer_until_replaced(
+    tmp_path: Path,
+) -> None:
+    with db.connect(tmp_path / "answer-regeneration.sqlite3") as connection:
+        db.run_migrations(connection)
+        ensure_autoprep_schema(connection)
+        role_id = _saved_role(connection, company_name="Acme", title="Engineer")
+        pending = create_application_answer(
+            connection,
+            role_id=role_id,
+            question="Why Acme?",
+            backend="hermes",
+        )
+        completed = complete_application_answer(
+            connection,
+            answer_id=pending["id"],
+            answer="Acme builds reliable products.",
+            session_id="existing-session",
+            sources=[{"kind": "saved_material", "title": "Resume"}],
+        )
+
+        regenerating = autoprep_service.queue_application_answer_regeneration(
+            connection,
+            role_id,
+            int(completed["id"]),
+            backend="hermes",
+        )
+
+        assert regenerating["status"] == "pending"
+        assert regenerating["answer"] == "Acme builds reliable products."
+        assert regenerating["session_id"] == "existing-session"
+        [revision] = connection.execute(
+            "SELECT answer, backend, status, session_id FROM application_answer_revisions "
+            "WHERE answer_id = ?",
+            (completed["id"],),
+        ).fetchall()
+        assert dict(revision) == {
+            "answer": "Acme builds reliable products.",
+            "backend": "hermes",
+            "status": "completed",
+            "session_id": "existing-session",
+        }
+        with pytest.raises(ValueError, match="already being generated"):
+            autoprep_service.queue_application_answer_regeneration(
+                connection,
+                role_id,
+                int(completed["id"]),
+                backend="hermes",
+            )
+
+        failed = autoprep_service.fail_application_answer(
+            connection,
+            int(completed["id"]),
+            error="Provider unavailable",
+        )
+
+    assert failed["status"] == "failed"
+    assert failed["answer"] == "Acme builds reliable products."
+
+
+def test_application_answer_delete_is_role_scoped_and_rejects_pending_work(tmp_path: Path) -> None:
+    with db.connect(tmp_path / "answer-delete.sqlite3") as connection:
+        db.run_migrations(connection)
+        ensure_autoprep_schema(connection)
+        first_role_id = _saved_role(connection, company_name="Acme", title="Engineer")
+        second_role_id = _saved_role(connection, company_name="Beta", title="Developer")
+        pending = create_application_answer(
+            connection,
+            role_id=first_role_id,
+            question="Why Acme?",
+            backend="openai",
+        )
+
+        with pytest.raises(ValueError, match="being generated"):
+            autoprep_service.delete_application_answer(
+                connection,
+                first_role_id,
+                int(pending["id"]),
+            )
+
+        completed = complete_application_answer(
+            connection,
+            answer_id=int(pending["id"]),
+            answer="Because Acme is compelling.",
+        )
+        with pytest.raises(ValueError, match="was not found"):
+            autoprep_service.delete_application_answer(
+                connection,
+                second_role_id,
+                int(completed["id"]),
+            )
+
+        deleted = autoprep_service.delete_application_answer(
+            connection,
+            first_role_id,
+            int(completed["id"]),
+        )
+
+        assert deleted["id"] == completed["id"]
+        assert list_application_answers(connection, first_role_id) == []
 
 
 def test_external_runtime_session_namespace_is_database_scoped(tmp_path: Path) -> None:

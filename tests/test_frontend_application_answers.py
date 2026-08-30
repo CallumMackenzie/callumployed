@@ -40,9 +40,16 @@ def test_prepped_application_questions_workspace_is_persistent_and_safe() -> Non
     assert "data-application-question-draft" in source
     assert "data-application-question-submit" in source
     assert "data-application-answer-copy" in source
+    assert "data-application-answer-regenerate" in source
+    assert "data-application-answer-delete" in source
+    assert "Confirm delete" in source
+    assert 'method: "DELETE"' in source
+    assert "/regenerate`" in source
     assert 'document.execCommand("copy")' in source
-    assert "escapeUiText(record.question" in source
-    assert "escapeUiText(record.answer" in source
+    assert "escapeHtml(record.question" in source
+    assert "escapeHtml(record.answer" in source
+    assert "${escapeHtml(draft)}</textarea>" in source
+    assert "${escapeUiText(draft)}</textarea>" not in source
     assert "escapeUiText(record.error" in source
     assert 'method: "POST"' in source
     submitter = source[
@@ -60,4 +67,5 @@ def test_application_questions_styles_and_cache_keys_are_versioned() -> None:
     assert ".application-questions-workspace" in styles
     assert ".application-answer-record" in styles
     assert ".application-question-composer" in styles
-    assert index.count("react-ts-20260830-24") == 2
+    assert "text-transform: none" in styles
+    assert index.count("react-ts-20260830-27") == 2

@@ -76,6 +76,12 @@ def build_application_prompt(
         f"Task: {task}",
         "Return strict JSON only, with no markdown fence or commentary.",
         f"Required JSON shape: {output_contract}",
+        (
+            "Write the answer using professional prose with normal sentence capitalization. "
+            "Preserve the exact capitalization of names, acronyms, products, and technologies."
+            if task == "answer_question"
+            else "Preserve professional capitalization in all user-facing prose."
+        ),
         web_policy,
         (
             "SOURCE AUTHORITY POLICY: Saved application materials are the only authority for "

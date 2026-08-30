@@ -4943,6 +4943,7 @@ body.prepped-open {
 .application-answer-copy {
   margin: 0;
   overflow-wrap: anywhere;
+  text-transform: none;
 }
 
 .application-answer-record h5 {
@@ -4961,7 +4962,13 @@ body.prepped-open {
   font-size: .78rem;
 }
 
-.application-answer-record > button {
+.application-answer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.application-answer-actions > button {
   justify-self: start;
 }
 

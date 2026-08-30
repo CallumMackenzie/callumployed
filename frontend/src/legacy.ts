@@ -157,6 +157,9 @@ const preppedApplicationQuestionDrafts = new Map();
 const loadedApplicationAnswerRoleIds = new Set();
 const loadingApplicationAnswerRoleIds = new Set();
 const pendingApplicationAnswerRoleIds = new Set();
+const confirmingApplicationAnswerDeleteIds = new Set();
+const regeneratingApplicationAnswerIds = new Set();
+const deletingApplicationAnswerIds = new Set();
 const applicationAnswerLoadErrors = new Map();
 const preppedPreviewBlobUrls = new Map();
 const preppedPreviewVersions = new Map();
@@ -3935,25 +3938,34 @@ function renderApplicationQuestionsWorkspace(job) {
       ${loading && !records.length ? '<p class="application-answer-empty">Loading saved answers…</p>' : ""}
       ${loadError ? `<p class="prepped-error">${escapeUiText(loadError)}</p>` : ""}
       ${!loading && !loadError && !records.length ? '<p class="application-answer-empty">No application questions saved yet.</p>' : ""}
-      ${records.map((record, index) => renderApplicationAnswerRecord(record, index)).join("")}
+      ${records.map((record, index) => renderApplicationAnswerRecord(record, index, pending)).join("")}
     </div>
     <div class="application-question-composer">
       <label for="application-question-${roleId}">Question</label>
-      <textarea id="application-question-${roleId}" data-application-question-draft rows="4" placeholder="Paste an application question…" ${pending ? "disabled" : ""}>${escapeUiText(draft)}</textarea>
+      <textarea id="application-question-${roleId}" data-application-question-draft rows="4" placeholder="Paste an application question…" ${pending ? "disabled" : ""}>${escapeHtml(draft)}</textarea>
       <div><small>Answers are saved to this role. Asking never changes its status.</small><button type="button" data-application-question-submit aria-busy="${pending ? "true" : "false"}" ${pending || !draft.trim() ? "disabled" : ""}>${pending ? "Generating…" : "Generate answer"}</button></div>
     </div>
   </section>`;
 }
 
-function renderApplicationAnswerRecord(record, index) {
+function renderApplicationAnswerRecord(record, index, rolePending) {
   const status = record?.status ?? "saved";
   const timestamp = record?.created_at ?? record?.updated_at ?? record?.timestamp;
   const backend = record?.backend ?? record?.generation_backend;
+  const answerId = Number(record?.id);
+  const canMutate = Number.isFinite(answerId) && status !== "pending" && !rolePending;
+  const confirmingDelete = confirmingApplicationAnswerDeleteIds.has(answerId);
+  const regenerating = regeneratingApplicationAnswerIds.has(answerId);
+  const deleting = deletingApplicationAnswerIds.has(answerId);
   return `<article class="application-answer-record status-${escapeHtml(status)}">
     <div class="application-answer-meta"><span>${escapeUiText(status)}</span>${backend ? `<span>${escapeUiText(backend)}</span>` : ""}${timestamp ? `<time datetime="${escapeHtml(timestamp)}">${escapeUiText(formatCompactDate(timestamp) || timestamp)}</time>` : ""}</div>
-    <h5>${escapeUiText(record.question ?? "Question unavailable")}</h5>
-    ${record.answer ? `<p class="application-answer-copy">${escapeUiText(record.answer).replaceAll("\n", "<br>")}</p><button type="button" data-application-answer-copy="${index}">Copy answer</button>` : ""}
+    <h5>${escapeHtml(record.question ?? "Question unavailable")}</h5>
+    ${record.answer ? `<p class="application-answer-copy">${escapeHtml(record.answer).replaceAll("\n", "<br>")}</p>` : ""}
     ${record.error ? `<p class="prepped-error">${escapeUiText(record.error)}</p>` : ""}
+    <div class="application-answer-actions">
+      ${record.answer ? `<button type="button" data-application-answer-copy="${index}">Copy answer</button>` : ""}
+      ${Number.isFinite(answerId) ? `<button type="button" data-application-answer-regenerate="${answerId}" ${canMutate ? "" : "disabled"}>${regenerating || status === "pending" ? "Regenerating…" : "Regenerate"}</button><button class="danger" type="button" data-application-answer-delete="${answerId}" ${canMutate ? "" : "disabled"}>${deleting ? "Deleting…" : confirmingDelete ? "Confirm delete" : "Delete question"}</button>` : ""}
+    </div>
   </article>`;
 }
 
@@ -4024,6 +4036,75 @@ async function submitApplicationQuestion(roleId) {
   } catch (error) {
     applicationAnswerLoadErrors.set(numericRoleId, error instanceof Error ? error.message : "Could not generate an answer.");
   } finally {
+    pendingApplicationAnswerRoleIds.delete(numericRoleId);
+    if (Number(selectedPreppedRoleId) === numericRoleId) renderPreppedDetail();
+  }
+}
+
+function replaceApplicationAnswerRecord(roleId, record) {
+  const numericRoleId = Number(roleId);
+  const records = preppedApplicationAnswersByRoleId.get(numericRoleId) ?? [];
+  const answerId = Number(record?.id);
+  const existingIndex = records.findIndex((item) => Number(item?.id) === answerId);
+  if (existingIndex < 0) {
+    preppedApplicationAnswersByRoleId.set(numericRoleId, [record, ...records]);
+    return;
+  }
+  const nextRecords = [...records];
+  nextRecords[existingIndex] = record;
+  preppedApplicationAnswersByRoleId.set(numericRoleId, nextRecords);
+}
+
+async function regenerateApplicationAnswer(roleId, answerId) {
+  const numericRoleId = Number(roleId);
+  if (pendingApplicationAnswerRoleIds.has(numericRoleId)) return;
+  pendingApplicationAnswerRoleIds.add(numericRoleId);
+  regeneratingApplicationAnswerIds.add(Number(answerId));
+  confirmingApplicationAnswerDeleteIds.delete(Number(answerId));
+  applicationAnswerLoadErrors.delete(numericRoleId);
+  renderPreppedDetail();
+  try {
+    const response = await fetch(`/api/autoprep/roles/${encodeURIComponent(roleId)}/application-answers/${encodeURIComponent(answerId)}/regenerate`, {method: "POST"});
+    const payload = await response.json();
+    const [returnedRecord] = normalizeApplicationAnswerRecords(payload);
+    if (returnedRecord) replaceApplicationAnswerRecord(numericRoleId, returnedRecord);
+    if (!response.ok) throw new Error(payload?.error || returnedRecord?.error || "Could not regenerate the answer.");
+  } catch (error) {
+    applicationAnswerLoadErrors.set(numericRoleId, error instanceof Error ? error.message : "Could not regenerate the answer.");
+  } finally {
+    regeneratingApplicationAnswerIds.delete(Number(answerId));
+    pendingApplicationAnswerRoleIds.delete(numericRoleId);
+    if (Number(selectedPreppedRoleId) === numericRoleId) renderPreppedDetail();
+  }
+}
+
+async function deleteApplicationAnswer(roleId, answerId) {
+  const numericRoleId = Number(roleId);
+  const numericAnswerId = Number(answerId);
+  if (!confirmingApplicationAnswerDeleteIds.has(numericAnswerId)) {
+    confirmingApplicationAnswerDeleteIds.add(numericAnswerId);
+    renderPreppedDetail();
+    return;
+  }
+  if (pendingApplicationAnswerRoleIds.has(numericRoleId)) return;
+  pendingApplicationAnswerRoleIds.add(numericRoleId);
+  deletingApplicationAnswerIds.add(numericAnswerId);
+  confirmingApplicationAnswerDeleteIds.delete(numericAnswerId);
+  applicationAnswerLoadErrors.delete(numericRoleId);
+  renderPreppedDetail();
+  try {
+    const response = await fetch(`/api/autoprep/roles/${encodeURIComponent(roleId)}/application-answers/${encodeURIComponent(answerId)}`, {method: "DELETE"});
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || "Could not delete the question.");
+    const records = preppedApplicationAnswersByRoleId.get(numericRoleId) ?? [];
+    preppedApplicationAnswersByRoleId.set(
+      numericRoleId,
+      records.filter((record) => Number(record?.id) !== numericAnswerId),
+    );
+  } catch (error) {
+    applicationAnswerLoadErrors.set(numericRoleId, error instanceof Error ? error.message : "Could not delete the question.");
+  } finally {
+    deletingApplicationAnswerIds.delete(numericAnswerId);
     pendingApplicationAnswerRoleIds.delete(numericRoleId);
     if (Number(selectedPreppedRoleId) === numericRoleId) renderPreppedDetail();
   }
@@ -4311,6 +4392,19 @@ preppedDetail.addEventListener("click", async (event) => {
   const applicationQuestionSubmit = event.target.closest("[data-application-question-submit]");
   if (applicationQuestionSubmit) {
     submitApplicationQuestion(job.role_id);
+    return;
+  }
+  const answerRegenerateButton = event.target.closest("[data-application-answer-regenerate]");
+  if (answerRegenerateButton) {
+    regenerateApplicationAnswer(
+      job.role_id,
+      answerRegenerateButton.dataset.applicationAnswerRegenerate,
+    );
+    return;
+  }
+  const answerDeleteButton = event.target.closest("[data-application-answer-delete]");
+  if (answerDeleteButton) {
+    deleteApplicationAnswer(job.role_id, answerDeleteButton.dataset.applicationAnswerDelete);
     return;
   }
   const answerCopyButton = event.target.closest("[data-application-answer-copy]");

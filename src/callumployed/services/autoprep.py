@@ -226,6 +226,23 @@ def ensure_autoprep_schema(connection: turso.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_application_answers_role
             ON application_answers(role_id, created_at DESC, id DESC);
+
+        CREATE TABLE IF NOT EXISTS application_answer_revisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            answer_id INTEGER NOT NULL,
+            answer TEXT NOT NULL,
+            backend TEXT NOT NULL,
+            status TEXT NOT NULL,
+            error TEXT,
+            session_id TEXT,
+            source_metadata_json TEXT,
+            research_metadata_json TEXT,
+            completed_at TEXT,
+            archived_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (answer_id) REFERENCES application_answers(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_application_answer_revisions_answer
+            ON application_answer_revisions(answer_id, archived_at DESC, id DESC);
         """
     )
     job_columns = {
@@ -277,6 +294,91 @@ def get_application_answer(connection: turso.Connection, answer_id: int) -> dict
     if row is None:
         raise ValueError(f"Application answer {answer_id} was not found.")
     return _application_answer_payload(row)
+
+
+def queue_application_answer_regeneration(
+    connection: turso.Connection,
+    role_id: int,
+    answer_id: int,
+    *,
+    backend: str,
+) -> dict[str, Any]:
+    if backend not in {"openai", "hermes", "openclaw"}:
+        raise ValueError("Unsupported application answer backend.")
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            "SELECT * FROM application_answers WHERE id = ? AND role_id = ?",
+            (answer_id, role_id),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Application answer {answer_id} was not found for this role.")
+        if str(row["status"]) == "pending":
+            raise AutoprepConflictError("This application answer is already being generated.")
+        if row["answer"]:
+            connection.execute(
+                """
+                INSERT INTO application_answer_revisions (
+                    answer_id, answer, backend, status, error, session_id,
+                    source_metadata_json, research_metadata_json, completed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    answer_id,
+                    row["answer"],
+                    row["backend"],
+                    row["status"],
+                    row["error"],
+                    row["session_id"],
+                    row["source_metadata_json"],
+                    row["research_metadata_json"],
+                    row["completed_at"],
+                ),
+            )
+        connection.execute(
+            """
+            UPDATE application_answers
+            SET backend = ?, status = 'pending', error = NULL,
+                session_id = CASE WHEN backend = ? THEN session_id ELSE NULL END,
+                completed_at = NULL, updated_at = datetime('now')
+            WHERE id = ? AND role_id = ?
+            """,
+            (backend, backend, answer_id, role_id),
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return get_application_answer(connection, answer_id)
+
+
+def delete_application_answer(
+    connection: turso.Connection,
+    role_id: int,
+    answer_id: int,
+) -> dict[str, Any]:
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            "SELECT * FROM application_answers WHERE id = ? AND role_id = ?",
+            (answer_id, role_id),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Application answer {answer_id} was not found for this role.")
+        if str(row["status"]) == "pending":
+            raise AutoprepConflictError(
+                "This application answer is being generated and cannot be deleted."
+            )
+        payload = _application_answer_payload(row)
+        connection.execute(
+            "DELETE FROM application_answers WHERE id = ? AND role_id = ?",
+            (answer_id, role_id),
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return payload
 
 
 def complete_application_answer(

@@ -139,6 +139,7 @@ from callumployed.services.autoprep import (
     clear_autoprep_instruction,
     complete_application_answer,
     create_application_answer,
+    delete_application_answer,
     enqueue_autoprep_jobs,
     ensure_autoprep_schema,
     fail_application_answer,
@@ -153,6 +154,7 @@ from callumployed.services.autoprep import (
     list_interested_autoprep_roles,
     mark_autoprep_document,
     queue_all_prepped_cover_letter_regenerations,
+    queue_application_answer_regeneration,
     queue_autoprep_regeneration,
     recover_interrupted_application_answers,
     recover_interrupted_autoprep_jobs,
@@ -686,6 +688,14 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 self._create_application_answer(path_parts[3])
                 return
             if (
+                len(path_parts) == 7
+                and path_parts[:3] == ["api", "autoprep", "roles"]
+                and path_parts[4] == "application-answers"
+                and path_parts[6] == "regenerate"
+            ):
+                self._regenerate_application_answer(path_parts[3], path_parts[5])
+                return
+            if (
                 len(path_parts) == 6
                 and path_parts[:3] == ["api", "autoprep", "roles"]
                 and path_parts[4] == "retry"
@@ -865,6 +875,13 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
         def do_DELETE(self) -> None:
             parsed_url = urlparse(self.path)
             path_parts = [part for part in PurePosixPath(parsed_url.path).parts if part != "/"]
+            if (
+                len(path_parts) == 6
+                and path_parts[:3] == ["api", "autoprep", "roles"]
+                and path_parts[4] == "application-answers"
+            ):
+                self._delete_application_answer(path_parts[3], path_parts[5])
+                return
             if (
                 len(path_parts) == 3
                 and path_parts[0] == "api"
@@ -1177,6 +1194,78 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 self.send_error(HTTPStatus.BAD_REQUEST, str(error))
                 return
             self._send_json_with_status({"answer": answer}, HTTPStatus.CREATED)
+
+        def _regenerate_application_answer(
+            self, role_id_text: str, answer_id_text: str
+        ) -> None:
+            try:
+                role_id = int(role_id_text)
+                answer_id = int(answer_id_text)
+                with db.connect() as connection:
+                    db.run_migrations(connection)
+                    ensure_autoprep_schema(connection)
+                    get_role(connection, role_id)
+                    backend = clean_application_generation_backend(
+                        get_config_value(connection, APPLICATION_GENERATION_BACKEND_CONFIG_KEY)
+                    )
+                    pending = queue_application_answer_regeneration(
+                        connection,
+                        role_id,
+                        answer_id,
+                        backend=backend,
+                    )
+            except AutoprepConflictError as error:
+                self._send_json_with_status({"error": str(error)}, HTTPStatus.CONFLICT)
+                return
+            except (TypeError, ValueError) as error:
+                self._send_json_with_status({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+
+            try:
+                result = generate_saved_application_answer(
+                    role_id,
+                    question=str(pending["question"]).strip(),
+                    backend=backend,
+                )
+                with db.connect() as connection:
+                    answer = complete_application_answer(
+                        connection,
+                        answer_id,
+                        answer=result["answer"],
+                        session_id=result.get("session_id"),
+                        sources=result.get("sources"),
+                        research=result.get("research"),
+                    )
+            except Exception as error:
+                with db.connect() as connection:
+                    answer = fail_application_answer(
+                        connection,
+                        answer_id,
+                        error=_autoprep_error(error),
+                    )
+                self._send_json_with_status(
+                    {"answer": answer}, HTTPStatus.SERVICE_UNAVAILABLE
+                )
+                return
+            self._send_json({"answer": answer})
+
+        def _delete_application_answer(
+            self, role_id_text: str, answer_id_text: str
+        ) -> None:
+            try:
+                role_id = int(role_id_text)
+                answer_id = int(answer_id_text)
+                with db.connect() as connection:
+                    db.run_migrations(connection)
+                    ensure_autoprep_schema(connection)
+                    deleted = delete_application_answer(connection, role_id, answer_id)
+            except AutoprepConflictError as error:
+                self._send_json_with_status({"error": str(error)}, HTTPStatus.CONFLICT)
+                return
+            except (TypeError, ValueError) as error:
+                self._send_json_with_status({"error": str(error)}, HTTPStatus.NOT_FOUND)
+                return
+            self._send_json({"deleted_id": deleted["id"]})
 
         def _test_application_generation_backend(self, backend_text: str) -> None:
             try:
