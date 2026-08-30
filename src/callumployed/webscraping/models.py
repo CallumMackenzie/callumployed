@@ -75,3 +75,4 @@ class CareersPageScanResult(WebscrapingModel):
     candidates_scanned: int = 0
     confidence: ExtractionConfidence = ExtractionConfidence.LOW
     errors: list[str] = Field(default_factory=list)
+    render_method: Literal["default", "browser_profile"] | None = None

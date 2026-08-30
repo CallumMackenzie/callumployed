@@ -282,11 +282,13 @@ def test_browserbase_render_failure_falls_back_to_profile_manager(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager_calls: list[str] = []
+    direct_calls: list[str] = []
 
     async def fake_render_careers_page(
         url: str,
         **_render_options: object,
     ) -> RenderedPageState:
+        direct_calls.append(url)
         raise NavigationError("browserbase failed")
 
     class FakeProfileManager:
@@ -313,7 +315,25 @@ def test_browserbase_render_failure_falls_back_to_profile_manager(
     )
 
     assert manager_calls == ["https://example.com/careers"]
+    assert direct_calls == ["https://example.com/careers"]
     assert state["page"].final_url == "https://example.com/careers"
+    assert state["render_method"] == "browser_profile"
+
+    role_state: scan_workflow.ScanWorkflowState = {
+        "url": "https://example.com/careers",
+        "browser_profile_manager": cast(BrowserProfileManager, FakeProfileManager()),
+        "render_method": "browser_profile",
+    }
+    role_page = asyncio.run(
+        scan_workflow._render_with_browser_profile_manager(
+            "https://example.com/jobs/1",
+            state=role_state,
+        )
+    )
+
+    assert role_page.final_url == "https://example.com/jobs/1"
+    assert manager_calls == ["https://example.com/careers", "https://example.com/jobs/1"]
+    assert direct_calls == ["https://example.com/careers"]
 
 
 def test_graph_calls_llm_for_ambiguous_candidates_by_default(

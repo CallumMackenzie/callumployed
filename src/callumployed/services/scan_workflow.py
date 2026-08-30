@@ -110,6 +110,7 @@ class ScanWorkflowState(TypedDict, total=False):
     career_page: CompanyCareerPage | None
     scan_run_id: int | None
     browser_profile_manager: BrowserProfileManager | None
+    render_method: Literal["default", "browser_profile"]
     include_graduate_degree_roles: bool
     include_hardware_roles: bool
     require_software_keywords: bool
@@ -177,12 +178,12 @@ class RefilterCollectedRolesResult(TypedDict):
     attempts: list[RefilterAttemptResult]
 
 
-async def render_page_node(state: ScanWorkflowState) -> dict[str, RenderedPageState]:
+async def render_page_node(state: ScanWorkflowState) -> dict[str, object]:
     page = await _render_with_browser_profile_manager(
         state["url"],
         state=state,
     )
-    return {"page": page}
+    return {"page": page, "render_method": state["render_method"]}
 
 
 def extract_candidates_node(state: ScanWorkflowState) -> dict[str, list[LinkCandidate]]:
@@ -276,6 +277,7 @@ def build_result_node(state: ScanWorkflowState) -> dict[str, object]:
         candidates_scanned=len(state.get("scored_candidates", [])),
         confidence=_result_confidence(links),
         errors=state.get("errors", []),
+        render_method=state.get("render_method"),
     )
     return {"links": links, "result": result}
 
@@ -851,12 +853,23 @@ async def _render_with_browser_profile_manager(
     profile_manager = state.get("browser_profile_manager")
     if profile_manager is not None and hasattr(profile_manager, "headless"):
         render_options.setdefault("headless", profile_manager.headless)
+    if state.get("render_method") == "browser_profile" and profile_manager is not None:
+        profile_page = await _try_render_with_browser_profile_manager(
+            profile_manager,
+            url,
+            render_options=render_options,
+        )
+        if profile_page is not None:
+            return profile_page
+        return await render_careers_page(url, **render_options)
     if browser.browser_backend() == "browserbase":
         try:
-            return await render_careers_page(
+            page = await render_careers_page(
                 url,
                 **render_options,
             )
+            state.setdefault("render_method", "default")
+            return page
         except NavigationError:
             if profile_manager is None:
                 raise
@@ -867,6 +880,7 @@ async def _render_with_browser_profile_manager(
             )
             if profile_page is None:
                 raise
+            state.setdefault("render_method", "browser_profile")
             return profile_page
     if profile_manager is not None:
         profile_page = await _try_render_with_browser_profile_manager(
@@ -875,11 +889,14 @@ async def _render_with_browser_profile_manager(
             render_options=render_options,
         )
         if profile_page is not None:
+            state.setdefault("render_method", "browser_profile")
             return profile_page
-    return await render_careers_page(
+    page = await render_careers_page(
         url,
         **render_options,
     )
+    state.setdefault("render_method", "default")
+    return page
 
 
 async def _try_render_with_browser_profile_manager(
@@ -1122,6 +1139,7 @@ async def scan_career_page(
     browser_timeout_ms: int | None = None,
     llm_settings: LlmSettings | None = None,
     chat_model_factory: ChatModelFactory | None = None,
+    render_method: Literal["default", "browser_profile"] | None = None,
 ) -> CareersPageScanResult:
     custom_scanner = scanner_for(company, career_page)
     if custom_scanner is not None:
@@ -1150,6 +1168,7 @@ async def scan_career_page(
                 "career_page": career_page,
                 "scan_run_id": scan_run_id,
                 "browser_profile_manager": browser_profile_manager,
+                **({"render_method": render_method} if render_method is not None else {}),
                 "include_graduate_degree_roles": include_graduate_degree_roles,
                 "include_hardware_roles": include_hardware_roles,
                 "require_software_keywords": require_software_keywords,
@@ -1207,6 +1226,7 @@ async def scan_company(
     timeout_retries_remaining = MAX_COMPANY_TIMEOUT_RETRIES_PER_SCAN
     results: list[CareersPageScanResult] = []
     role_discovery_attempts: list[RoleDiscoveryAttempt] = []
+    render_method: Literal["default", "browser_profile"] | None = None
     try:
         for career_page in career_pages:
             (
@@ -1229,9 +1249,12 @@ async def scan_company(
                 retry_rejected_roles=retry_rejected_roles,
                 llm_settings=llm_settings,
                 chat_model_factory=chat_model_factory,
+                render_method=render_method,
             )
             timeout_retries_remaining -= timeout_retries_used
             results.append(result)
+            if result.render_method is not None:
+                render_method = result.render_method
     except Exception as error:
         with db.connect() as connection:
             failed_scan_run = finish_scan_run(
@@ -1330,6 +1353,7 @@ async def _scan_career_page_with_timeout_retry(
     retry_rejected_roles: bool,
     llm_settings: LlmSettings | None,
     chat_model_factory: ChatModelFactory | None,
+    render_method: Literal["default", "browser_profile"] | None,
 ) -> tuple[CareersPageScanResult, Company, int]:
     current_company = company
     timeout_retries_used = 0
@@ -1352,6 +1376,7 @@ async def _scan_career_page_with_timeout_retry(
                     browser_timeout_ms=_company_browser_timeout_ms(current_company),
                     llm_settings=llm_settings,
                     chat_model_factory=chat_model_factory,
+                    render_method=render_method,
                 ),
                 current_company,
                 timeout_retries_used,

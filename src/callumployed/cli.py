@@ -57,19 +57,15 @@ from callumployed.data.repositories import (
     set_primary_company_career_page_url,
     set_require_software_keywords,
     set_role_status,
-    should_include_graduate_degree_roles,
-    should_include_hardware_roles,
-    should_require_software_keywords,
-    should_use_internship_mode,
     update_role,
     upsert_master_resume,
 )
+from callumployed.services.app_settings import (
+    configured_browser_profile_manager,
+    get_settings,
+    set_setting,
+)
 from callumployed.services.scan_schedule import (
-    DEFAULT_SCAN_SCHEDULE_ENABLED,
-    DEFAULT_SCAN_SCHEDULE_TIME,
-    SCAN_SCHEDULE_ENABLED_CONFIG_KEY,
-    SCAN_SCHEDULE_TIME_CONFIG_KEY,
-    get_scan_schedule,
     set_scan_schedule_enabled,
     set_scan_schedule_time,
 )
@@ -558,58 +554,29 @@ def set_scan_schedule_time_command(
 def show_config_command() -> None:
     """Show app-wide configuration."""
     with db.connect() as connection:
-        values = list_config_values(connection)
-        include_graduate_degree_roles = should_include_graduate_degree_roles(connection)
-        include_hardware_roles = should_include_hardware_roles(connection)
-        require_software_keywords = should_require_software_keywords(connection)
-        internship_mode = should_use_internship_mode(connection)
-        location_filter = get_location_filter(connection)
-        scan_schedule_enabled, scan_schedule_time, _ = get_scan_schedule(connection)
-
-    if not values:
+        settings = get_settings(connection)
+        persisted = list_config_values(connection)
+    if not persisted:
         typer.echo("No app config set.")
-        typer.echo("include_graduate_degree_roles: false (default)")
-        typer.echo("include_hardware_roles: false (default)")
-        typer.echo("require_software_keywords: true (default)")
-        typer.echo("internship_mode: true (default)")
-        typer.echo("location_filter: all (default)")
-        typer.echo(
-            "scan_schedule_enabled: "
-            f"{str(DEFAULT_SCAN_SCHEDULE_ENABLED).lower()} (default)"
-        )
-        typer.echo(f"scan_schedule_time: {DEFAULT_SCAN_SCHEDULE_TIME} (default)")
-        return
+    for key, value in settings.items():
+        rendered = str(value).lower() if isinstance(value, bool) else value
+        suffix = "" if key in persisted else " (default)"
+        typer.echo(f"{key}: {rendered}{suffix}")
 
-    for key, value in values.items():
-        typer.echo(f"{key}: {value}")
-    if "include_graduate_degree_roles" not in values:
-        typer.echo(
-            "include_graduate_degree_roles: "
-            f"{str(include_graduate_degree_roles).lower()} (default)"
-        )
-    if "include_hardware_roles" not in values:
-        typer.echo(
-            "include_hardware_roles: "
-            f"{str(include_hardware_roles).lower()} (default)"
-        )
-    if SCAN_SCHEDULE_ENABLED_CONFIG_KEY not in values:
-        typer.echo(
-            f"scan_schedule_enabled: {str(scan_schedule_enabled).lower()} (default)"
-        )
-    if SCAN_SCHEDULE_TIME_CONFIG_KEY not in values:
-        typer.echo(f"scan_schedule_time: {scan_schedule_time} (default)")
-    if "require_software_keywords" not in values:
-        typer.echo(
-            "require_software_keywords: "
-            f"{str(require_software_keywords).lower()} (default)"
-        )
-    if "internship_mode" not in values:
-        typer.echo(
-            "internship_mode: "
-            f"{str(internship_mode).lower()} (default)"
-        )
-    if "location_filter" not in values:
-        typer.echo(f"location_filter: {location_filter} (default)")
+
+@config_app.command("set")
+def set_config_command(
+    key: Annotated[str, typer.Argument(help="Settings key.")],
+    value: Annotated[str, typer.Argument(help="New setting value.")],
+) -> None:
+    """Set any setting exposed by the web Settings page."""
+    try:
+        with db.connect() as connection:
+            saved = set_setting(connection, key, value)
+    except ValueError as error:
+        raise typer.BadParameter(str(error)) from error
+    rendered = str(saved).lower() if isinstance(saved, bool) else saved
+    typer.echo(f"{key}: {rendered}")
 
 
 @browser_app.command("profiles")
@@ -657,6 +624,12 @@ def browser_smoke_command(
     typer.echo(f"HTML bytes: {len(page.html.encode('utf-8'))}")
 
 
+def _configured_scan_browser_profile_manager() -> BrowserProfileManager:
+    with db.connect() as connection:
+        manager = configured_browser_profile_manager(connection)
+    return manager
+
+
 @scan_app.command("url")
 def scan_url_command(
     url: Annotated[str, typer.Argument(help="Careers page URL.")],
@@ -666,7 +639,7 @@ def scan_url_command(
         result = asyncio.run(
             run_scan_url(
                 url,
-                browser_profile_manager=BrowserProfileManager(),
+                browser_profile_manager=_configured_scan_browser_profile_manager(),
             )
         )
     except ScrapingError as error:
@@ -769,7 +742,7 @@ def _scan_company(
         scan = asyncio.run(
             run_scan_company(
                 company,
-                browser_profile_manager=BrowserProfileManager(),
+                browser_profile_manager=_configured_scan_browser_profile_manager(),
                 retry_rejected_roles=True,
             )
         )
@@ -777,7 +750,7 @@ def _scan_company(
         scan = asyncio.run(
             run_scan_company(
                 company,
-                browser_profile_manager=BrowserProfileManager(),
+                browser_profile_manager=_configured_scan_browser_profile_manager(),
             )
         )
     if scan is None:
@@ -1170,7 +1143,7 @@ def rescan_role_command(
         result = asyncio.run(
             run_rescan_role(
                 role_id,
-                browser_profile_manager=BrowserProfileManager(),
+                browser_profile_manager=_configured_scan_browser_profile_manager(),
                 update_status=update_status,
             )
         )

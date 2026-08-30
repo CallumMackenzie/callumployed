@@ -421,16 +421,45 @@ def test_config_show_prints_defaults(tmp_path: Path) -> None:
     show_result = runner.invoke(app, ["config", "show"], env=env)
 
     assert show_result.exit_code == 0
-    assert show_result.output == (
-        "No app config set.\n"
-        "include_graduate_degree_roles: false (default)\n"
-        "include_hardware_roles: false (default)\n"
-        "require_software_keywords: true (default)\n"
-        "internship_mode: true (default)\n"
-        "location_filter: all (default)\n"
-        "scan_schedule_enabled: true (default)\n"
-        "scan_schedule_time: 04:30 (default)\n"
-    )
+    assert "No app config set." in show_result.output
+    assert "applicant_first_name:  (default)" in show_result.output
+    assert "scan_headless: false (default)" in show_result.output
+    assert "include_graduate_degree_roles: false (default)" in show_result.output
+    assert "scan_schedule_time: 04:30 (default)" in show_result.output
+
+
+def test_config_set_and_scan_use_persisted_headless_setting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "config-set-scan.sqlite3"
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    observed_headless: list[bool] = []
+
+    async def fake_scan_url(
+        url: str,
+        *,
+        browser_profile_manager: object,
+    ) -> CareersPageScanResult:
+        observed_headless.append(bool(browser_profile_manager.headless))
+        return CareersPageScanResult(
+            source_url=url,
+            final_url=url,
+            title="Careers",
+            candidates_scanned=0,
+            confidence=ExtractionConfidence.HIGH,
+            links=[],
+        )
+
+    monkeypatch.setattr(cli_module, "run_scan_url", fake_scan_url)
+
+    save_result = runner.invoke(app, ["config", "set", "scan_headless", "false"], env=env)
+    scan_result = runner.invoke(app, ["scan", "url", "https://example.com"], env=env)
+
+    assert save_result.exit_code == 0
+    assert save_result.output == "scan_headless: false\n"
+    assert scan_result.exit_code == 0
+    assert observed_headless == [False]
 
 
 def test_config_scan_schedule_commands(tmp_path: Path) -> None:
