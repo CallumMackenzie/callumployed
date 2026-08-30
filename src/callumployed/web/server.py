@@ -131,6 +131,9 @@ from callumployed.services.app_settings import (
     APPLICANT_PROFILE_REPREP_DUE_CONFIG_KEY,
     schedule_applicant_profile_reprep,
 )
+from callumployed.services.app_settings import (
+    configured_llm_settings as build_configured_llm_settings,
+)
 from callumployed.services.application_generation import (
     DEFAULT_APPLICATION_BACKEND,
     build_application_prompt,
@@ -380,8 +383,10 @@ class ScanCoordinator:
                 self._finished_at = _now_utc()
 
     async def _scan_all_companies(self) -> None:
+        llm_settings = LlmSettings()
         with db.connect() as connection:
             companies = list_companies(connection)
+            llm_settings = build_configured_llm_settings(connection)
         with self._lock:
             self._total_companies = len(companies)
 
@@ -395,6 +400,7 @@ class ScanCoordinator:
                     run_scan_company(
                         company,
                         browser_profile_manager=browser_profile_manager,
+                        llm_settings=llm_settings,
                     )
                 )
                 with self._lock:
@@ -2999,6 +3005,8 @@ def _populate_missing_applicant_profile_from_resume() -> dict[str, str]:
             if value:
                 set_config_value(connection, key, value)
                 populated[key] = value
+        if populated:
+            schedule_applicant_profile_reprep(connection)
     if populated:
         _schedule_applicant_profile_reprep()
     return populated

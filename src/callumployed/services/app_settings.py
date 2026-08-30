@@ -82,6 +82,7 @@ DEFAULT_AUTOPREP_COVER_LETTER_PROMPT = (
     "or metrics."
 )
 SUPPORTED_LLM_PROVIDERS = {"openai", "codex"}
+DEFAULT_LLM_PROVIDER = "openai"
 SUPPORTED_COVER_LETTER_MODELS = {
     "gpt-5.6-terra",
     "gpt-5.6-luna",
@@ -92,7 +93,8 @@ SUPPORTED_COVER_LETTER_MODELS = {
 
 def get_settings(connection: turso.Connection) -> dict[str, str | bool]:
     schedule_enabled, schedule_time, _ = get_scan_schedule(connection)
-    environment_provider = LlmSettings().provider
+    environment_provider = _clean_llm_provider_or_default(LlmSettings().provider)
+    persisted_provider = get_config_value(connection, "llm_provider")
     return {
         **{key: get_config_value(connection, key) or "" for key in APPLICANT_KEYS},
         "cover_letter_model": get_config_value(connection, "cover_letter_model")
@@ -106,7 +108,9 @@ def get_settings(connection: turso.Connection) -> dict[str, str | bool]:
             connection, "autoprep_cover_letter_prompt"
         )
         or DEFAULT_AUTOPREP_COVER_LETTER_PROMPT,
-        "llm_provider": get_config_value(connection, "llm_provider") or environment_provider,
+        "llm_provider": _clean_llm_provider_or_default(
+            persisted_provider or environment_provider
+        ),
         "application_generation_backend": get_config_value(
             connection, "application_generation_backend"
         )
@@ -187,6 +191,11 @@ def parse_bool(value: object) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     raise ValueError("Boolean settings accept: true/false, yes/no, on/off, or 1/0")
+
+
+def _clean_llm_provider_or_default(value: object) -> str:
+    provider = str(value or "").strip().lower()
+    return provider if provider in SUPPORTED_LLM_PROVIDERS else DEFAULT_LLM_PROVIDER
 
 
 def _clean_text_setting(key: str, value: object) -> str:

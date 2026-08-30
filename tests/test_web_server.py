@@ -2982,6 +2982,13 @@ def test_profile_extraction_fills_only_blank_settings(
         assert web_server.get_config_value(connection, "applicant_first_name") == "Callum"
         assert web_server.get_config_value(connection, "applicant_last_name") == "Mackenzie"
         assert web_server.get_config_value(connection, "applicant_email") == "callum@example.com"
+        assert (
+            web_server.get_config_value(
+                connection,
+                web_server.APPLICANT_PROFILE_REPREP_DUE_CONFIG_KEY,
+            )
+            is not None
+        )
 
 
 def test_profile_extraction_skips_llm_when_profile_is_complete(
@@ -3805,10 +3812,17 @@ def test_scan_all_endpoint_runs_in_background_and_reports_status(
     env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
     runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
 
+    with db.connect() as connection:
+        web_server.set_config_value(connection, "llm_provider", "codex")
+
     scan_started = Event()
     scan_release = Event()
+    observed_providers: list[str] = []
 
     async def fake_scan_company(*args: object, **kwargs: object) -> None:
+        llm_settings = kwargs.get("llm_settings")
+        assert isinstance(llm_settings, web_server.LlmSettings)
+        observed_providers.append(llm_settings.provider)
         scan_started.set()
         await asyncio.to_thread(scan_release.wait, 2)
 
@@ -3845,6 +3859,7 @@ def test_scan_all_endpoint_runs_in_background_and_reports_status(
         assert finished_payload["scanning"] is False
         assert finished_payload["completed_companies"] == 1
         assert finished_payload["last_scan_at"] is not None
+        assert observed_providers == ["codex"]
     finally:
         scan_release.set()
         server.shutdown()

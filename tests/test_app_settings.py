@@ -25,6 +25,36 @@ def test_shared_settings_cover_every_web_setting(
     assert shared_settings == web_settings
 
 
+@pytest.mark.parametrize(
+    ("environment_provider", "persisted_provider", "expected"),
+    [
+        ("unsupported-provider", None, "openai"),
+        (" CoDeX ", None, "codex"),
+        ("openai", "legacy-provider", "openai"),
+        ("openai", " CoDeX ", "codex"),
+    ],
+)
+def test_shared_settings_normalize_provider_sources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    environment_provider: str,
+    persisted_provider: str | None,
+    expected: str,
+) -> None:
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(tmp_path / "provider-source.sqlite3"))
+    monkeypatch.setenv("CALLUMPLOYED_LLM_PROVIDER", environment_provider)
+
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        if persisted_provider is not None:
+            app_settings.set_config_value(connection, "llm_provider", persisted_provider)
+        settings = get_settings(connection)
+        llm_settings = app_settings.configured_llm_settings(connection)
+
+    assert settings["llm_provider"] == expected
+    assert llm_settings.provider == expected
+
+
 def test_shared_settings_can_modify_every_current_setting(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
