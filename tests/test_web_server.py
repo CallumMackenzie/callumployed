@@ -41,6 +41,7 @@ from callumployed.data.repositories import (
     create_scan_run,
     finish_scan_run,
     get_company,
+    get_config_value,
     list_company_career_pages,
     list_cover_letter_examples,
     list_experience_notes,
@@ -487,8 +488,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=react-ts-20260830-32" in index_markup
-        assert "/assets/build/app.js?v=react-ts-20260830-32" in index_markup
+        assert "/assets/app.css?v=react-ts-20260830-33" in index_markup
+        assert "/assets/build/app.js?v=react-ts-20260830-33" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -569,15 +570,19 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);" in app_styles
         assert "height: clamp(640px, 78vh, 900px);" in app_styles
         assert 'fetch("/api/central/resolve-companies", { method: "POST" })' in app_javascript
-        assert "const companySync = syncCompaniesOnPageLoad().catch(() => {});" in app_javascript
-        assert "await companySync;" in app_javascript
-        assert app_javascript.index("const companySync = syncCompaniesOnPageLoad()") < (
-            app_javascript.index("await Promise.all([")
-        )
-        assert app_javascript.index("await Promise.all([") < app_javascript.index(
-            "await companySync;"
-        )
-        assert "loadInitialTrackerData();" in app_javascript
+        assert "loadInitialTrackerData().finally(scheduleCentralCompanySync);" in app_javascript
+        assert "}, 10_000);" in app_javascript
+        assert "await companySync;" not in app_javascript
+        assert "syncCompaniesOnPageLoad().catch(() => {});" in app_javascript
+        assert 'id="role-information-view"' in markup
+        assert 'id="role-information-card"' in markup
+        assert 'id="close-role-information"' in markup
+        assert 'data-view-role-info="${job.id}"' in app_javascript
+        assert "function openRoleInformation(roleId)" in app_javascript
+        assert "function closeRoleInformation()" in app_javascript
+        assert 'event.key === "Escape" && !roleInformationView.hidden' in app_javascript
+        assert "Number(status.count) - status.jobs.length" in app_javascript
+        assert '... and ${hiddenCount} more' in app_javascript
         assert "settingsProfileOptions.innerHTML" in app_javascript
         assert 'setting.input_type ?? "text"' in app_javascript
         assert 'setting.autocomplete ?? "name"' in app_javascript
@@ -3400,6 +3405,14 @@ def test_config_endpoint_updates_settings(
             "scan_schedule_time": "06:15",
         }
         assert scheduled_repreps == [True]
+        assert web_server.APPLICANT_PROFILE_REPREP_DUE_CONFIG_KEY not in updated["values"]
+        with db.connect() as connection:
+            durable_reprep_due = get_config_value(
+                connection,
+                web_server.APPLICANT_PROFILE_REPREP_DUE_CONFIG_KEY,
+            )
+            assert durable_reprep_due is not None
+            assert float(durable_reprep_due) > 0
         assert web_server._configured_browser_profile_manager().headless is False
     finally:
         server.shutdown()
@@ -4030,6 +4043,7 @@ def test_tracker_payload_groups_roles_by_status(
     assert applied["jobs"][0]["title"] == "Backend Engineer"
     assert applied["jobs"][0]["location"] == "Vancouver"
     assert applied["jobs"][0]["notes"] == "Remote-friendly team."
+    assert "description" not in applied["jobs"][0]
     assert applied["jobs"][0]["first_seen_at"] is not None
     assert applied["jobs"][0]["first_seen_at"].endswith("Z")
     assert applied["jobs"][0]["created_at"] is not None
@@ -4060,11 +4074,141 @@ def test_tracker_payload_sends_archived_count_without_archived_roles(
 
     payload = build_tracker_payload()
 
-    archived_status = next(
-        status for status in payload["statuses"] if status["key"] == "archived"
-    )
+    archived_status = next(status for status in payload["statuses"] if status["key"] == "archived")
     assert archived_status["count"] == 1
     assert archived_status["jobs"] == []
+
+
+def test_tracker_payload_only_sends_recently_disinterested_roles_but_keeps_full_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-recent-disinterested.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        company = add_company(connection, Company(name="Acme"))
+        assert company.id is not None
+        for title in ("Recently dismissed", "Dismissed earlier"):
+            role = add_role(
+                connection,
+                Role(
+                    company_id=company.id,
+                    title=title,
+                    role_url=f"https://example.com/jobs/{title.lower().replace(' ', '-')}",
+                ),
+            )
+            assert role.id is not None
+            set_role_status(
+                connection,
+                role.id,
+                RoleStatus.DISINTERESTED,
+                summary="Not interested.",
+            )
+        connection.execute(
+            """
+            UPDATE events
+            SET created_at = datetime('now', '-3 days')
+            WHERE role_id = 2 AND event_type = 'status_changed'
+            """
+        )
+        connection.commit()
+
+    payload = build_tracker_payload()
+
+    disinterested = next(
+        status for status in payload["statuses"] if status["key"] == "disinterested"
+    )
+    assert disinterested["count"] == 2
+    assert [job["title"] for job in disinterested["jobs"]] == ["Recently dismissed"]
+
+    search_payload = build_tracker_payload(query="Dismissed earlier")
+    search_disinterested = next(
+        status for status in search_payload["statuses"] if status["key"] == "disinterested"
+    )
+    assert search_disinterested["count"] == 1
+    assert [job["title"] for job in search_disinterested["jobs"]] == ["Dismissed earlier"]
+
+
+@pytest.mark.parametrize("limited_status", [RoleStatus.REJECTED, RoleStatus.CLOSED])
+def test_tracker_payload_limits_terminal_roles_unless_searching(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    limited_status: RoleStatus,
+) -> None:
+    status_label = limited_status.value.title()
+    database = tmp_path / f"tracker-{limited_status.value}-limit.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        company = add_company(connection, Company(name="Acme"))
+        assert company.id is not None
+        for index in range(12):
+            role = add_role(
+                connection,
+                Role(
+                    company_id=company.id,
+                    title=f"{status_label} Role {index:02d}",
+                    role_url=f"https://example.com/jobs/{limited_status.value}-{index:02d}",
+                ),
+            )
+            assert role.id is not None
+            set_role_status(
+                connection,
+                role.id,
+                limited_status,
+                summary=f"{status_label}.",
+            )
+
+    payload = build_tracker_payload()
+    limited = next(
+        status for status in payload["statuses"] if status["key"] == limited_status.value
+    )
+    assert limited["count"] == 12
+    assert len(limited["jobs"]) == 10
+    assert f"{status_label} Role 00" not in {job["title"] for job in limited["jobs"]}
+
+    search_payload = build_tracker_payload(query=f"{status_label} Role 00")
+    search_limited = next(
+        status for status in search_payload["statuses"] if status["key"] == limited_status.value
+    )
+    assert search_limited["count"] == 1
+    assert [job["title"] for job in search_limited["jobs"]] == [f"{status_label} Role 00"]
+
+
+@pytest.mark.parametrize(
+    "status",
+    [RoleStatus.APPLIED, RoleStatus.REJECTED, RoleStatus.CLOSED],
+)
+def test_tracker_payload_omits_descriptions_for_inactive_application_roles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: RoleStatus,
+) -> None:
+    database = tmp_path / f"tracker-{status.value}-description.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        company = add_company(connection, Company(name="Acme"))
+        assert company.id is not None
+        role = add_role(
+            connection,
+            Role(
+                company_id=company.id,
+                title="Backend Engineer",
+                role_url="https://example.com/jobs/backend",
+                description="A deliberately large job description.",
+                notes="Keep this useful role metadata.",
+            ),
+        )
+        assert role.id is not None
+        set_role_status(connection, role.id, status, summary="Status updated.")
+
+    payload = build_tracker_payload()
+
+    status_payload = next(item for item in payload["statuses"] if item["key"] == status.value)
+    assert status_payload["jobs"][0]["notes"] == "Keep this useful role metadata."
+    assert "description" not in status_payload["jobs"][0]
 
 
 def test_tracker_payload_marks_closed_roles_updated_in_latest_scan_only(

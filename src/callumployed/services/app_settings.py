@@ -155,12 +155,17 @@ def set_setting(connection: turso.Connection, key: str, value: object) -> str | 
     else:
         set_config_value(connection, key, cleaned)
     if applicant_profile_changed:
-        set_config_value(
-            connection,
-            APPLICANT_PROFILE_REPREP_DUE_CONFIG_KEY,
-            str(time.time() + APPLICANT_PROFILE_REPREP_DELAY_SECONDS),
-        )
+        schedule_applicant_profile_reprep(connection)
     return cleaned
+
+
+def schedule_applicant_profile_reprep(connection: turso.Connection) -> None:
+    """Persist a refresh deadline after the applicant profile's quiet period."""
+    set_config_value(
+        connection,
+        APPLICANT_PROFILE_REPREP_DUE_CONFIG_KEY,
+        str(time.time() + APPLICANT_PROFILE_REPREP_DELAY_SECONDS),
+    )
 
 
 def configured_browser_profile_manager(connection: turso.Connection) -> BrowserProfileManager:

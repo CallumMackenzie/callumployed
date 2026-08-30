@@ -21,7 +21,7 @@ import unicodedata
 from collections import Counter
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
@@ -126,6 +126,10 @@ from callumployed.data.repositories import (
     sync_role_context_vectors,
     update_company,
     upsert_master_resume,
+)
+from callumployed.services.app_settings import (
+    APPLICANT_PROFILE_REPREP_DUE_CONFIG_KEY,
+    schedule_applicant_profile_reprep,
 )
 from callumployed.services.application_generation import (
     DEFAULT_APPLICATION_BACKEND,
@@ -575,6 +579,7 @@ class LocalThreadingHTTPServer(ThreadingHTTPServer):
 
 
 def build_tracker_payload(query: str | None = None) -> dict[str, Any]:
+    is_search = bool(query and query.strip())
     autoprep_status_by_role_id: dict[int, str | None] = {}
     with db.connect() as connection:
         stats = get_tracking_stats(connection)
@@ -584,6 +589,23 @@ def build_tracker_payload(query: str | None = None) -> dict[str, Any]:
             int(role["id"]): role.get("preparation_status")
             for role in list_interested_autoprep_roles(connection)
             if isinstance(role.get("id"), int)
+        }
+        disinterested_cutoff = (datetime.now(UTC) - timedelta(days=2)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        recently_disinterested_role_ids = {
+            int(row["role_id"])
+            for row in connection.execute(
+                """
+                SELECT DISTINCT role_id
+                FROM events
+                WHERE event_type = 'status_changed'
+                  AND new_status = ?
+                  AND role_id IS NOT NULL
+                  AND created_at >= ?
+                """,
+                (RoleStatus.DISINTERESTED.value, disinterested_cutoff),
+            ).fetchall()
         }
         active_roles = [role for role in roles if role.role_status is not RoleStatus.ARCHIVED]
         latest_scan_ids_by_company: dict[int, int] = {}
@@ -612,7 +634,19 @@ def build_tracker_payload(query: str | None = None) -> dict[str, Any]:
 
     grouped_roles: dict[str, list[dict[str, Any]]] = {status.value: [] for status in RoleStatus}
     for role in active_roles:
+        if (
+            not is_search
+            and role.role_status is RoleStatus.DISINTERESTED
+            and role.id not in recently_disinterested_role_ids
+        ):
+            continue
         payload = _role_payload(role)
+        if role.role_status in {
+            RoleStatus.APPLIED,
+            RoleStatus.REJECTED,
+            RoleStatus.CLOSED,
+        }:
+            payload.pop("description", None)
         latest_scan_role_ids = latest_scan_role_ids_by_company.get(role.company_id, set())
         latest_scan_role_urls = latest_scan_role_urls_by_company.get(role.company_id, set())
         seen_in_latest_scan = (
@@ -633,6 +667,9 @@ def build_tracker_payload(query: str | None = None) -> dict[str, Any]:
         payload["autoprep_started"] = autoprep_status is not None
         payload["autoprep_status"] = autoprep_status
         grouped_roles[role.role_status.value].append(payload)
+    if not is_search:
+        grouped_roles[RoleStatus.REJECTED.value] = grouped_roles[RoleStatus.REJECTED.value][:10]
+        grouped_roles[RoleStatus.CLOSED.value] = grouped_roles[RoleStatus.CLOSED.value][:10]
     grouped_roles[RoleStatus.INTERESTED.value].sort(
         key=lambda role: bool(role.get("prep_started")),
         reverse=True,
@@ -642,15 +679,12 @@ def build_tracker_payload(query: str | None = None) -> dict[str, Any]:
         reverse=True,
     )
 
+    role_counts = Counter(role.role_status.value for role in roles)
     statuses = [
         {
             "key": status.value,
             "label": STATUS_LABELS[status.value],
-            "count": (
-                sum(role.role_status is RoleStatus.ARCHIVED for role in roles)
-                if status is RoleStatus.ARCHIVED
-                else len(grouped_roles[status.value])
-            ),
+            "count": role_counts[status.value],
             "jobs": grouped_roles[status.value],
         }
         for status in RoleStatus
@@ -2656,8 +2690,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 with db.connect() as connection:
                     db.run_migrations(connection)
                     applicant_profile_changed = any(
-                        key in payload
-                        and (get_config_value(connection, key) or "") != payload[key]
+                        key in payload and (get_config_value(connection, key) or "") != payload[key]
                         for key in APPLICANT_PROFILE_CONFIG_KEYS
                     )
                     if "include_graduate_degree_roles" in payload:
@@ -2753,6 +2786,8 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                     central_passkey = _optional_text(payload.get("central_passkey"))
                     if central_passkey is not None:
                         set_central_passkey(central_passkey)
+                    if applicant_profile_changed:
+                        schedule_applicant_profile_reprep(connection)
             except ValueError as error:
                 self.send_error(HTTPStatus.BAD_REQUEST, str(error))
                 return
@@ -2955,8 +2990,7 @@ def _populate_missing_applicant_profile_from_resume() -> dict[str, str]:
             try:
                 value = (
                     _clean_applicant_name_part(raw_value)
-                    if key
-                    in {APPLICANT_FIRST_NAME_CONFIG_KEY, APPLICANT_LAST_NAME_CONFIG_KEY}
+                    if key in {APPLICANT_FIRST_NAME_CONFIG_KEY, APPLICANT_LAST_NAME_CONFIG_KEY}
                     else _clean_applicant_profile_text(key, raw_value)
                 )
             except ValueError:
@@ -3015,6 +3049,7 @@ def build_config_payload() -> dict[str, Any]:
     with db.connect() as connection:
         db.run_migrations(connection)
         values = list_config_values(connection)
+        values.pop(APPLICANT_PROFILE_REPREP_DUE_CONFIG_KEY, None)
         try:
             llm_provider = _clean_llm_provider(
                 get_config_value(connection, LLM_PROVIDER_CONFIG_KEY) or configured_llm_provider
