@@ -152,6 +152,12 @@ const preppedStatusChangeRoleIds = new Set();
 const preppedCommentsByDocument = new Map();
 const openPreppedPreviews = new Set();
 const openPreppedDetailSections = new Set();
+const preppedApplicationAnswersByRoleId = new Map();
+const preppedApplicationQuestionDrafts = new Map();
+const loadedApplicationAnswerRoleIds = new Set();
+const loadingApplicationAnswerRoleIds = new Set();
+const pendingApplicationAnswerRoleIds = new Set();
+const applicationAnswerLoadErrors = new Map();
 const preppedPreviewBlobUrls = new Map();
 const preppedPreviewVersions = new Map();
 const preppedPreviewErrors = new Map();
@@ -910,9 +916,13 @@ function renderSettings(payload, message = "") {
   settingsData = payload;
   const settings = Array.isArray(payload?.settings) ? payload.settings : [];
   const profileSettings = settings.filter((setting) => setting.key?.startsWith("applicant_"));
-  const autoprepSettings = settings.filter((setting) => setting.key?.startsWith("autoprep_"));
+  const autoprepSettings = settings.filter((setting) => (
+    setting.key?.startsWith("autoprep_") || setting.key === "application_generation_backend"
+  ));
   const filterSettings = settings.filter(
-    (setting) => !setting.key?.startsWith("applicant_") && !setting.key?.startsWith("autoprep_"),
+    (setting) => !setting.key?.startsWith("applicant_")
+      && !setting.key?.startsWith("autoprep_")
+      && setting.key !== "application_generation_backend",
   );
   const central = payload?.central ?? {};
   settingsStatus.textContent = message;
@@ -928,12 +938,49 @@ function renderSettings(payload, message = "") {
     .map((setting) => renderSettingOption(setting))
     .join("");
   settingsAutoprepOptions.innerHTML = autoprepSettings
-    .map((setting) => renderSettingOption(setting))
-    .join("");
+    .map((setting) => renderSettingOption(applyRuntimeAvailabilityToSetting(setting, payload)))
+    .join("") + renderApplicationRuntimeAvailability(payload);
   settingsOptions.innerHTML = filterSettings
     .map((setting) => renderSettingOption(setting))
     .join("");
   setSettingsDisabled(false);
+}
+
+function applyRuntimeAvailabilityToSetting(setting, payload) {
+  if (setting.key !== "application_generation_backend" || !Array.isArray(setting.options)) return setting;
+  const runtimes = payload?.application_generation_runtimes ?? {};
+  return {
+    ...setting,
+    options: setting.options.map((option) => {
+      const runtime = runtimes?.[option.value];
+      if (!runtime || option.available === false || option.disabled === true) return option;
+      return {...option, available: runtime.available ?? runtime.detected ?? true, reason: runtime.reason};
+    }),
+  };
+}
+
+function renderApplicationRuntimeAvailability(payload) {
+  const runtimes = payload?.application_generation_runtimes
+    ?? payload?.runtime_availability
+    ?? payload?.runtimes
+    ?? {};
+  const entries = [
+    ["hermes", runtimes?.hermes ?? runtimes?.Hermes],
+    ["openclaw", runtimes?.openclaw ?? runtimes?.OpenClaw],
+  ];
+  if (!entries.some(([, runtime]) => runtime && typeof runtime === "object")) return "";
+  return `<div class="application-runtime-statuses" aria-label="application generation runtime detection">
+    ${entries.map(([runtimeName, runtime]) => {
+      const detected = runtime?.available ?? runtime?.detected ?? false;
+      const reason = runtime?.reason ?? runtime?.message ?? (detected ? "Runtime detected" : "Runtime unavailable");
+      return `<div class="application-runtime-status" data-application-runtime="${escapeHtml(runtimeName)}">
+        <span><strong>${escapeUiText(runtimeName === "openclaw" ? "OpenClaw" : "Hermes")}</strong> ${detected ? "available" : "unavailable"}</span>
+        <small>${escapeUiText(reason)}</small>
+        <button type="button" data-application-runtime-test="${escapeHtml(runtimeName)}" ${detected ? "" : "disabled"}>Test connection</button>
+        <small data-application-runtime-test-status="${escapeHtml(runtimeName)}" aria-live="polite"></small>
+      </div>`;
+    }).join("")}
+  </div>`;
 }
 
 function renderCentralSettings(central) {
@@ -1038,7 +1085,9 @@ function renderSelectSettingOption(setting) {
         ${options
           .map((option) => {
             const selected = option.value === setting.value ? "selected" : "";
-            return `<option value="${escapeHtml(option.value)}" ${selected}>${escapeUiText(option.label)}</option>`;
+            const unavailable = option.available === false || option.disabled === true;
+            const reason = option.reason ? ` — ${formatUiText(option.reason)}` : "";
+            return `<option value="${escapeHtml(option.value)}" ${selected} ${unavailable ? "disabled" : ""}>${escapeUiText(option.label)}${escapeUiText(reason)}</option>`;
           })
           .join("")}
       </select>
@@ -3847,6 +3896,7 @@ function renderPreppedDetail() {
       ${renderPreppedDocument(job, "resume", "Resume")}
       ${renderPreppedDocument(job, "cover-letter", "Cover letter")}
     </div>
+    ${renderApplicationQuestionsWorkspace(job)}
     <div class="prepped-detail-actions">
       <button type="button" data-prepped-nav="previous" ${currentIndex <= 0 ? "disabled" : ""}>Previous</button>
       <button type="button" data-prepped-nav="next" ${currentIndex >= preppedJobs.length - 1 ? "disabled" : ""}>Next</button>
@@ -3855,6 +3905,124 @@ function renderPreppedDetail() {
       <button class="success" type="button" data-autoprep-applied ${job.overall_status === "ready" ? "" : "disabled"}>Applied</button>
     </div>
     <p class="prepped-safety-note">Autoprep prepares files only. It never submits an application.</p>`;
+  if (!loadedApplicationAnswerRoleIds.has(Number(job.role_id))) loadApplicationAnswers(job.role_id);
+}
+
+function normalizeApplicationAnswerRecords(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.answers)) return payload.answers;
+  if (payload?.answer && typeof payload.answer === "object") return [payload.answer];
+  if (payload?.record && typeof payload.record === "object") return [payload.record];
+  if (payload && typeof payload === "object" && ("question" in payload || "answer" in payload || "status" in payload || "error" in payload)) return [payload];
+  return [];
+}
+
+function renderApplicationQuestionsWorkspace(job) {
+  const roleId = Number(job.role_id);
+  const records = preppedApplicationAnswersByRoleId.get(roleId) ?? [];
+  const draft = preppedApplicationQuestionDrafts.get(roleId) ?? "";
+  const pending = pendingApplicationAnswerRoleIds.has(roleId);
+  const loading = loadingApplicationAnswerRoleIds.has(roleId);
+  const loadError = applicationAnswerLoadErrors.get(roleId);
+  return `<section class="application-questions-workspace" aria-labelledby="application-questions-heading-${roleId}">
+    <div class="application-questions-heading"><div><p class="eyebrow">Application helper</p><h4 id="application-questions-heading-${roleId}">Application questions</h4></div><span>${records.length} saved</span></div>
+    <p class="application-questions-intro">Paste a question from an application form to generate and keep a role-specific answer.</p>
+    <div class="application-answer-history" aria-live="polite">
+      ${loading && !records.length ? '<p class="application-answer-empty">Loading saved answers…</p>' : ""}
+      ${loadError ? `<p class="prepped-error">${escapeUiText(loadError)}</p>` : ""}
+      ${!loading && !loadError && !records.length ? '<p class="application-answer-empty">No application questions saved yet.</p>' : ""}
+      ${records.map((record, index) => renderApplicationAnswerRecord(record, index)).join("")}
+    </div>
+    <div class="application-question-composer">
+      <label for="application-question-${roleId}">Question</label>
+      <textarea id="application-question-${roleId}" data-application-question-draft rows="4" placeholder="Paste an application question…" ${pending ? "disabled" : ""}>${escapeUiText(draft)}</textarea>
+      <div><small>Answers are saved to this role. Asking never changes its status.</small><button type="button" data-application-question-submit aria-busy="${pending ? "true" : "false"}" ${pending || !draft.trim() ? "disabled" : ""}>${pending ? "Generating…" : "Generate answer"}</button></div>
+    </div>
+  </section>`;
+}
+
+function renderApplicationAnswerRecord(record, index) {
+  const status = record?.status ?? "saved";
+  const timestamp = record?.created_at ?? record?.updated_at ?? record?.timestamp;
+  const backend = record?.backend ?? record?.generation_backend;
+  return `<article class="application-answer-record status-${escapeHtml(status)}">
+    <div class="application-answer-meta"><span>${escapeUiText(status)}</span>${backend ? `<span>${escapeUiText(backend)}</span>` : ""}${timestamp ? `<time datetime="${escapeHtml(timestamp)}">${escapeUiText(formatCompactDate(timestamp) || timestamp)}</time>` : ""}</div>
+    <h5>${escapeUiText(record.question ?? "Question unavailable")}</h5>
+    ${record.answer ? `<p class="application-answer-copy">${escapeUiText(record.answer).replaceAll("\n", "<br>")}</p><button type="button" data-application-answer-copy="${index}">Copy answer</button>` : ""}
+    ${record.error ? `<p class="prepped-error">${escapeUiText(record.error)}</p>` : ""}
+  </article>`;
+}
+
+async function loadApplicationAnswers(roleId) {
+  const numericRoleId = Number(roleId);
+  if (loadingApplicationAnswerRoleIds.has(numericRoleId)) return;
+  loadingApplicationAnswerRoleIds.add(numericRoleId);
+  applicationAnswerLoadErrors.delete(numericRoleId);
+  try {
+    const response = await fetch(`/api/autoprep/roles/${encodeURIComponent(roleId)}/application-answers`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || "Could not load saved answers.");
+    preppedApplicationAnswersByRoleId.set(numericRoleId, normalizeApplicationAnswerRecords(payload));
+    loadedApplicationAnswerRoleIds.add(numericRoleId);
+  } catch (error) {
+    applicationAnswerLoadErrors.set(numericRoleId, error instanceof Error ? error.message : "Could not load saved answers.");
+  } finally {
+    loadingApplicationAnswerRoleIds.delete(numericRoleId);
+    if (Number(selectedPreppedRoleId) === numericRoleId) renderPreppedDetail();
+  }
+}
+
+async function copyApplicationAnswer(text) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Embedded or non-secure app shells may deny the modern clipboard API.
+    }
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.readOnly = true;
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.append(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("Clipboard copy is unavailable");
+}
+
+async function submitApplicationQuestion(roleId) {
+  const numericRoleId = Number(roleId);
+  const question = String(preppedApplicationQuestionDrafts.get(numericRoleId) ?? "").trim();
+  if (!question || pendingApplicationAnswerRoleIds.has(numericRoleId)) return;
+  pendingApplicationAnswerRoleIds.add(numericRoleId);
+  renderPreppedDetail();
+  try {
+    const response = await fetch(`/api/autoprep/roles/${encodeURIComponent(roleId)}/application-answers`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({question}),
+    });
+    const payload = await response.json();
+    const returnedRecords = normalizeApplicationAnswerRecords(payload);
+    const currentRecords = preppedApplicationAnswersByRoleId.get(numericRoleId) ?? [];
+    if (Array.isArray(payload?.answers)) {
+      preppedApplicationAnswersByRoleId.set(numericRoleId, returnedRecords);
+    } else if (returnedRecords.length) {
+      preppedApplicationAnswersByRoleId.set(numericRoleId, [...currentRecords, ...returnedRecords]);
+    }
+    if (!response.ok) throw new Error(payload?.error || returnedRecords[0]?.error || "Could not generate an answer.");
+    preppedApplicationQuestionDrafts.delete(numericRoleId);
+    loadedApplicationAnswerRoleIds.add(numericRoleId);
+    applicationAnswerLoadErrors.delete(numericRoleId);
+  } catch (error) {
+    applicationAnswerLoadErrors.set(numericRoleId, error instanceof Error ? error.message : "Could not generate an answer.");
+  } finally {
+    pendingApplicationAnswerRoleIds.delete(numericRoleId);
+    if (Number(selectedPreppedRoleId) === numericRoleId) renderPreppedDetail();
+  }
 }
 
 async function loadPreppedPdfPreview(job, documentKind) {
@@ -4099,6 +4267,14 @@ preppedList.addEventListener("click", (event) => {
 });
 
 preppedDetail.addEventListener("input", (event) => {
+  const questionDraft = event.target.closest("[data-application-question-draft]");
+  if (questionDraft) {
+    const roleId = Number(selectedPreppedRoleId);
+    preppedApplicationQuestionDrafts.set(roleId, questionDraft.value);
+    const submitButton = preppedDetail.querySelector("[data-application-question-submit]");
+    if (submitButton) submitButton.disabled = !questionDraft.value.trim() || pendingApplicationAnswerRoleIds.has(roleId);
+    return;
+  }
   const comments = event.target.closest("[data-autoprep-comments]");
   if (!comments) return;
   const key = `${selectedPreppedRoleId}:${comments.dataset.autoprepComments}`;
@@ -4128,6 +4304,24 @@ preppedDetail.addEventListener("toggle", (event) => {
 preppedDetail.addEventListener("click", async (event) => {
   const job = preppedJobs.find((item) => Number(item.role_id) === Number(selectedPreppedRoleId));
   if (!job) return;
+  const applicationQuestionSubmit = event.target.closest("[data-application-question-submit]");
+  if (applicationQuestionSubmit) {
+    submitApplicationQuestion(job.role_id);
+    return;
+  }
+  const answerCopyButton = event.target.closest("[data-application-answer-copy]");
+  if (answerCopyButton) {
+    const records = preppedApplicationAnswersByRoleId.get(Number(job.role_id)) ?? [];
+    const answer = records[Number(answerCopyButton.dataset.applicationAnswerCopy)]?.answer;
+    if (!answer) return;
+    try {
+      await copyApplicationAnswer(String(answer));
+      answerCopyButton.textContent = "Copied";
+    } catch {
+      answerCopyButton.textContent = "Copy unavailable";
+    }
+    return;
+  }
   const navButton = event.target.closest("[data-prepped-nav]");
   if (navButton) {
     const currentIndex = preppedJobs.indexOf(job);
@@ -4636,6 +4830,36 @@ settingsForm.addEventListener("change", (event) => {
   );
   if (!control) return;
   saveSetting(control);
+});
+
+settingsForm.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-application-runtime-test]");
+  if (!button || button.disabled) return;
+  const backend = button.dataset.applicationRuntimeTest;
+  const status = settingsForm.querySelector(
+    `[data-application-runtime-test-status="${CSS.escape(backend)}"]`,
+  );
+  button.disabled = true;
+  button.textContent = "Testing…";
+  if (status) status.textContent = "Creating a bounded Callumployed session…";
+  try {
+    const response = await fetch(
+      `/api/application-generation/backends/${encodeURIComponent(backend)}/test`,
+      {method: "POST"},
+    );
+    const payload = await response.json();
+    if (!response.ok || payload?.ok !== true) {
+      throw new Error(payload?.error || "Connection test failed.");
+    }
+    if (status) status.textContent = payload.message || "Connection succeeded.";
+  } catch (error) {
+    if (status) {
+      status.textContent = error instanceof Error ? error.message : "Connection test failed.";
+    }
+  } finally {
+    button.disabled = false;
+    button.textContent = "Test connection";
+  }
 });
 
 settingsForm.addEventListener("submit", async (event) => {

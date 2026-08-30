@@ -31,7 +31,12 @@ from callumployed.agents.resume_feedback import (
     build_resume_feedback_prompt,
 )
 from callumployed.agents.resume_tweaker import build_resume_tweak_prompt
-from callumployed.agents.role_chat import RoleChatMessage, build_role_chat_prompt
+from callumployed.agents.role_chat import (
+    RoleChatAgent,
+    RoleChatMessage,
+    RoleChatResponse,
+    build_role_chat_prompt,
+)
 from callumployed.config import LlmSettings
 from callumployed.data.models import Company, CompanyCareerPage, ScanCandidate, ScanPage
 from callumployed.webscraping.models import (
@@ -392,6 +397,33 @@ def test_role_chat_prompt_includes_role_material_contexts() -> None:
     assert "Dear Acme" in prompt
     assert "Built a Kubernetes scheduler" in prompt
     assert "What should I emphasize?" in prompt
+
+
+def test_role_chat_default_model_requests_structured_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested_models: list[type[BaseModel]] = []
+
+    class FakeModel:
+        def with_structured_output(self, output_model: type[BaseModel]) -> "FakeModel":
+            requested_models.append(output_model)
+            return self
+
+        async def ainvoke(self, _prompt: object) -> RoleChatResponse:
+            return RoleChatResponse(answer="Grounded answer")
+
+    monkeypatch.setattr(
+        "callumployed.agents.role_chat.build_chat_model", lambda _settings: FakeModel()
+    )
+    response = asyncio.run(
+        RoleChatAgent().answer(
+            role={"id": 1, "company_name": "Acme", "title": "Engineer"},
+            messages=[RoleChatMessage(role="user", content="Why Acme?")],
+        )
+    )
+
+    assert requested_models == [RoleChatResponse]
+    assert response.answer == "Grounded answer"
 
 
 def test_cover_letter_agent_queries_example_tool_and_passes_documents() -> None:

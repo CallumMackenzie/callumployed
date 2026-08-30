@@ -60,7 +60,7 @@ class RoleChatAgent:
         model = (
             self.chat_model_factory(self.settings)
             if self.chat_model_factory is not None
-            else build_chat_model(self.settings)
+            else build_chat_model(self.settings).with_structured_output(RoleChatResponse)
         )
         result = await model.ainvoke(
             build_role_chat_prompt(
@@ -71,6 +71,8 @@ class RoleChatAgent:
                 messages=messages,
             )
         )
+        if isinstance(result, RoleChatResponse):
+            return result
         return RoleChatResponse(answer=_message_content(result))
 
 

@@ -280,8 +280,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="autoprep-view"' not in markup
         assert 'id="autoprep-selected"' not in markup
         assert 'id="autoprep-interested"' not in app_javascript
-        assert 'function submitAutoprepSelection' not in app_javascript
-        assert 'body: JSON.stringify({role_ids:' not in app_javascript
+        assert "function submitAutoprepSelection" not in app_javascript
+        assert "body: JSON.stringify({role_ids:" not in app_javascript
         assert 'id="role-add-form"' in markup
         assert "Add Explicit Role" in markup
         assert 'id="role-url-input"' in markup
@@ -351,8 +351,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=react-ts-20260829-16" in index_markup
-        assert "/assets/build/app.js?v=react-ts-20260829-20" in index_markup
+        assert "/assets/app.css?v=react-ts-20260829-17" in index_markup
+        assert "/assets/build/app.js?v=react-ts-20260829-23" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -372,7 +372,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert ">View PDF</a>" in app_javascript
         assert 'id="regenerate-all-cover-letters"' in markup
         assert 'id="prepped-bulk-status"' in markup
-        assert 'data-autoprep-disinterested' in app_javascript
+        assert "data-autoprep-disinterested" in app_javascript
         assert 'updateRoleStatusById(roleId, "disinterested")' in app_javascript
         assert 'fetch("/api/autoprep/cover-letters/regenerate", {' in app_javascript
         assert 'idempotency_key: autoprepActionKey("regenerate-all-cover-letters")' in (
@@ -392,8 +392,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "autoprepJobIsGenerating(job)" in app_javascript
         assert '" is-document-generating"' in app_javascript
         assert (
-            "const documentGenerating = !hasGenerationFailure && "
-            "autoprepJobIsGenerating(job);"
+            "const documentGenerating = !hasGenerationFailure && autoprepJobIsGenerating(job);"
         ) in app_javascript
         assert ".prepped-list-item.is-document-generating" in app_styles
         assert "@keyframes prepped-cover-letter-pulse" in app_styles
@@ -412,7 +411,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         )
         assert failed_list_item_class in app_javascript
         assert ".prepped-list-item.has-generation-failure" in app_styles
-        assert 'data-autoprep-retry' not in app_javascript
+        assert "data-autoprep-retry" not in app_javascript
         assert "async function retryAutoprepDocument" not in app_javascript
         assert 'const retryingFailedDocument = ["failed", "interrupted"].includes(status);' in (
             app_javascript
@@ -421,12 +420,11 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'if (!comments && documentKind !== "cover-letter" && !retryingFailedDocument)' in (
             app_javascript
         )
-        assert '["failed", "interrupted"].includes(job.cover_letter_status)' in (
-            app_javascript
-        )
+        assert '["failed", "interrupted"].includes(job.cover_letter_status)' in (app_javascript)
         bulk_function = app_javascript[
-            app_javascript.index("async function regenerateAllPreppedCoverLetters()") :
-            app_javascript.index("async function markPreppedRoleDisinterested")
+            app_javascript.index(
+                "async function regenerateAllPreppedCoverLetters()"
+            ) : app_javascript.index("async function markPreppedRoleDisinterested")
         ]
         assert "await refreshPreppedRoles();\n    startPreppedPolling();" in bulk_function
         assert ".prep-role-hero" in app_styles
@@ -514,8 +512,7 @@ def test_autoprep_pdf_filename_uses_job_description_company_identity(
             "company_name": "Ramp",
             "title": "Machine Learning Intern Co-op",
             "description": (
-                "Who are we?\n"
-                "Cohere is the leading security-first enterprise AI company."
+                "Who are we?\nCohere is the leading security-first enterprise AI company."
             ),
         },
         source_pdf,
@@ -533,8 +530,7 @@ def test_autoprep_pdf_filename_uses_job_description_company_identity(
             "company_name": "Ramp",
             "title": "Machine Learning Intern Co-op",
             "description": (
-                "Who are we?\n"
-                "Cohere is the leading security-first enterprise AI company."
+                "Who are we?\nCohere is the leading security-first enterprise AI company."
             ),
         },
         {"resume_status": "ready", "resume_artifact_path": str(old_resume)},
@@ -552,8 +548,7 @@ def test_autoprep_pdf_filename_uses_job_description_company_identity(
             "company_name": "Ramp",
             "title": "Machine Learning Intern Co-op",
             "description": (
-                "Who are we?\n"
-                "Cohere is the leading security-first enterprise AI company."
+                "Who are we?\nCohere is the leading security-first enterprise AI company."
             ),
         },
         source_pdf,
@@ -1050,9 +1045,7 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         cwd = Path(kwargs["cwd"])
         (cwd / "cover-letter.pdf").write_bytes(
             _positioned_text_pdf_bytes(
-                (740, 670, 600, 530)
-                if compile_attempts <= 5
-                else (740, 600, 450, 300, 150, 60)
+                (740, 670, 600, 530) if compile_attempts <= 5 else (740, 600, 450, 300, 150, 60)
             )
         )
 
@@ -1169,9 +1162,7 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         assert "materially underfilled" in str(captured_calls[1]["tweaks"])
         assert "smooth, natural prose" in str(captured_calls[1]["tweaks"])
         assert "source-supported detail" in str(captured_calls[1]["tweaks"])
-        assert "Dear Hiring Manager" in str(
-            captured_calls[1]["previous_cover_letter_latex"]
-        )
+        assert "Dear Hiring Manager" in str(captured_calls[1]["previous_cover_letter_latex"])
         indexed_context = captured_calls[0]["other_experience_context"]
         assert isinstance(indexed_context, list)
         assert len(indexed_context) == 1
@@ -1543,9 +1534,7 @@ def test_cover_letter_latex_normalizer_separates_and_professionalizes_salutation
 
     assert "Dear Hiring Team" not in normalized
     assert (
-        "\\noindent Dear Hiring Manager,\\par\n"
-        "\\vspace{0.35em}\n\n"
-        "I am applying for the role."
+        "\\noindent Dear Hiring Manager,\\par\n\\vspace{0.35em}\n\nI am applying for the role."
     ) in normalized
 
 
@@ -1990,9 +1979,7 @@ def test_role_resume_endpoint_regenerates_with_tweaks(
         nonlocal compile_attempts
         compile_attempts += 1
         cwd = Path(kwargs["cwd"])
-        (cwd / "resume.pdf").write_bytes(
-            _valid_pdf_bytes(2 if compile_attempts <= 3 else 1)
-        )
+        (cwd / "resume.pdf").write_bytes(_valid_pdf_bytes(2 if compile_attempts <= 3 else 1))
 
         class Completed:
             returncode = 0
@@ -2879,6 +2866,22 @@ def test_config_payload_returns_current_settings(
             ],
         },
         {
+            "key": "application_generation_backend",
+            "label": "application generation backend",
+            "description": (
+                "backend used only for resumes, cover letters, and saved application Q&A"
+            ),
+            "control": "select",
+            "value": "openai",
+            "default": "openai",
+            "editable": True,
+            "options": [
+                {"value": "openai", "label": "OpenAI"},
+                {"value": "hermes", "label": "Hermes Agent"},
+                {"value": "openclaw", "label": "OpenClaw"},
+            ],
+        },
+        {
             "key": "cover_letter_model",
             "label": "cover letter model",
             "description": "model used only for cover letter generation",
@@ -3060,6 +3063,7 @@ def test_config_endpoint_updates_settings(
         }
         setting_values = {setting["key"]: setting["value"] for setting in updated["settings"]}
         assert setting_values == {
+            "application_generation_backend": "openai",
             "applicant_degree": "Bachelor of Engineering in Software Engineering",
             "applicant_email": "callum@example.com",
             "applicant_first_name": "Callum",

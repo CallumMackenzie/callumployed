@@ -18,9 +18,7 @@ DEFAULT_COVER_LETTER_REGENERATION_INSTRUCTION = (
     "Refresh this cover letter using the current role description and approved application "
     "materials. Preserve source fidelity and professional one-page formatting."
 )
-BULK_COVER_LETTER_REGENERATION_INSTRUCTION = (
-    DEFAULT_COVER_LETTER_REGENERATION_INSTRUCTION
-)
+BULK_COVER_LETTER_REGENERATION_INSTRUCTION = DEFAULT_COVER_LETTER_REGENERATION_INSTRUCTION
 
 _RESUME_STATUSES = {
     "queued",
@@ -207,6 +205,27 @@ def ensure_autoprep_schema(connection: turso.Connection) -> None:
             result_json TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
+
+        CREATE TABLE IF NOT EXISTS application_answers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            role_id INTEGER NOT NULL,
+            question TEXT NOT NULL,
+            answer TEXT,
+            backend TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            error TEXT,
+            session_id TEXT,
+            source_metadata_json TEXT,
+            research_metadata_json TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            completed_at TEXT,
+            FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE,
+            CHECK (backend IN ('openai', 'hermes', 'openclaw')),
+            CHECK (status IN ('pending', 'completed', 'failed'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_application_answers_role
+            ON application_answers(role_id, created_at DESC, id DESC);
         """
     )
     job_columns = {
@@ -217,6 +236,118 @@ def ensure_autoprep_schema(connection: turso.Connection) -> None:
         if column_name not in job_columns:
             connection.execute(f"ALTER TABLE autoprep_jobs ADD COLUMN {column_name} TEXT")
     connection.commit()
+
+
+def create_application_answer(
+    connection: turso.Connection, role_id: int, *, question: str, backend: str
+) -> dict[str, Any]:
+    clean_question = question.strip()
+    if not clean_question:
+        raise ValueError("An application question is required.")
+    if len(clean_question) > 4000:
+        raise ValueError("Application question must be 4000 characters or fewer.")
+    if backend not in {"openai", "hermes", "openclaw"}:
+        raise ValueError("Unsupported application answer backend.")
+    role = connection.execute("SELECT id FROM roles WHERE id = ?", (role_id,)).fetchone()
+    if role is None:
+        raise ValueError(f"Role {role_id} was not found.")
+    cursor = connection.execute(
+        "INSERT INTO application_answers (role_id, question, backend) VALUES (?, ?, ?)",
+        (role_id, clean_question, backend),
+    )
+    answer_id = cursor.lastrowid
+    if answer_id is None:
+        raise RuntimeError("Application answer could not be created.")
+    connection.commit()
+    return get_application_answer(connection, int(answer_id))
+
+
+def list_application_answers(connection: turso.Connection, role_id: int) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        "SELECT * FROM application_answers WHERE role_id = ? ORDER BY created_at DESC, id DESC",
+        (role_id,),
+    ).fetchall()
+    return [_application_answer_payload(row) for row in rows]
+
+
+def get_application_answer(connection: turso.Connection, answer_id: int) -> dict[str, Any]:
+    row = connection.execute(
+        "SELECT * FROM application_answers WHERE id = ?", (answer_id,)
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"Application answer {answer_id} was not found.")
+    return _application_answer_payload(row)
+
+
+def complete_application_answer(
+    connection: turso.Connection,
+    answer_id: int,
+    *,
+    answer: str,
+    session_id: str | None = None,
+    sources: object = None,
+    research: object = None,
+) -> dict[str, Any]:
+    connection.execute(
+        """
+        UPDATE application_answers
+        SET answer = ?, status = 'completed', error = NULL, session_id = ?,
+            source_metadata_json = ?, research_metadata_json = ?,
+            completed_at = datetime('now'), updated_at = datetime('now')
+        WHERE id = ? AND status = 'pending'
+        """,
+        (
+            answer.strip(),
+            session_id,
+            json.dumps(sources, ensure_ascii=False) if sources is not None else None,
+            json.dumps(research, ensure_ascii=False) if research is not None else None,
+            answer_id,
+        ),
+    )
+    connection.commit()
+    return get_application_answer(connection, answer_id)
+
+
+def fail_application_answer(
+    connection: turso.Connection, answer_id: int, *, error: str
+) -> dict[str, Any]:
+    connection.execute(
+        """
+        UPDATE application_answers
+        SET status = 'failed', error = ?, completed_at = datetime('now'),
+            updated_at = datetime('now')
+        WHERE id = ? AND status = 'pending'
+        """,
+        (error[:1000], answer_id),
+    )
+    connection.commit()
+    return get_application_answer(connection, answer_id)
+
+
+def recover_interrupted_application_answers(connection: turso.Connection) -> int:
+    """Make abandoned answer generations explicit after a server restart."""
+    cursor = connection.execute(
+        """
+        UPDATE application_answers
+        SET status = 'failed',
+            error = 'Generation was interrupted by an application restart. Please try again.',
+            completed_at = datetime('now'), updated_at = datetime('now')
+        WHERE status = 'pending'
+        """
+    )
+    connection.commit()
+    return max(int(cursor.rowcount or 0), 0)
+
+
+def _application_answer_payload(row: Any) -> dict[str, Any]:
+    payload = dict(row)
+    for stored, exposed in (
+        ("source_metadata_json", "sources"),
+        ("research_metadata_json", "research"),
+    ):
+        raw = payload.pop(stored, None)
+        payload[exposed] = json.loads(raw) if raw else None
+    return payload
 
 
 def enqueue_autoprep_jobs(
@@ -253,9 +384,7 @@ def enqueue_autoprep_jobs(
         ).fetchall()
         statuses = {int(row["id"]): str(row["role_status"]) for row in rows}
         invalid = [
-            role_id
-            for role_id in normalized_role_ids
-            if statuses.get(role_id) != "interested"
+            role_id for role_id in normalized_role_ids if statuses.get(role_id) != "interested"
         ]
         if invalid:
             raise ValueError("Autoprep can only queue roles currently marked Interested.")
@@ -383,6 +512,22 @@ def get_autoprep_resume_latex(connection: turso.Connection, job_id: int) -> str 
     if row is None or row["resume_latex"] is None:
         return None
     return str(row["resume_latex"])
+
+
+def get_autoprep_document_session_id(
+    connection: turso.Connection,
+    role_id: int,
+    document_kind: str,
+) -> str | None:
+    """Read an internal runtime session without exposing it in API payloads."""
+    if document_kind == "resume":
+        query = "SELECT resume_session_id AS session_id FROM autoprep_jobs WHERE role_id = ?"
+    elif document_kind == "cover_letter":
+        query = "SELECT cover_letter_session_id AS session_id FROM autoprep_jobs WHERE role_id = ?"
+    else:
+        raise ValueError(f"Unsupported Autoprep document kind: {document_kind}")
+    row = connection.execute(query, (role_id,)).fetchone()
+    return str(row["session_id"]) if row and row["session_id"] is not None else None
 
 
 def claim_next_autoprep_job(connection: turso.Connection) -> dict[str, Any] | None:
