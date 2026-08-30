@@ -3464,7 +3464,7 @@ def _copy_autoprep_pdf(
     )
     directory.mkdir(parents=True, exist_ok=True)
     suffix = "resume" if kind == "resume" else "cover-letter"
-    target = directory / f"{company}-{title}-role-{role_id}-{suffix}.pdf"
+    target = directory / f"{company}-{title}-{suffix}.pdf"
     _atomic_copy_verified_pdf(source_pdf, target)
     return directory, target
 
@@ -3500,11 +3500,10 @@ def _copy_autoprep_counterpart(
     source = Path(source_value)
     if not source.is_file():
         return None
-    role_id = int(role["id"])
     company = _safe_filename(_effective_role_company_name(role))
     title = _safe_filename(str(role.get("title") or "role"))
     suffix = "cover-letter" if counterpart_kind == "cover_letter" else "resume"
-    target = directory / f"{company}-{title}-role-{role_id}-{suffix}.pdf"
+    target = directory / f"{company}-{title}-{suffix}.pdf"
     if source.resolve() != target.resolve():
         _atomic_copy_verified_pdf(source, target)
     return counterpart_kind, str(target)

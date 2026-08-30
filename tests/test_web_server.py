@@ -523,9 +523,7 @@ def test_autoprep_pdf_filename_uses_job_description_company_identity(
     )
 
     assert directory.name == "cohere-machine-learning-intern-co-op-role-312"
-    assert target.name == (
-        "cohere-machine-learning-intern-co-op-role-312-cover-letter.pdf"
-    )
+    assert target.name == "cohere-machine-learning-intern-co-op-cover-letter.pdf"
 
     old_resume = tmp_path / "ramp-role-312-resume.pdf"
     old_resume.write_bytes(_valid_pdf_bytes())
@@ -545,7 +543,7 @@ def test_autoprep_pdf_filename_uses_job_description_company_identity(
     )
     assert counterpart == (
         "resume",
-        str(directory / "cohere-machine-learning-intern-co-op-role-312-resume.pdf"),
+        str(directory / "cohere-machine-learning-intern-co-op-resume.pdf"),
     )
 
     resume_directory, resume_target = web_server._copy_autoprep_pdf(
@@ -563,7 +561,7 @@ def test_autoprep_pdf_filename_uses_job_description_company_identity(
     )
 
     assert resume_directory == directory
-    assert resume_target.name == "cohere-machine-learning-intern-co-op-role-312-resume.pdf"
+    assert resume_target.name == "cohere-machine-learning-intern-co-op-resume.pdf"
 
 
 def test_ai_role_experience_retrieval_requests_concrete_ai_project_context(

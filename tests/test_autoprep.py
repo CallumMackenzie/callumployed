@@ -519,8 +519,8 @@ def test_autoprep_api_lists_only_interested_and_returns_accepted_jobs_immediatel
 
         documents = tmp_path / "prepared-documents"
         documents.mkdir()
-        resume_pdf = documents / "cohere-backend-engineer-role-1-resume.pdf"
-        cover_pdf = documents / "cohere-backend-engineer-role-1-cover-letter.pdf"
+        resume_pdf = documents / "cohere-backend-engineer-resume.pdf"
+        cover_pdf = documents / "cohere-backend-engineer-cover-letter.pdf"
         resume_pdf.write_bytes(b"resume")
         cover_pdf.write_bytes(b"cover")
         with db.connect() as connection:
@@ -908,7 +908,7 @@ def test_autoprep_worker_uses_direct_generation_and_preserves_document_artifacts
     )
 
 
-def test_autoprep_cover_letter_only_mode_copies_master_resume_with_role_filename(
+def test_autoprep_cover_letter_only_mode_copies_master_resume_with_public_filename(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -959,7 +959,7 @@ def test_autoprep_cover_letter_only_mode_copies_master_resume_with_role_filename
     assert copied_latex == [master_latex]
     assert cover_resume_content == [master_latex]
     assert Path(completed["resume_artifact_path"]).name == (
-        f"acme-data-science-intern-role-{role_id}-resume.pdf"
+        "acme-data-science-intern-resume.pdf"
     )
     assert Path(completed["resume_artifact_path"]).is_file()
     assert Path(completed["cover_letter_artifact_path"]).is_file()
