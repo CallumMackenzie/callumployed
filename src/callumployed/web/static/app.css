@@ -1747,7 +1747,7 @@ a:hover .role-link-icon {
 }
 
 .prep-actions {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .review-action {
@@ -4095,6 +4095,13 @@ a:hover .role-link-icon {
 }
 
 @media (max-width: 520px) {
+  .prep-actions .review-action {
+    padding-inline: 6px;
+    font-size: 0.78rem;
+    line-height: 1.15;
+    white-space: normal;
+  }
+
   .prep-workspace-nav {
     grid-template-columns: 1fr;
   }

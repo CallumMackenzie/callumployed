@@ -371,6 +371,10 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="role-company-input"' in markup
         assert 'id="role-company-options"' in markup
         assert 'id="prep-view"' in markup
+        prep_later_index = markup.index('data-prep-action="later"')
+        autoprep_action_index = markup.index('data-prep-action="autoprep"')
+        move_applied_index = markup.index('data-prep-action="applied"')
+        assert prep_later_index < autoprep_action_index < move_applied_index
         assert 'id="resume-resource-upload"' in markup
         assert 'id="resume-resource-upload-button"' in markup
         assert 'id="resume-resource-list"' in markup
@@ -434,8 +438,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=react-ts-20260830-27" in index_markup
-        assert "/assets/build/app.js?v=react-ts-20260830-27" in index_markup
+        assert "/assets/app.css?v=react-ts-20260830-28" in index_markup
+        assert "/assets/build/app.js?v=react-ts-20260830-28" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -529,6 +533,32 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'setting.input_type ?? "text"' in app_javascript
         assert 'setting.autocomplete ?? "name"' in app_javascript
         assert 'aria-label="disinterested role actions"' in app_javascript
+        assert 'data-autoprep-role-id="${job.id}"' in app_javascript
+        assert '>autoprep</button>' in app_javascript
+        assert 'async function queueRoleForAutoprep(roleId)' in app_javascript
+        assert 'if (queuingAutoprepRoleIds.has(numericRoleId)) return null;' in app_javascript
+        assert 'queuingAutoprepRoleIds.add(numericRoleId);' in app_javascript
+        assert 'body: JSON.stringify({' in app_javascript
+        assert 'role_ids: [numericRoleId]' in app_javascript
+        assert 'selectedPreppedRoleId = numericRoleId;' in app_javascript
+        assert (
+            'await openPreppedView({seedJobs: [...seededJobsByRoleId.values()]});'
+            in app_javascript
+        )
+        assert (
+            'const autoprepAction = event.target.closest("[data-autoprep-role-id]");'
+            in app_javascript
+        )
+        assert 'if (action === "autoprep")' in app_javascript
+        assert (
+            ".prep-actions .review-action {\n"
+            "    padding-inline: 6px;\n"
+            "    font-size: 0.78rem;\n"
+            "    line-height: 1.15;\n"
+            "    white-space: normal;\n"
+            "  }"
+            in app_styles
+        )
         assert 'src="${escapeHtml(pdfUrl)}"' in app_javascript
         assert "data:application/pdf;base64" not in app_javascript
         assert "scanFailuresOpenButton.hidden = failures.length === 0;" in app_javascript

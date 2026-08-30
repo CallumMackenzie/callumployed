@@ -148,6 +148,7 @@ let preppedPoll = null;
 let bulkCoverLetterRegenerationPending = false;
 let preppedBulkMessage = "";
 let preppedBulkRegeneration = null;
+const queuingAutoprepRoleIds = new Set();
 const preppedStatusChangeRoleIds = new Set();
 const preppedCommentsByDocument = new Map();
 const openPreppedPreviews = new Set();
@@ -779,6 +780,7 @@ function renderInterestedActions(job) {
   return `
     <div class="job-actions" aria-label="interested role actions">
       <button class="job-action success" type="button" data-prep-role-id="${job.id}">prep</button>
+      <button class="job-action success" type="button" data-autoprep-role-id="${job.id}">autoprep</button>
       <button class="job-action" type="button" data-role-id="${job.id}" data-status="applied">applied</button>
       <button class="job-action" type="button" data-role-id="${job.id}" data-status="disinterested">disinterested</button>
       <button class="job-action danger" type="button" data-role-id="${job.id}" data-status="closed">closed</button>
@@ -2350,6 +2352,14 @@ statusListEl.addEventListener("click", (event) => {
     return;
   }
 
+  const autoprepAction = event.target.closest("[data-autoprep-role-id]");
+  if (autoprepAction) {
+    queueRoleForAutoprep(autoprepAction.dataset.autoprepRoleId).catch(() => {
+      toolbarSummary.textContent = "could not add that role to Autoprep. try again.";
+    });
+    return;
+  }
+
   const action = event.target.closest(".job-action");
   if (action) {
     updateRoleStatus(action);
@@ -3410,6 +3420,15 @@ async function handlePrepAction(action) {
     return;
   }
 
+  if (action === "autoprep") {
+    try {
+      await queueRoleForAutoprep(current.id);
+    } catch {
+      renderPrepRole("could not add that role to Autoprep. try again.");
+    }
+    return;
+  }
+
   if (action !== "applied") return;
 
   try {
@@ -3648,6 +3667,49 @@ async function updateRoleStatusById(roleId, status) {
 function autoprepActionKey(prefix) {
   const suffix = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
   return `${prefix}-${suffix}`;
+}
+
+async function queueRoleForAutoprep(roleId) {
+  const numericRoleId = Number(roleId);
+  if (!Number.isInteger(numericRoleId) || numericRoleId <= 0) return null;
+  if (queuingAutoprepRoleIds.has(numericRoleId)) return null;
+  queuingAutoprepRoleIds.add(numericRoleId);
+  const buttons = document.querySelectorAll(
+    `[data-autoprep-role-id="${CSS.escape(String(numericRoleId))}"]`,
+  );
+  buttons.forEach((button) => {
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    button.textContent = "queuing...";
+  });
+  try {
+    const response = await fetch("/api/autoprep/jobs", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        role_ids: [numericRoleId],
+        idempotency_key: autoprepActionKey(`autoprep-role-${numericRoleId}`),
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Autoprep request failed");
+    const acceptedJobs = Array.isArray(payload.jobs) ? payload.jobs : [];
+    const seededJobsByRoleId = new Map(
+      preppedJobs.map((job) => [Number(job.role_id), job]),
+    );
+    acceptedJobs.forEach((job) => seededJobsByRoleId.set(Number(job.role_id), job));
+    selectedPreppedRoleId = numericRoleId;
+    if (!prepView.hidden) closePrepView();
+    await openPreppedView({seedJobs: [...seededJobsByRoleId.values()]});
+    return acceptedJobs;
+  } finally {
+    queuingAutoprepRoleIds.delete(numericRoleId);
+    buttons.forEach((button) => {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+      button.textContent = "autoprep";
+    });
+  }
 }
 
 function setWorkspaceHash(hash) {
