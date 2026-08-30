@@ -20,10 +20,11 @@ from callumployed.central.models import (
 )
 from callumployed.central.sync import pull_companies, pull_roles, resolve_unlinked_companies
 from callumployed.data import db
-from callumployed.data.models import Company, CompanyCareerPage, RoleStatus, ScanStatus
+from callumployed.data.models import Company, CompanyCareerPage, Role, RoleStatus, ScanStatus
 from callumployed.data.repositories import (
     add_company,
     add_company_career_page,
+    add_role,
     create_scan_run,
     finish_scan_run,
     get_company,
@@ -31,6 +32,7 @@ from callumployed.data.repositories import (
     list_company_career_pages,
     list_roles,
 )
+from callumployed.services.autoprep import ensure_autoprep_schema
 
 
 class FakeCentralClient:
@@ -280,6 +282,23 @@ def test_build_scan_metrics_aggregates_persisted_scan_data() -> None:
         Company(name="Acme", central_company_id="co_acme"),
     )
     assert company.id is not None
+    outcome_roles = [
+        add_role(
+            connection,
+            Role(
+                company_id=company.id,
+                title=f"{status.value} role",
+                role_url=f"https://example.com/{status.value}",
+                role_status=status,
+            ),
+        )
+        for status in (
+            RoleStatus.INTERESTED,
+            RoleStatus.DISINTERESTED,
+            RoleStatus.ARCHIVED,
+            RoleStatus.APPLIED,
+        )
+    ]
     add_company_career_page(
         connection,
         CompanyCareerPage(company_id=company.id, url="https://example.com/careers"),
@@ -305,6 +324,19 @@ def test_build_scan_metrics_aggregates_persisted_scan_data() -> None:
     )
     finished = finish_scan_run(connection, scan_run.id, ScanStatus.SUCCEEDED)
 
+    ensure_autoprep_schema(connection)
+    connection.executemany(
+        """
+        INSERT INTO autoprep_jobs (
+            role_id, overall_status, worker_state, resume_status, cover_letter_status
+        ) VALUES (?, ?, 'idle', ?, ?)
+        """,
+        [
+            (outcome_roles[0].id, "ready", "ready", "ready"),
+            (outcome_roles[1].id, "failed", "failed", "failed"),
+        ],
+    )
+
     metrics = build_scan_metrics(connection, company, finished)
 
     assert metrics.global_company_id == "co_acme"
@@ -312,12 +344,19 @@ def test_build_scan_metrics_aggregates_persisted_scan_data() -> None:
     assert metrics.candidates_scanned == 4
     assert metrics.potential_roles_discovered == 1
     assert metrics.scan_status == "succeeded"
-    assert metrics.schema_version == 2
+    assert metrics.schema_version == 3
     assert metrics.page_confidence_counts == {"low": 1}
     assert metrics.candidate_confidence_counts == {"high": 1, "medium": 1}
     assert metrics.candidate_selection_counts == {"selected": 1, "rejected": 1}
     assert metrics.candidate_discovery_method_counts == {"unclassified": 2}
     assert metrics.agent_trace_present is False
+    assert metrics.role_status_counts == {
+        "applied": 1,
+        "archived": 1,
+        "disinterested": 1,
+        "interested": 1,
+    }
+    assert metrics.autoprep_outcome_counts == {"failure": 1, "success": 1}
 
 
 def test_scan_metric_rejection_reasons_are_privacy_safe_categories() -> None:

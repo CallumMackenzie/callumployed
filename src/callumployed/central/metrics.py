@@ -15,6 +15,7 @@ from callumployed.data.repositories import (
     list_scan_candidates,
     list_scan_pages,
 )
+from callumployed.services.autoprep import ensure_autoprep_schema
 
 _REJECTION_REASON_CATEGORIES = {
     "closed role filtered by app config": "closed_role",
@@ -73,6 +74,35 @@ def build_scan_metrics(
         for attempt in attempts
         if attempt.assessment_is_role is not True or attempt.assessment_is_closed is True
     )
+    role_status_counts = Counter(
+        {
+            str(row["role_status"]): int(row["count"])
+            for row in connection.execute(
+                """
+                SELECT role_status, COUNT(*) AS count
+                FROM roles
+                WHERE role_status IN ('interested', 'disinterested', 'archived', 'applied')
+                GROUP BY role_status
+                """
+            ).fetchall()
+        }
+    )
+    ensure_autoprep_schema(connection)
+    autoprep_outcome_counts = Counter(
+        {
+            str(row["outcome"]): int(row["count"])
+            for row in connection.execute(
+                """
+                SELECT
+                    CASE WHEN overall_status = 'ready' THEN 'success' ELSE 'failure' END AS outcome,
+                    COUNT(*) AS count
+                FROM autoprep_jobs
+                WHERE overall_status IN ('ready', 'failed', 'partially_complete', 'interrupted')
+                GROUP BY outcome
+                """
+            ).fetchall()
+        }
+    )
 
     return ScanMetricsRequest(
         client_id=client_id,
@@ -108,6 +138,8 @@ def build_scan_metrics(
         verification_outcome_counts=dict(verification_outcome_counts),
         extraction_method_counts=dict(extraction_method_counts),
         rejection_reason_counts=dict(rejection_reason_counts),
+        role_status_counts=dict(role_status_counts),
+        autoprep_outcome_counts=dict(autoprep_outcome_counts),
         agent_trace_present=bool(scan_run.agent_trace),
         error_type="scan_failed" if scan_run.scan_status is ScanStatus.FAILED else None,
         app_version=__version__,

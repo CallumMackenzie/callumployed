@@ -24,6 +24,8 @@ const BREAKDOWN_FIELDS = [
   "verification_outcome_counts",
   "extraction_method_counts",
   "rejection_reason_counts",
+  "role_status_counts",
+  "autoprep_outcome_counts",
 ] as const;
 
 export async function submitScanMetrics(
@@ -47,8 +49,8 @@ function validateScanMetrics(input: Partial<ScanMetricsRequest>): ScanMetricsReq
   const scanEventId = requiredString(input.scan_event_id, "scan_event_id", 128);
   const companyName = requiredString(input.company_name, "company_name", 256);
   const appVersion = requiredString(input.app_version, "app_version", 64);
-  if (input.schema_version !== 1 && input.schema_version !== 2) {
-    throw new Error("schema_version must be 1 or 2");
+  if (input.schema_version !== 1 && input.schema_version !== 2 && input.schema_version !== 3) {
+    throw new Error("schema_version must be 1, 2, or 3");
   }
   if (input.scan_status !== "succeeded" && input.scan_status !== "failed") {
     throw new Error("scan_status must be succeeded or failed");

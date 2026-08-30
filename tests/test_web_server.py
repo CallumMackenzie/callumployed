@@ -276,7 +276,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'class="company-form-panel"' in markup
         assert 'id="company-create-form"' in markup
         assert 'id="companies-list"' in markup
-        assert 'id="prep-interested"' in markup
+        assert 'id="prep-interested"' not in markup
+        assert 'class="quick-action" type="button" id="prepped-roles"' in markup
         assert 'id="autoprep-view"' not in markup
         assert 'id="autoprep-selected"' not in markup
         assert 'id="autoprep-interested"' not in app_javascript
@@ -292,8 +293,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="resume-resource-upload-button"' in markup
         assert 'id="resume-resource-list"' in markup
         assert 'id="scan-summary"' in markup
-        assert markup.index('id="review-discovered"') < markup.index('id="prep-interested"')
-        assert markup.index('id="prep-interested"') < markup.index('id="scan-all-button"')
+        assert markup.index('id="review-discovered"') < markup.index('id="prepped-roles"')
+        assert markup.index('id="prepped-roles"') < markup.index('id="scan-all-button"')
         assert markup.index('id="scan-all-button"') < markup.index('id="manage-companies-button"')
         assert markup.index('id="manage-companies-button"') < markup.index('id="scan-summary"')
         assert markup.index('id="scan-all-button"') < markup.index('class="status-toolbar"')

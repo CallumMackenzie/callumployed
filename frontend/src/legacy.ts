@@ -36,7 +36,6 @@ const materialIndexButton = document.querySelector("#material-index-button");
 const materialIndexWarning = document.querySelector("#material-index-warning");
 const materialIndexStatus = document.querySelector("#material-index-status");
 const reviewDiscoveredButton = document.querySelector("#review-discovered");
-const prepInterestedButton = document.querySelector("#prep-interested");
 const reviewView = document.querySelector("#review-view");
 const reviewHeading = document.querySelector("#review-heading");
 const reviewProgress = document.querySelector("#review-progress");
@@ -831,7 +830,6 @@ function render(data) {
   renderStatuses(data.statuses);
   updateToggleAllButton();
   updateReviewButton(data.statuses);
-  updatePrepButton(data.statuses);
 }
 
 function renderScanStatus(payload) {
@@ -2350,7 +2348,6 @@ function applyRoleStatusUpdate(updatedRole, currentJobEl) {
   updateApplicationStats(previousStatus, nextStatus);
   renderToolbarSummary();
   updateReviewButton(trackerData.statuses);
-  updatePrepButton(trackerData.statuses);
   moveRoleElement(currentJobEl, movedRole, previousStatus, nextStatus);
   updateToggleAllButton();
 }
@@ -2365,7 +2362,6 @@ function mergeRoleIntoTrackerData(updatedRole) {
     status.jobs[index] = mergedRole;
   });
   updateReviewButton(trackerData.statuses);
-  updatePrepButton(trackerData.statuses);
   return mergedRole;
 }
 
@@ -2468,13 +2464,6 @@ function updateReviewButton(statuses) {
 
 function getDiscoveredJobs(statuses = trackerData?.statuses ?? []) {
   return statuses.find((status) => status.key === "discovered")?.jobs ?? [];
-}
-
-function updatePrepButton(statuses) {
-  const interested = getInterestedJobs(statuses);
-  prepInterestedButton.disabled = interested.length === 0;
-  prepInterestedButton.setAttribute("aria-label", "prep interested");
-  prepInterestedButton.innerHTML = '<span class="review-discovered-label">prep interested</span>';
 }
 
 function getInterestedJobs(statuses = trackerData?.statuses ?? []) {
@@ -4082,8 +4071,6 @@ async function markPreppedRoleApplied(roleId, button) {
 reviewDiscoveredButton.addEventListener("click", openReviewView);
 
 closeReviewButton.addEventListener("click", closeReviewView);
-
-prepInterestedButton.addEventListener("click", openPrepView);
 
 preppedRolesButton.addEventListener("click", () => openPreppedView());
 
