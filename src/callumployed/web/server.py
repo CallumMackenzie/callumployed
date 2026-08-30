@@ -36,6 +36,7 @@ from zipfile import BadZipFile, ZipFile
 from platformdirs import user_data_path
 from pypdf import PdfReader
 
+from callumployed.agents.applicant_profile_extractor import extract_applicant_profile
 from callumployed.agents.cover_letter import (
     ApplicantProfile,
     find_named_hiring_contact,
@@ -170,6 +171,18 @@ from callumployed.services.material_index import (
     retrieve_indexed_materials,
     split_experience_note,
 )
+from callumployed.services.scan_schedule import (
+    DEFAULT_SCAN_SCHEDULE_ENABLED,
+    DEFAULT_SCAN_SCHEDULE_TIME,
+    SCAN_SCHEDULE_ENABLED_CONFIG_KEY,
+    SCAN_SCHEDULE_LAST_RUN_DATE_CONFIG_KEY,
+    SCAN_SCHEDULE_TIME_CONFIG_KEY,
+    clean_scan_schedule_time,
+    get_scan_schedule,
+    is_daily_scan_due,
+    set_scan_schedule_enabled,
+    set_scan_schedule_time,
+)
 from callumployed.services.scan_workflow import rescan_role as run_rescan_role
 from callumployed.services.scan_workflow import scan_company as run_scan_company
 from callumployed.webscraping.profile_manager import BrowserProfileManager
@@ -186,6 +199,14 @@ APPLICANT_EMAIL_CONFIG_KEY = "applicant_email"
 APPLICANT_PHONE_CONFIG_KEY = "applicant_phone"
 APPLICANT_INSTITUTION_CONFIG_KEY = "applicant_institution"
 APPLICANT_DEGREE_CONFIG_KEY = "applicant_degree"
+APPLICANT_PROFILE_CONFIG_KEYS = (
+    APPLICANT_FIRST_NAME_CONFIG_KEY,
+    APPLICANT_LAST_NAME_CONFIG_KEY,
+    APPLICANT_EMAIL_CONFIG_KEY,
+    APPLICANT_PHONE_CONFIG_KEY,
+    APPLICANT_INSTITUTION_CONFIG_KEY,
+    APPLICANT_DEGREE_CONFIG_KEY,
+)
 COVER_LETTER_MODEL_CONFIG_KEY = "cover_letter_model"
 AUTOPREP_TAILOR_RESUME_CONFIG_KEY = "autoprep_tailor_resume"
 AUTOPREP_RESUME_PROMPT_CONFIG_KEY = "autoprep_resume_prompt"
@@ -431,6 +452,62 @@ def _mark_latest_running_scan_failed(company_id: int, error_message: str) -> Non
 SCAN_COORDINATOR = ScanCoordinator()
 
 
+class DailyScanScheduler:
+    def __init__(self) -> None:
+        self._stop = threading.Event()
+        self._wake = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="callumployed-daily-scan-scheduler",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def wake(self) -> None:
+        self._wake.set()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._wake.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self._run_if_due()
+            except Exception:
+                LOGGER.exception("Daily scan scheduler check failed")
+            self._wake.wait(timeout=30)
+            self._wake.clear()
+
+    def _run_if_due(self) -> None:
+        now = datetime.now().astimezone()
+        today = now.date().isoformat()
+        with db.connect() as connection:
+            enabled, scheduled_time, last_run_date = get_scan_schedule(connection)
+            if not is_daily_scan_due(
+                now=now,
+                enabled=enabled,
+                scheduled_time=scheduled_time,
+                last_run_date=last_run_date,
+            ):
+                return
+            if not SCAN_COORDINATOR.start():
+                return
+            set_config_value(connection, SCAN_SCHEDULE_LAST_RUN_DATE_CONFIG_KEY, today)
+        LOGGER.info("Started scheduled daily scan for %s at %s", today, scheduled_time)
+
+
+SCAN_SCHEDULER = DailyScanScheduler()
+
+
 class LocalThreadingHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
@@ -454,10 +531,11 @@ def build_tracker_payload(query: str | None = None) -> dict[str, Any]:
             for role in list_interested_autoprep_roles(connection)
             if isinstance(role.get("id"), int)
         }
+        active_roles = [role for role in roles if role.role_status is not RoleStatus.ARCHIVED]
         latest_scan_ids_by_company: dict[int, int] = {}
         latest_scan_role_ids_by_company: dict[int, set[int]] = {}
         latest_scan_role_urls_by_company: dict[int, set[str]] = {}
-        for company_id in {role.company_id for role in roles}:
+        for company_id in {role.company_id for role in active_roles}:
             latest_scan_runs = list_scan_runs(connection, company_id=company_id, limit=1)
             if not latest_scan_runs or latest_scan_runs[0].id is None:
                 continue
@@ -479,7 +557,7 @@ def build_tracker_payload(query: str | None = None) -> dict[str, Any]:
             }
 
     grouped_roles: dict[str, list[dict[str, Any]]] = {status.value: [] for status in RoleStatus}
-    for role in roles:
+    for role in active_roles:
         payload = _role_payload(role)
         latest_scan_role_ids = latest_scan_role_ids_by_company.get(role.company_id, set())
         latest_scan_role_urls = latest_scan_role_urls_by_company.get(role.company_id, set())
@@ -514,7 +592,11 @@ def build_tracker_payload(query: str | None = None) -> dict[str, Any]:
         {
             "key": status.value,
             "label": STATUS_LABELS[status.value],
-            "count": len(grouped_roles[status.value]),
+            "count": (
+                sum(role.role_status is RoleStatus.ARCHIVED for role in roles)
+                if status is RoleStatus.ARCHIVED
+                else len(grouped_roles[status.value])
+            ),
             "jobs": grouped_roles[status.value],
         }
         for status in RoleStatus
@@ -871,6 +953,9 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
             if len(path_parts) == 2 and path_parts == ["api", "config"]:
                 self._update_config()
+                return
+            if path_parts == ["api", "config", "extract-profile"]:
+                self._extract_applicant_profile()
                 return
             if len(path_parts) == 3 and path_parts == [
                 "api",
@@ -2385,6 +2470,15 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             status = HTTPStatus.ACCEPTED if cancelled else HTTPStatus.CONFLICT
             self._send_json_with_status(build_scan_status_payload(), status)
 
+        def _extract_applicant_profile(self) -> None:
+            populated = _populate_missing_applicant_profile_from_resume()
+            self._send_json(
+                {
+                    "populated": sorted(populated),
+                    "config": build_config_payload(),
+                }
+            )
+
         def _update_config(self) -> None:
             payload = self._read_json_body()
             if payload is None:
@@ -2401,6 +2495,8 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 LLM_PROVIDER_CONFIG_KEY,
                 APPLICATION_GENERATION_BACKEND_CONFIG_KEY,
                 SCAN_HEADLESS_CONFIG_KEY,
+                SCAN_SCHEDULE_ENABLED_CONFIG_KEY,
+                SCAN_SCHEDULE_TIME_CONFIG_KEY,
                 "central_api_url",
                 "central_passkey",
                 "include_graduate_degree_roles",
@@ -2425,6 +2521,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 "internship_mode",
                 "require_software_keywords",
                 SCAN_HEADLESS_CONFIG_KEY,
+                SCAN_SCHEDULE_ENABLED_CONFIG_KEY,
                 AUTOPREP_TAILOR_RESUME_CONFIG_KEY,
             }
             if not all(
@@ -2473,6 +2570,10 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                             )
                     validated_payload[APPLICATION_GENERATION_BACKEND_CONFIG_KEY] = (
                         selected_application_backend
+                    )
+                if SCAN_SCHEDULE_TIME_CONFIG_KEY in payload:
+                    validated_payload[SCAN_SCHEDULE_TIME_CONFIG_KEY] = clean_scan_schedule_time(
+                        payload[SCAN_SCHEDULE_TIME_CONFIG_KEY]
                     )
                 for key in (
                     AUTOPREP_RESUME_PROMPT_CONFIG_KEY,
@@ -2581,6 +2682,12 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                             SCAN_HEADLESS_CONFIG_KEY,
                             "true" if payload[SCAN_HEADLESS_CONFIG_KEY] else "false",
                         )
+                    if SCAN_SCHEDULE_ENABLED_CONFIG_KEY in payload:
+                        set_scan_schedule_enabled(
+                            connection, payload[SCAN_SCHEDULE_ENABLED_CONFIG_KEY]
+                        )
+                    if SCAN_SCHEDULE_TIME_CONFIG_KEY in payload:
+                        set_scan_schedule_time(connection, payload[SCAN_SCHEDULE_TIME_CONFIG_KEY])
                     if "central_api_url" in payload:
                         set_central_api_url(connection, payload["central_api_url"])
                     central_passkey = _optional_text(payload.get("central_passkey"))
@@ -2592,6 +2699,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             except Exception as error:
                 self.send_error(HTTPStatus.SERVICE_UNAVAILABLE, str(error))
                 return
+            SCAN_SCHEDULER.wake()
 
             self._send_json(build_config_payload())
 
@@ -2742,6 +2850,62 @@ def build_scan_status_payload() -> dict[str, Any]:
     }
 
 
+def _populate_missing_applicant_profile_from_resume() -> dict[str, str]:
+    """Fill blank applicant settings from the master resume without overwriting user data."""
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        resume = get_master_resume(connection)
+        missing_keys = {
+            key for key in APPLICANT_PROFILE_CONFIG_KEYS if not get_config_value(connection, key)
+        }
+        if resume is None or not missing_keys:
+            return {}
+        resume_content = resume.content
+        llm_settings = _llm_settings_for_generation(connection)
+
+    try:
+        extracted = asyncio.run(
+            extract_applicant_profile(
+                resume_content=resume_content,
+                settings=llm_settings,
+            )
+        )
+    except Exception:
+        LOGGER.warning("Applicant profile extraction from resume failed", exc_info=True)
+        return {}
+
+    extracted_values = extracted.model_dump()
+    config_to_field = {
+        APPLICANT_FIRST_NAME_CONFIG_KEY: "first_name",
+        APPLICANT_LAST_NAME_CONFIG_KEY: "last_name",
+        APPLICANT_EMAIL_CONFIG_KEY: "email",
+        APPLICANT_PHONE_CONFIG_KEY: "phone",
+        APPLICANT_INSTITUTION_CONFIG_KEY: "institution",
+        APPLICANT_DEGREE_CONFIG_KEY: "degree",
+    }
+    populated: dict[str, str] = {}
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        for key in missing_keys:
+            if get_config_value(connection, key):
+                continue
+            raw_value = extracted_values[config_to_field[key]]
+            try:
+                value = (
+                    _clean_applicant_name_part(raw_value)
+                    if key
+                    in {APPLICANT_FIRST_NAME_CONFIG_KEY, APPLICANT_LAST_NAME_CONFIG_KEY}
+                    else _clean_applicant_profile_text(key, raw_value)
+                )
+            except ValueError:
+                LOGGER.warning("Ignoring invalid extracted applicant profile value for %s", key)
+                continue
+            if value:
+                set_config_value(connection, key, value)
+                populated[key] = value
+    return populated
+
+
 def build_config_payload() -> dict[str, Any]:
     configured_llm_provider = LlmSettings().provider
     try:
@@ -2816,6 +2980,7 @@ def build_config_payload() -> dict[str, Any]:
             get_config_value(connection, SCAN_HEADLESS_CONFIG_KEY),
             default=DEFAULT_SCAN_HEADLESS,
         )
+        scan_schedule_enabled, scan_schedule_time, _ = get_scan_schedule(connection)
         recommendation_history_count = count_resume_feedback_history(connection)
         central_api_url = get_central_api_url(connection)
         companies = list_companies(connection, include_inactive=True)
@@ -2982,6 +3147,29 @@ def build_config_payload() -> dict[str, Any]:
                 "control": "toggle",
                 "value": scan_headless,
                 "default": DEFAULT_SCAN_HEADLESS,
+                "editable": True,
+            },
+            {
+                "key": SCAN_SCHEDULE_ENABLED_CONFIG_KEY,
+                "label": "daily scan schedule",
+                "description": (
+                    "run one full scan each day at the configured local time; missed runs "
+                    "are not started later"
+                ),
+                "control": "toggle",
+                "value": scan_schedule_enabled,
+                "default": DEFAULT_SCAN_SCHEDULE_ENABLED,
+                "editable": True,
+            },
+            {
+                "key": SCAN_SCHEDULE_TIME_CONFIG_KEY,
+                "label": "daily scan time",
+                "description": "local time for the automatic daily scan",
+                "control": "text",
+                "input_type": "time",
+                "autocomplete": "off",
+                "value": scan_schedule_time,
+                "default": DEFAULT_SCAN_SCHEDULE_TIME,
                 "editable": True,
             },
             {
@@ -6727,11 +6915,13 @@ def run_server(host: str, port: int) -> None:
         )
     AUTOPREP_COORDINATOR = AutoprepCoordinator(_process_autoprep_job, max_workers=2)
     AUTOPREP_COORDINATOR.start()
+    SCAN_SCHEDULER.start()
     handler = create_handler()
     server = LocalThreadingHTTPServer((host, port), handler)
     try:
         server.serve_forever()
     finally:
+        SCAN_SCHEDULER.stop()
         AUTOPREP_COORDINATOR.stop_claiming()
         AUTOPREP_COORDINATOR.wait_for_workers()
         _close_server(server)

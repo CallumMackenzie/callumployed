@@ -24,7 +24,16 @@ const BREAKDOWN_FIELDS = [
   "verification_outcome_counts",
   "extraction_method_counts",
   "rejection_reason_counts",
+  "role_status_counts",
+  "autoprep_outcome_counts",
 ] as const;
+
+const BREAKDOWN_CATEGORY_ALLOWLISTS: Partial<
+  Record<(typeof BREAKDOWN_FIELDS)[number], readonly string[]>
+> = {
+  role_status_counts: ["interested", "disinterested", "archived", "applied"],
+  autoprep_outcome_counts: ["success", "failure"],
+};
 
 export async function submitScanMetrics(
   db: Firestore,
@@ -47,8 +56,8 @@ function validateScanMetrics(input: Partial<ScanMetricsRequest>): ScanMetricsReq
   const scanEventId = requiredString(input.scan_event_id, "scan_event_id", 128);
   const companyName = requiredString(input.company_name, "company_name", 256);
   const appVersion = requiredString(input.app_version, "app_version", 64);
-  if (input.schema_version !== 1 && input.schema_version !== 2) {
-    throw new Error("schema_version must be 1 or 2");
+  if (input.schema_version !== 1 && input.schema_version !== 2 && input.schema_version !== 3) {
+    throw new Error("schema_version must be 1, 2, or 3");
   }
   if (input.scan_status !== "succeeded" && input.scan_status !== "failed") {
     throw new Error("scan_status must be succeeded or failed");
@@ -62,7 +71,10 @@ function validateScanMetrics(input: Partial<ScanMetricsRequest>): ScanMetricsReq
     ]),
   ) as Record<(typeof COUNT_FIELDS)[number], number>;
   const breakdowns = Object.fromEntries(
-    BREAKDOWN_FIELDS.map((field) => [field, countBreakdown(input[field], field)]),
+    BREAKDOWN_FIELDS.map((field) => [
+      field,
+      countBreakdown(input[field], field, BREAKDOWN_CATEGORY_ALLOWLISTS[field]),
+    ]),
   ) as Record<(typeof BREAKDOWN_FIELDS)[number], Record<string, number>>;
 
   return {
@@ -90,7 +102,11 @@ function validateScanMetrics(input: Partial<ScanMetricsRequest>): ScanMetricsReq
   };
 }
 
-function countBreakdown(value: unknown, field: string): Record<string, number> {
+function countBreakdown(
+  value: unknown,
+  field: string,
+  allowedCategories?: readonly string[],
+): Record<string, number> {
   if (value === undefined) return {};
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error(`${field} must be an object of non-negative integer counts`);
@@ -100,6 +116,9 @@ function countBreakdown(value: unknown, field: string): Record<string, number> {
   return Object.fromEntries(entries.map(([rawKey, rawCount]) => {
     const key = rawKey.trim();
     if (!key || key.length > 256) throw new Error(`${field} contains an invalid category`);
+    if (allowedCategories && !allowedCategories.includes(key)) {
+      throw new Error(`${field} contains an unsupported category`);
+    }
     return [key, nonNegativeInteger(rawCount, `${field}.${key}`, 1_000_000)];
   }));
 }

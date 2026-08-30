@@ -428,7 +428,31 @@ def test_config_show_prints_defaults(tmp_path: Path) -> None:
         "require_software_keywords: true (default)\n"
         "internship_mode: true (default)\n"
         "location_filter: all (default)\n"
+        "scan_schedule_enabled: false (default)\n"
+        "scan_schedule_time: 04:30 (default)\n"
     )
+
+
+def test_config_scan_schedule_commands(tmp_path: Path) -> None:
+    database = tmp_path / "config-scan-schedule.sqlite3"
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+
+    enable_result = runner.invoke(app, ["config", "enable-scan-schedule"], env=env)
+    time_result = runner.invoke(
+        app, ["config", "set-scan-schedule-time", "06:15"], env=env
+    )
+    show_result = runner.invoke(app, ["config", "show"], env=env)
+    invalid_result = runner.invoke(
+        app, ["config", "set-scan-schedule-time", "25:00"], env=env
+    )
+    disable_result = runner.invoke(app, ["config", "disable-scan-schedule"], env=env)
+
+    assert enable_result.exit_code == 0
+    assert time_result.exit_code == 0
+    assert "scan_schedule_enabled: true" in show_result.output
+    assert "scan_schedule_time: 06:15" in show_result.output
+    assert invalid_result.exit_code != 0
+    assert disable_result.exit_code == 0
 
 
 def test_central_configure_can_save_passkey_without_api_url(

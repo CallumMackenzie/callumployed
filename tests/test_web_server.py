@@ -359,7 +359,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'class="company-form-panel"' in markup
         assert 'id="company-create-form"' in markup
         assert 'id="companies-list"' in markup
-        assert 'id="prep-interested"' in markup
+        assert 'id="prep-interested"' not in markup
+        assert 'class="quick-action" type="button" id="prepped-roles"' in markup
         assert 'id="autoprep-view"' not in markup
         assert 'id="autoprep-selected"' not in markup
         assert 'id="autoprep-interested"' not in app_javascript
@@ -379,8 +380,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="resume-resource-upload-button"' in markup
         assert 'id="resume-resource-list"' in markup
         assert 'id="scan-summary"' in markup
-        assert markup.index('id="review-discovered"') < markup.index('id="prep-interested"')
-        assert markup.index('id="prep-interested"') < markup.index('id="scan-all-button"')
+        assert markup.index('id="review-discovered"') < markup.index('id="prepped-roles"')
+        assert markup.index('id="prepped-roles"') < markup.index('id="scan-all-button"')
         assert markup.index('id="scan-all-button"') < markup.index('id="manage-companies-button"')
         assert markup.index('id="manage-companies-button"') < markup.index('id="scan-summary"')
         assert markup.index('id="scan-all-button"') < markup.index('class="status-toolbar"')
@@ -394,6 +395,9 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="settings-view"' in markup
         assert 'aria-label="applicant profile"' in markup
         assert 'id="settings-profile-options"' in markup
+        assert 'id="settings-profile-extract"' in markup
+        assert "selected AI provider only when you click this button" in markup
+        assert 'fetch("/api/config/extract-profile", {method: "POST"})' in app_javascript
         assert '<button type="submit">save settings</button>' in markup
         assert "input[data-setting-text][name]" in app_javascript
         assert 'const response = await fetch("/api/config", {' in app_javascript
@@ -438,8 +442,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=react-ts-20260830-29" in index_markup
-        assert "/assets/build/app.js?v=react-ts-20260830-29" in index_markup
+        assert "/assets/app.css?v=react-ts-20260830-31" in index_markup
+        assert "/assets/build/app.js?v=react-ts-20260830-31" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -2888,6 +2892,118 @@ def test_persisted_llm_provider_overrides_environment_default(
     assert selected.openai_api_key is not None
 
 
+def test_profile_extraction_fills_only_blank_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "profile-extraction.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+
+    async def fake_extract_applicant_profile(**_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            model_dump=lambda: {
+                "first_name": "Extracted",
+                "last_name": "Mackenzie",
+                "email": "callum@example.com",
+                "phone": "+1 (250) 555-0123",
+                "institution": "University of Victoria",
+                "degree": "BEng Software Engineering",
+            }
+        )
+
+    monkeypatch.setattr(
+        web_server,
+        "extract_applicant_profile",
+        fake_extract_applicant_profile,
+    )
+    with web_server.db.connect() as connection:
+        web_server.db.run_migrations(connection)
+        web_server.upsert_master_resume(
+            connection,
+            filename="resume.tex",
+            content=r"\documentclass{article}\begin{document}Resume\end{document}",
+        )
+        web_server.set_config_value(connection, "applicant_first_name", "Callum")
+
+    populated = web_server._populate_missing_applicant_profile_from_resume()
+
+    assert populated["applicant_last_name"] == "Mackenzie"
+    with web_server.db.connect() as connection:
+        assert web_server.get_config_value(connection, "applicant_first_name") == "Callum"
+        assert web_server.get_config_value(connection, "applicant_last_name") == "Mackenzie"
+        assert web_server.get_config_value(connection, "applicant_email") == "callum@example.com"
+
+
+def test_profile_extraction_skips_llm_when_profile_is_complete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "complete-profile.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+
+    async def unexpected_extract(**_kwargs: object) -> None:
+        raise AssertionError("extractor should not run")
+
+    monkeypatch.setattr(web_server, "extract_applicant_profile", unexpected_extract)
+    with web_server.db.connect() as connection:
+        web_server.db.run_migrations(connection)
+        web_server.upsert_master_resume(
+            connection,
+            filename="resume.tex",
+            content=r"\documentclass{article}\begin{document}Resume\end{document}",
+        )
+        for key, value in {
+            "applicant_first_name": "Callum",
+            "applicant_last_name": "Mackenzie",
+            "applicant_email": "callum@example.com",
+            "applicant_phone": "+1 250 555 0123",
+            "applicant_institution": "University of Victoria",
+            "applicant_degree": "BEng Software Engineering",
+        }.items():
+            web_server.set_config_value(connection, key, value)
+
+    assert web_server._populate_missing_applicant_profile_from_resume() == {}
+
+
+def test_profile_extraction_requires_an_explicit_post(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "explicit-profile-extraction.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    calls = 0
+
+    def fake_populate() -> dict[str, str]:
+        nonlocal calls
+        calls += 1
+        return {"applicant_first_name": "Callum"}
+
+    monkeypatch.setattr(
+        web_server,
+        "_populate_missing_applicant_profile_from_resume",
+        fake_populate,
+    )
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        endpoint = f"http://127.0.0.1:{server.server_address[1]}/api/config"
+        with urlopen(endpoint, timeout=5) as response:
+            assert response.status == 200
+        assert calls == 0
+
+        request = Request(f"{endpoint}/extract-profile", data=b"", method="POST")
+        with urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read())
+        assert calls == 1
+        assert payload["populated"] == ["applicant_first_name"]
+        assert payload["config"]["settings"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
 def test_config_payload_returns_current_settings(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3058,6 +3174,29 @@ def test_config_payload_returns_current_settings(
             "editable": True,
         },
         {
+            "key": "scan_schedule_enabled",
+            "label": "daily scan schedule",
+            "description": (
+                "run one full scan each day at the configured local time; missed runs are "
+                "not started later"
+            ),
+            "control": "toggle",
+            "value": False,
+            "default": False,
+            "editable": True,
+        },
+        {
+            "key": "scan_schedule_time",
+            "label": "daily scan time",
+            "description": "local time for the automatic daily scan",
+            "control": "text",
+            "input_type": "time",
+            "autocomplete": "off",
+            "value": "04:30",
+            "default": "04:30",
+            "editable": True,
+        },
+        {
             "key": "include_graduate_degree_roles",
             "label": "graduate-degree roles",
             "description": "include roles that require or strongly prefer a graduate degree",
@@ -3149,6 +3288,8 @@ def test_config_endpoint_updates_settings(
                     "autoprep_cover_letter_prompt": "Review every indexed source first.",
                     "llm_provider": "codex",
                     "scan_headless": False,
+                    "scan_schedule_enabled": True,
+                    "scan_schedule_time": "06:15",
                     "require_software_keywords": False,
                     "internship_mode": False,
                     "location_filter": "north_america",
@@ -3180,6 +3321,8 @@ def test_config_endpoint_updates_settings(
             "location_filter": "north_america",
             "require_software_keywords": "false",
             "scan_headless": "false",
+            "scan_schedule_enabled": "true",
+            "scan_schedule_time": "06:15",
         }
         setting_values = {setting["key"]: setting["value"] for setting in updated["settings"]}
         assert setting_values == {
@@ -3201,6 +3344,8 @@ def test_config_endpoint_updates_settings(
             "internship_mode": False,
             "location_filter": "north_america",
             "scan_headless": False,
+            "scan_schedule_enabled": True,
+            "scan_schedule_time": "06:15",
         }
         assert web_server._configured_browser_profile_manager().headless is False
     finally:
@@ -3839,6 +3984,36 @@ def test_tracker_payload_groups_roles_by_status(
     assert applied["jobs"][0]["updated_at"].endswith("Z")
 
 
+def test_tracker_payload_sends_archived_count_without_archived_roles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-archived-count.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        company = add_company(connection, Company(name="Acme"))
+        assert company.id is not None
+        archived = add_role(
+            connection,
+            Role(
+                company_id=company.id,
+                title="Archived Engineer",
+                role_url="https://example.com/jobs/archived",
+            ),
+        )
+        assert archived.id is not None
+        set_role_status(connection, archived.id, RoleStatus.ARCHIVED, summary="Archived.")
+
+    payload = build_tracker_payload()
+
+    archived_status = next(
+        status for status in payload["statuses"] if status["key"] == "archived"
+    )
+    assert archived_status["count"] == 1
+    assert archived_status["jobs"] == []
+
+
 def test_tracker_payload_marks_closed_roles_updated_in_latest_scan_only(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4194,6 +4369,11 @@ def test_master_resume_endpoint_uploads_and_replaces_tex_resume(
 ) -> None:
     database = tmp_path / "tracker-master-resume.sqlite3"
     monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(
+        web_server,
+        "_populate_missing_applicant_profile_from_resume",
+        lambda: (_ for _ in ()).throw(AssertionError("profile extraction must be explicit")),
+    )
     db.ensure_initialized()
 
     server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())

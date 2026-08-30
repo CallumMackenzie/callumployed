@@ -95,8 +95,7 @@
 
       <section class="review-entry" aria-label="discovered review">
         <button class="quick-action quick-action--review" type="button" id="review-discovered">review discovered</button>
-        <button class="quick-action quick-action--review" type="button" id="prep-interested">prep interested</button>
-        <button class="quick-action quick-action--prepare" type="button" id="prepped-roles">prepped roles</button>
+        <button class="quick-action" type="button" id="prepped-roles">prepped roles</button>
         <button class="quick-action quick-action--manage" type="button" id="scan-all-button">scan roles</button>
         <button class="quick-action quick-action--manage" type="button" id="manage-companies-button">manage companies</button>
         <div class="scan-summary" id="scan-summary" aria-live="polite">
@@ -275,6 +274,14 @@
               <p>used to personalize generated application documents</p>
             </div>
             <div class="settings-options" id="settings-profile-options"></div>
+            <section class="settings-maintenance" aria-label="fill applicant profile from resume">
+              <div class="setting-copy">
+                <span class="setting-label">fill blank fields from resume</span>
+                <span class="setting-description">sends your master resume to the selected AI provider only when you click this button</span>
+                <span class="setting-default">existing profile values are never overwritten</span>
+              </div>
+              <button type="button" id="settings-profile-extract">fill blank fields</button>
+            </section>
           </section>
           <section class="settings-group" aria-label="autoprep">
             <div class="settings-group-heading">

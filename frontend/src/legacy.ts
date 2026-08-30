@@ -36,7 +36,6 @@ const materialIndexButton = document.querySelector("#material-index-button");
 const materialIndexWarning = document.querySelector("#material-index-warning");
 const materialIndexStatus = document.querySelector("#material-index-status");
 const reviewDiscoveredButton = document.querySelector("#review-discovered");
-const prepInterestedButton = document.querySelector("#prep-interested");
 const reviewView = document.querySelector("#review-view");
 const reviewHeading = document.querySelector("#review-heading");
 const reviewProgress = document.querySelector("#review-progress");
@@ -74,6 +73,7 @@ const settingsCloseButton = document.querySelector("#settings-close");
 const settingsStatus = document.querySelector("#settings-status");
 const settingsForm = document.querySelector("#settings-form");
 const settingsProfileOptions = document.querySelector("#settings-profile-options");
+const settingsProfileExtractButton = document.querySelector("#settings-profile-extract");
 const settingsAutoprepOptions = document.querySelector("#settings-autoprep-options");
 const settingsOptions = document.querySelector("#settings-options");
 const centralStoreSummary = document.querySelector("#central-store-summary");
@@ -705,7 +705,11 @@ function renderStatuses(statuses) {
             <span class="count">${status.count}</span>
           </button>
           <div class="pane-body" hidden>
-            ${jobs ? `<div class="jobs">${jobs}</div>` : `<p class="empty-copy">no jobs in this status.</p>`}
+            ${
+              jobs
+                ? `<div class="jobs">${jobs}</div>`
+                : `<p class="empty-copy">${status.key === "archived" && status.count > 0 ? "archived role details are hidden." : "no jobs in this status."}</p>`
+            }
           </div>
         </section>
       `;
@@ -843,7 +847,6 @@ function render(data) {
   renderStatuses(data.statuses);
   updateToggleAllButton();
   updateReviewButton(data.statuses);
-  updatePrepButton(data.statuses);
 }
 
 function renderScanStatus(payload) {
@@ -1126,6 +1129,7 @@ function setSettingsDisabled(disabled) {
   });
   centralSaveButton.disabled = disabled;
   centralSyncButton.disabled = disabled || !centralApiUrlInput.value.trim();
+  settingsProfileExtractButton.disabled = disabled;
   appUpdateButton.disabled = disabled;
 }
 
@@ -1157,6 +1161,30 @@ async function loadSettings() {
   const response = await fetch("/api/config");
   if (!response.ok) throw new Error("Config request failed");
   renderSettings(await response.json());
+}
+
+async function extractApplicantProfileFromResume() {
+  settingsProfileExtractButton.disabled = true;
+  settingsProfileExtractButton.textContent = "filling blank fields...";
+  settingsStatus.textContent = "sending the master resume to the selected AI provider...";
+  settingsStatus.classList.remove("is-empty");
+  try {
+    const response = await fetch("/api/config/extract-profile", {method: "POST"});
+    if (!response.ok) throw new Error("Profile extraction request failed");
+    const payload = await response.json();
+    const populated = Array.isArray(payload.populated) ? payload.populated : [];
+    renderSettings(
+      payload.config,
+      populated.length
+        ? `filled ${populated.length} blank profile ${populated.length === 1 ? "field" : "fields"}.`
+        : "no blank profile fields could be filled.",
+    );
+  } catch {
+    settingsStatus.textContent = "could not fill profile fields from the resume.";
+  } finally {
+    settingsProfileExtractButton.disabled = false;
+    settingsProfileExtractButton.textContent = "fill blank fields";
+  }
 }
 
 function formatMetricValue(metric) {
@@ -2426,7 +2454,6 @@ function applyRoleStatusUpdate(updatedRole, currentJobEl) {
   updateApplicationStats(previousStatus, nextStatus);
   renderToolbarSummary();
   updateReviewButton(trackerData.statuses);
-  updatePrepButton(trackerData.statuses);
   moveRoleElement(currentJobEl, movedRole, previousStatus, nextStatus);
   updateToggleAllButton();
 }
@@ -2441,7 +2468,6 @@ function mergeRoleIntoTrackerData(updatedRole) {
     status.jobs[index] = mergedRole;
   });
   updateReviewButton(trackerData.statuses);
-  updatePrepButton(trackerData.statuses);
   return mergedRole;
 }
 
@@ -2544,13 +2570,6 @@ function updateReviewButton(statuses) {
 
 function getDiscoveredJobs(statuses = trackerData?.statuses ?? []) {
   return statuses.find((status) => status.key === "discovered")?.jobs ?? [];
-}
-
-function updatePrepButton(statuses) {
-  const interested = getInterestedJobs(statuses);
-  prepInterestedButton.disabled = interested.length === 0;
-  prepInterestedButton.setAttribute("aria-label", "prep interested");
-  prepInterestedButton.innerHTML = '<span class="review-discovered-label">prep interested</span>';
 }
 
 function getInterestedJobs(statuses = trackerData?.statuses ?? []) {
@@ -4435,8 +4454,6 @@ reviewDiscoveredButton.addEventListener("click", openReviewView);
 
 closeReviewButton.addEventListener("click", closeReviewView);
 
-prepInterestedButton.addEventListener("click", openPrepView);
-
 preppedRolesButton.addEventListener("click", () => openPreppedView());
 
 closePreppedButton.addEventListener("click", closePreppedView);
@@ -4937,6 +4954,8 @@ collapseEmptyButton.addEventListener("click", () => {
 });
 
 settingsOpenButton.addEventListener("click", openSettingsView);
+
+settingsProfileExtractButton.addEventListener("click", extractApplicantProfileFromResume);
 
 settingsCloseButton.addEventListener("click", closeSettingsView);
 

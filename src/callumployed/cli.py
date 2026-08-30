@@ -64,6 +64,15 @@ from callumployed.data.repositories import (
     update_role,
     upsert_master_resume,
 )
+from callumployed.services.scan_schedule import (
+    DEFAULT_SCAN_SCHEDULE_ENABLED,
+    DEFAULT_SCAN_SCHEDULE_TIME,
+    SCAN_SCHEDULE_ENABLED_CONFIG_KEY,
+    SCAN_SCHEDULE_TIME_CONFIG_KEY,
+    get_scan_schedule,
+    set_scan_schedule_enabled,
+    set_scan_schedule_time,
+)
 from callumployed.services.scan_workflow import refilter_collected_roles
 from callumployed.services.scan_workflow import rescan_role as run_rescan_role
 from callumployed.services.scan_workflow import scan_company as run_scan_company
@@ -516,6 +525,35 @@ def set_location_filter_command(
     typer.echo(f"Location filter set to {saved_location_filter}.")
 
 
+@config_app.command("enable-scan-schedule")
+def enable_scan_schedule_command() -> None:
+    """Enable the automatic daily full scan."""
+    with db.connect() as connection:
+        set_scan_schedule_enabled(connection, True)
+    typer.echo("Daily scan schedule enabled.")
+
+
+@config_app.command("disable-scan-schedule")
+def disable_scan_schedule_command() -> None:
+    """Disable the automatic daily full scan."""
+    with db.connect() as connection:
+        set_scan_schedule_enabled(connection, False)
+    typer.echo("Daily scan schedule disabled.")
+
+
+@config_app.command("set-scan-schedule-time")
+def set_scan_schedule_time_command(
+    scan_time: Annotated[str, typer.Argument(help="Local time in 24-hour HH:MM format.")],
+) -> None:
+    """Set the local time for the automatic daily scan."""
+    try:
+        with db.connect() as connection:
+            saved_time = set_scan_schedule_time(connection, scan_time)
+    except ValueError as error:
+        raise typer.BadParameter(str(error)) from error
+    typer.echo(f"Daily scan time set to {saved_time} local time.")
+
+
 @config_app.command("show")
 def show_config_command() -> None:
     """Show app-wide configuration."""
@@ -526,6 +564,7 @@ def show_config_command() -> None:
         require_software_keywords = should_require_software_keywords(connection)
         internship_mode = should_use_internship_mode(connection)
         location_filter = get_location_filter(connection)
+        scan_schedule_enabled, scan_schedule_time, _ = get_scan_schedule(connection)
 
     if not values:
         typer.echo("No app config set.")
@@ -534,6 +573,11 @@ def show_config_command() -> None:
         typer.echo("require_software_keywords: true (default)")
         typer.echo("internship_mode: true (default)")
         typer.echo("location_filter: all (default)")
+        typer.echo(
+            "scan_schedule_enabled: "
+            f"{str(DEFAULT_SCAN_SCHEDULE_ENABLED).lower()} (default)"
+        )
+        typer.echo(f"scan_schedule_time: {DEFAULT_SCAN_SCHEDULE_TIME} (default)")
         return
 
     for key, value in values.items():
@@ -548,6 +592,12 @@ def show_config_command() -> None:
             "include_hardware_roles: "
             f"{str(include_hardware_roles).lower()} (default)"
         )
+    if SCAN_SCHEDULE_ENABLED_CONFIG_KEY not in values:
+        typer.echo(
+            f"scan_schedule_enabled: {str(scan_schedule_enabled).lower()} (default)"
+        )
+    if SCAN_SCHEDULE_TIME_CONFIG_KEY not in values:
+        typer.echo(f"scan_schedule_time: {scan_schedule_time} (default)")
     if "require_software_keywords" not in values:
         typer.echo(
             "require_software_keywords: "

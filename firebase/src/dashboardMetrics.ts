@@ -21,6 +21,7 @@ export async function buildDashboardMetrics(db: Firestore, requestedDays: unknow
   if (cutoff) query = query.where("received_at", ">=", cutoff);
   const snapshot = await query.limit(MAX_RECORDS).get();
   const records = snapshot.docs.map((document) => document.data() as MetricRecord).reverse();
+  const latestClientRecords = latestByClient(records);
   const succeeded = records.filter((record) => record.scan_status === "succeeded").length;
   const durations = records.map((record) => numberValue(record.duration_ms)).sort((a, b) => a - b);
   const totals = Object.fromEntries(COUNT_FIELDS.map((field) => [
@@ -48,6 +49,8 @@ export async function buildDashboardMetrics(db: Firestore, requestedDays: unknow
     versions: groupCounts(records, "app_version"),
     failures: groupCounts(records.filter((record) => record.scan_status === "failed"), "error_type"),
     breakdowns: {
+      role_status: aggregateBreakdown(latestClientRecords, "role_status_counts"),
+      autoprep_outcome: aggregateBreakdown(latestClientRecords, "autoprep_outcome_counts"),
       page_confidence: aggregateBreakdown(records, "page_confidence_counts"),
       candidate_confidence: aggregateBreakdown(records, "candidate_confidence_counts"),
       candidate_selection: aggregateBreakdown(records, "candidate_selection_counts"),
@@ -60,6 +63,15 @@ export async function buildDashboardMetrics(db: Firestore, requestedDays: unknow
       rejection_reason: aggregateBreakdown(records, "rejection_reason_counts"),
     },
   };
+}
+
+function latestByClient(records: MetricRecord[]): MetricRecord[] {
+  const latest = new Map<string, MetricRecord>();
+  for (const record of records) {
+    const clientId = String(record.client_id ?? "").trim();
+    if (clientId) latest.set(clientId, record);
+  }
+  return [...latest.values()];
 }
 
 function parseDays(value: unknown): number | null {

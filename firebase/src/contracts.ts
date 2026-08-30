@@ -62,7 +62,7 @@ export interface BulkUpsertRole {
 }
 
 export interface ScanMetricsRequest {
-  schema_version: 1 | 2;
+  schema_version: 1 | 2 | 3;
   client_id: string;
   scan_event_id: string;
   global_company_id?: string | null;
@@ -87,6 +87,8 @@ export interface ScanMetricsRequest {
   verification_outcome_counts: Record<string, number>;
   extraction_method_counts: Record<string, number>;
   rejection_reason_counts: Record<string, number>;
+  role_status_counts: Record<string, number>;
+  autoprep_outcome_counts: Record<string, number>;
   agent_trace_present: boolean;
   error_type?: string | null;
   app_version: string;

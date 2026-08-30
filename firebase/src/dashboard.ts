@@ -31,6 +31,8 @@ export function dashboardPage(): string {
         <article class="panel wide"><div class="panel-head"><div><p class="eyebrow">Activity</p><h2>Scans and discoveries</h2></div></div><div id="timeline" class="chart"></div></article>
         <article class="panel"><p class="eyebrow">Conversion</p><h2>Scan funnel</h2><div id="funnel" class="funnel"></div></article>
         <article class="panel"><p class="eyebrow">Reliability</p><h2>Failure types</h2><div id="failures" class="bars"></div></article>
+        <article class="panel"><p class="eyebrow">Meaningful outcomes</p><h2>Role decisions</h2><div id="role-statuses" class="bars"></div></article>
+        <article class="panel"><p class="eyebrow">Automation</p><h2>Auto-prep outcomes</h2><div id="autoprep-outcomes" class="bars"></div></article>
         <article class="panel"><p class="eyebrow">Discovery</p><h2>Candidate selection</h2><div id="candidate-selection" class="bars"></div></article>
         <article class="panel"><p class="eyebrow">Discovery</p><h2>Selection methods</h2><div id="discovery-methods" class="bars"></div></article>
         <article class="panel"><p class="eyebrow">Quality</p><h2>Candidate confidence</h2><div id="candidate-confidence" class="bars"></div></article>
@@ -74,7 +76,7 @@ export function dashboardPage(): string {
         const cardsNode = document.querySelector('#cards'); cardsNode.replaceChildren();
         cards.forEach(([label, value, note]) => { const card = document.createElement('article'); card.className='metric-card'; card.append(text('p',label,'metric-label'),text('strong',value),text('span',note)); cardsNode.append(card); });
         renderTimeline(data.timeseries); renderFunnel(s); renderBars('#failures', data.failures, 'No failed scans'); renderBars('#versions', data.versions, 'No version data'); renderCompanies(data.companies);
-        const b=data.breakdowns; renderBars('#candidate-selection',b.candidate_selection,'No v2 selection data'); renderBars('#discovery-methods',b.candidate_discovery_method,'No v2 discovery data'); renderBars('#candidate-confidence',b.candidate_confidence,'No v2 confidence data'); renderBars('#page-confidence',b.page_confidence,'No v2 page data'); renderBars('#verification-outcomes',b.verification_outcome,'No v2 outcome data'); renderBars('#extraction-methods',b.extraction_method,'No v2 extraction data'); renderBars('#rejection-reasons',b.rejection_reason,'No v2 rejection data');
+        const b=data.breakdowns; renderBars('#role-statuses',b.role_status,'No role outcome data'); renderBars('#autoprep-outcomes',b.autoprep_outcome,'No auto-prep outcome data'); renderBars('#candidate-selection',b.candidate_selection,'No v2 selection data'); renderBars('#discovery-methods',b.candidate_discovery_method,'No v2 discovery data'); renderBars('#candidate-confidence',b.candidate_confidence,'No v2 confidence data'); renderBars('#page-confidence',b.page_confidence,'No v2 page data'); renderBars('#verification-outcomes',b.verification_outcome,'No v2 outcome data'); renderBars('#extraction-methods',b.extraction_method,'No v2 extraction data'); renderBars('#rejection-reasons',b.rejection_reason,'No v2 rejection data');
       }
       function renderTimeline(rows) {
         const root = document.querySelector('#timeline'); root.replaceChildren();

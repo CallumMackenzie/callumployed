@@ -925,7 +925,6 @@ h1 {
 
 .materials-panel .material-row button:disabled,
 #review-discovered:disabled,
-#prep-interested:disabled,
 #scan-all-button:disabled,
 #manage-companies-button:disabled,
 .view-actions button:disabled {
@@ -1033,7 +1032,7 @@ h1 {
 }
 
 #review-discovered,
-#prep-interested,
+#prepped-roles,
 #scan-all-button,
 #manage-companies-button {
   display: inline-flex;
@@ -3936,7 +3935,7 @@ a:hover .role-link-icon {
   }
 
   #review-discovered,
-  #prep-interested,
+  #prepped-roles,
   #scan-all-button {
     padding-inline: 12px;
     font-size: 0.84rem;
@@ -4642,7 +4641,7 @@ body.prepped-open {
 /* Polished dashboard actions and source management --------------------- */
 .review-entry {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
   margin-bottom: 8px;
 }
@@ -4661,12 +4660,6 @@ body.prepped-open {
   box-shadow: var(--shadow-tight);
 }
 
-.review-entry > .quick-action--prepare {
-  border-color: rgb(95 43 216 / 0.2);
-  background: linear-gradient(135deg, rgb(255 255 255 / 0.96), rgb(240 235 255 / 0.96));
-  color: #3f218d;
-}
-
 .review-entry > .quick-action--manage {
   border-color: rgb(26 66 52 / 0.18);
   background: linear-gradient(135deg, rgb(255 255 255 / 0.96), rgb(238 247 243 / 0.96));
@@ -4677,10 +4670,6 @@ body.prepped-open {
   background-position: 100% 50%;
   box-shadow: 0 12px 26px rgb(32 68 56 / 0.14);
   transform: translateY(-1px);
-}
-
-.review-entry > .quick-action--prepare:hover {
-  border-color: var(--purple);
 }
 
 .review-entry > .scan-summary {
