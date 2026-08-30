@@ -2936,6 +2936,29 @@ def test_config_payload_returns_current_settings(
             "editable": True,
         },
         {
+            "key": "scan_schedule_enabled",
+            "label": "daily scan schedule",
+            "description": (
+                "run one full scan each day at the configured local time; missed runs are "
+                "not started later"
+            ),
+            "control": "toggle",
+            "value": True,
+            "default": True,
+            "editable": True,
+        },
+        {
+            "key": "scan_schedule_time",
+            "label": "daily scan time",
+            "description": "local time for the automatic daily scan",
+            "control": "text",
+            "input_type": "time",
+            "autocomplete": "off",
+            "value": "04:30",
+            "default": "04:30",
+            "editable": True,
+        },
+        {
             "key": "include_graduate_degree_roles",
             "label": "graduate-degree roles",
             "description": "include roles that require or strongly prefer a graduate degree",
@@ -3027,6 +3050,8 @@ def test_config_endpoint_updates_settings(
                     "autoprep_cover_letter_prompt": "Review every indexed source first.",
                     "llm_provider": "codex",
                     "scan_headless": False,
+                    "scan_schedule_enabled": True,
+                    "scan_schedule_time": "06:15",
                     "require_software_keywords": False,
                     "internship_mode": False,
                     "location_filter": "north_america",
@@ -3058,6 +3083,8 @@ def test_config_endpoint_updates_settings(
             "location_filter": "north_america",
             "require_software_keywords": "false",
             "scan_headless": "false",
+            "scan_schedule_enabled": "true",
+            "scan_schedule_time": "06:15",
         }
         setting_values = {setting["key"]: setting["value"] for setting in updated["settings"]}
         assert setting_values == {
@@ -3078,6 +3105,8 @@ def test_config_endpoint_updates_settings(
             "internship_mode": False,
             "location_filter": "north_america",
             "scan_headless": False,
+            "scan_schedule_enabled": True,
+            "scan_schedule_time": "06:15",
         }
         assert web_server._configured_browser_profile_manager().headless is False
     finally:

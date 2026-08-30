@@ -149,6 +149,18 @@ from callumployed.services.material_index import (
     get_material_index_status,
     retrieve_indexed_materials,
 )
+from callumployed.services.scan_schedule import (
+    DEFAULT_SCAN_SCHEDULE_ENABLED,
+    DEFAULT_SCAN_SCHEDULE_TIME,
+    SCAN_SCHEDULE_ENABLED_CONFIG_KEY,
+    SCAN_SCHEDULE_LAST_RUN_DATE_CONFIG_KEY,
+    SCAN_SCHEDULE_TIME_CONFIG_KEY,
+    clean_scan_schedule_time,
+    get_scan_schedule,
+    is_daily_scan_due,
+    set_scan_schedule_enabled,
+    set_scan_schedule_time,
+)
 from callumployed.services.scan_workflow import rescan_role as run_rescan_role
 from callumployed.services.scan_workflow import scan_company as run_scan_company
 from callumployed.webscraping.profile_manager import BrowserProfileManager
@@ -407,6 +419,62 @@ def _mark_latest_running_scan_failed(company_id: int, error_message: str) -> Non
 
 
 SCAN_COORDINATOR = ScanCoordinator()
+
+
+class DailyScanScheduler:
+    def __init__(self) -> None:
+        self._stop = threading.Event()
+        self._wake = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="callumployed-daily-scan-scheduler",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def wake(self) -> None:
+        self._wake.set()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._wake.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self._run_if_due()
+            except Exception:
+                LOGGER.exception("Daily scan scheduler check failed")
+            self._wake.wait(timeout=30)
+            self._wake.clear()
+
+    def _run_if_due(self) -> None:
+        now = datetime.now().astimezone()
+        today = now.date().isoformat()
+        with db.connect() as connection:
+            enabled, scheduled_time, last_run_date = get_scan_schedule(connection)
+            if not is_daily_scan_due(
+                now=now,
+                enabled=enabled,
+                scheduled_time=scheduled_time,
+                last_run_date=last_run_date,
+            ):
+                return
+            if not SCAN_COORDINATOR.start():
+                return
+            set_config_value(connection, SCAN_SCHEDULE_LAST_RUN_DATE_CONFIG_KEY, today)
+        LOGGER.info("Started scheduled daily scan for %s at %s", today, scheduled_time)
+
+
+SCAN_SCHEDULER = DailyScanScheduler()
 
 
 class LocalThreadingHTTPServer(ThreadingHTTPServer):
@@ -2156,6 +2224,8 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 AUTOPREP_COVER_LETTER_PROMPT_CONFIG_KEY,
                 LLM_PROVIDER_CONFIG_KEY,
                 SCAN_HEADLESS_CONFIG_KEY,
+                SCAN_SCHEDULE_ENABLED_CONFIG_KEY,
+                SCAN_SCHEDULE_TIME_CONFIG_KEY,
                 "central_api_url",
                 "central_passkey",
                 "include_graduate_degree_roles",
@@ -2180,6 +2250,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 "internship_mode",
                 "require_software_keywords",
                 SCAN_HEADLESS_CONFIG_KEY,
+                SCAN_SCHEDULE_ENABLED_CONFIG_KEY,
                 AUTOPREP_TAILOR_RESUME_CONFIG_KEY,
             }
             if not all(
@@ -2212,6 +2283,10 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 if LLM_PROVIDER_CONFIG_KEY in payload:
                     validated_payload[LLM_PROVIDER_CONFIG_KEY] = _clean_llm_provider(
                         payload[LLM_PROVIDER_CONFIG_KEY]
+                    )
+                if SCAN_SCHEDULE_TIME_CONFIG_KEY in payload:
+                    validated_payload[SCAN_SCHEDULE_TIME_CONFIG_KEY] = clean_scan_schedule_time(
+                        payload[SCAN_SCHEDULE_TIME_CONFIG_KEY]
                     )
                 for key in (
                     AUTOPREP_RESUME_PROMPT_CONFIG_KEY,
@@ -2312,6 +2387,12 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                             SCAN_HEADLESS_CONFIG_KEY,
                             "true" if payload[SCAN_HEADLESS_CONFIG_KEY] else "false",
                         )
+                    if SCAN_SCHEDULE_ENABLED_CONFIG_KEY in payload:
+                        set_scan_schedule_enabled(
+                            connection, payload[SCAN_SCHEDULE_ENABLED_CONFIG_KEY]
+                        )
+                    if SCAN_SCHEDULE_TIME_CONFIG_KEY in payload:
+                        set_scan_schedule_time(connection, payload[SCAN_SCHEDULE_TIME_CONFIG_KEY])
                     if "central_api_url" in payload:
                         set_central_api_url(connection, payload["central_api_url"])
                     central_passkey = _optional_text(payload.get("central_passkey"))
@@ -2323,6 +2404,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             except Exception as error:
                 self.send_error(HTTPStatus.SERVICE_UNAVAILABLE, str(error))
                 return
+            SCAN_SCHEDULER.wake()
 
             self._send_json(build_config_payload())
 
@@ -2541,6 +2623,7 @@ def build_config_payload() -> dict[str, Any]:
             get_config_value(connection, SCAN_HEADLESS_CONFIG_KEY),
             default=DEFAULT_SCAN_HEADLESS,
         )
+        scan_schedule_enabled, scan_schedule_time, _ = get_scan_schedule(connection)
         recommendation_history_count = count_resume_feedback_history(connection)
         central_api_url = get_central_api_url(connection)
         companies = list_companies(connection, include_inactive=True)
@@ -2689,6 +2772,29 @@ def build_config_payload() -> dict[str, Any]:
                 "control": "toggle",
                 "value": scan_headless,
                 "default": DEFAULT_SCAN_HEADLESS,
+                "editable": True,
+            },
+            {
+                "key": SCAN_SCHEDULE_ENABLED_CONFIG_KEY,
+                "label": "daily scan schedule",
+                "description": (
+                    "run one full scan each day at the configured local time; missed runs "
+                    "are not started later"
+                ),
+                "control": "toggle",
+                "value": scan_schedule_enabled,
+                "default": DEFAULT_SCAN_SCHEDULE_ENABLED,
+                "editable": True,
+            },
+            {
+                "key": SCAN_SCHEDULE_TIME_CONFIG_KEY,
+                "label": "daily scan time",
+                "description": "local time for the automatic daily scan",
+                "control": "text",
+                "input_type": "time",
+                "autocomplete": "off",
+                "value": scan_schedule_time,
+                "default": DEFAULT_SCAN_SCHEDULE_TIME,
                 "editable": True,
             },
             {
@@ -6117,11 +6223,13 @@ def run_server(host: str, port: int) -> None:
         LOGGER.warning("Marked %s unfinished Autoprep jobs interrupted", interrupted_count)
     AUTOPREP_COORDINATOR = AutoprepCoordinator(_process_autoprep_job, max_workers=2)
     AUTOPREP_COORDINATOR.start()
+    SCAN_SCHEDULER.start()
     handler = create_handler()
     server = LocalThreadingHTTPServer((host, port), handler)
     try:
         server.serve_forever()
     finally:
+        SCAN_SCHEDULER.stop()
         AUTOPREP_COORDINATOR.stop_claiming()
         AUTOPREP_COORDINATOR.wait_for_workers()
         _close_server(server)
