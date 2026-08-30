@@ -63,6 +63,36 @@ from callumployed.web.server import (
 runner = CliRunner()
 
 
+def test_debounced_action_collapses_changes_into_one_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timers: list[SimpleNamespace] = []
+
+    def fake_timer(_delay: float, callback: object) -> SimpleNamespace:
+        timer = SimpleNamespace(
+            callback=callback,
+            daemon=False,
+            cancelled=False,
+            start=lambda: None,
+        )
+        timer.cancel = lambda: setattr(timer, "cancelled", True)
+        timers.append(timer)
+        return timer
+
+    monkeypatch.setattr(web_server.threading, "Timer", fake_timer)
+    calls: list[bool] = []
+    action = web_server.DebouncedAction(lambda: calls.append(True), delay_seconds=30)
+
+    action.schedule()
+    action.schedule()
+    action.schedule()
+    assert [timer.cancelled for timer in timers] == [True, True, False]
+
+    timers[-1].callback()
+
+    assert calls == [True]
+
+
 def _add_positioned_text(
     writer: PdfWriter,
     page: object,
@@ -3096,6 +3126,13 @@ def test_config_endpoint_updates_settings(
     monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
     monkeypatch.setenv("CALLUMPLOYED_LLM_PROVIDER", "openai")
     monkeypatch.setattr(web_server, "get_central_passkey", lambda: None)
+    scheduled_repreps: list[bool] = []
+    monkeypatch.setattr(web_server, "AUTOPREP_COORDINATOR", object())
+    monkeypatch.setattr(
+        web_server,
+        "APPLICANT_PROFILE_REPREP_SCHEDULER",
+        SimpleNamespace(schedule=lambda: scheduled_repreps.append(True)),
+    )
     server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -3181,6 +3218,7 @@ def test_config_endpoint_updates_settings(
             "scan_schedule_enabled": True,
             "scan_schedule_time": "06:15",
         }
+        assert scheduled_repreps == [True]
         assert web_server._configured_browser_profile_manager().headless is False
     finally:
         server.shutdown()
