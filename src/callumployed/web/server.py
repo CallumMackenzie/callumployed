@@ -35,6 +35,7 @@ from zipfile import BadZipFile, ZipFile
 from platformdirs import user_data_path
 from pypdf import PdfReader
 
+from callumployed.agents.applicant_profile_extractor import extract_applicant_profile
 from callumployed.agents.cover_letter import (
     ApplicantProfile,
     find_named_hiring_contact,
@@ -177,6 +178,14 @@ APPLICANT_EMAIL_CONFIG_KEY = "applicant_email"
 APPLICANT_PHONE_CONFIG_KEY = "applicant_phone"
 APPLICANT_INSTITUTION_CONFIG_KEY = "applicant_institution"
 APPLICANT_DEGREE_CONFIG_KEY = "applicant_degree"
+APPLICANT_PROFILE_CONFIG_KEYS = (
+    APPLICANT_FIRST_NAME_CONFIG_KEY,
+    APPLICANT_LAST_NAME_CONFIG_KEY,
+    APPLICANT_EMAIL_CONFIG_KEY,
+    APPLICANT_PHONE_CONFIG_KEY,
+    APPLICANT_INSTITUTION_CONFIG_KEY,
+    APPLICANT_DEGREE_CONFIG_KEY,
+)
 COVER_LETTER_MODEL_CONFIG_KEY = "cover_letter_model"
 AUTOPREP_TAILOR_RESUME_CONFIG_KEY = "autoprep_tailor_resume"
 AUTOPREP_RESUME_PROMPT_CONFIG_KEY = "autoprep_resume_prompt"
@@ -493,10 +502,11 @@ def build_tracker_payload(query: str | None = None) -> dict[str, Any]:
     with db.connect() as connection:
         stats = get_tracking_stats(connection)
         roles = list_role_items(connection, query=query)
+        active_roles = [role for role in roles if role.role_status is not RoleStatus.ARCHIVED]
         latest_scan_ids_by_company: dict[int, int] = {}
         latest_scan_role_ids_by_company: dict[int, set[int]] = {}
         latest_scan_role_urls_by_company: dict[int, set[str]] = {}
-        for company_id in {role.company_id for role in roles}:
+        for company_id in {role.company_id for role in active_roles}:
             latest_scan_runs = list_scan_runs(connection, company_id=company_id, limit=1)
             if not latest_scan_runs or latest_scan_runs[0].id is None:
                 continue
@@ -518,7 +528,7 @@ def build_tracker_payload(query: str | None = None) -> dict[str, Any]:
             }
 
     grouped_roles: dict[str, list[dict[str, Any]]] = {status.value: [] for status in RoleStatus}
-    for role in roles:
+    for role in active_roles:
         payload = _role_payload(role)
         latest_scan_role_ids = latest_scan_role_ids_by_company.get(role.company_id, set())
         latest_scan_role_urls = latest_scan_role_urls_by_company.get(role.company_id, set())
@@ -548,7 +558,11 @@ def build_tracker_payload(query: str | None = None) -> dict[str, Any]:
         {
             "key": status.value,
             "label": STATUS_LABELS[status.value],
-            "count": len(grouped_roles[status.value]),
+            "count": (
+                sum(role.role_status is RoleStatus.ARCHIVED for role in roles)
+                if status is RoleStatus.ARCHIVED
+                else len(grouped_roles[status.value])
+            ),
             "jobs": grouped_roles[status.value],
         }
         for status in RoleStatus
@@ -603,6 +617,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 self._send_json(build_application_materials_payload())
                 return
             if parsed_url.path == "/api/config":
+                _populate_missing_applicant_profile_from_resume()
                 self._send_json(build_config_payload())
                 return
             if parsed_url.path == "/api/metrics":
@@ -2082,6 +2097,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
 
             updated_count = _replace_role_resumes(interested_roles, resume)
+            _populate_missing_applicant_profile_from_resume()
             _refresh_application_material_index()
             self._send_json(
                 {
@@ -2553,6 +2569,62 @@ def build_scan_status_payload() -> dict[str, Any]:
             else None
         ),
     }
+
+
+def _populate_missing_applicant_profile_from_resume() -> dict[str, str]:
+    """Fill blank applicant settings from the master resume without overwriting user data."""
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        resume = get_master_resume(connection)
+        missing_keys = {
+            key for key in APPLICANT_PROFILE_CONFIG_KEYS if not get_config_value(connection, key)
+        }
+        if resume is None or not missing_keys:
+            return {}
+        resume_content = resume.content
+        llm_settings = _llm_settings_for_generation(connection)
+
+    try:
+        extracted = asyncio.run(
+            extract_applicant_profile(
+                resume_content=resume_content,
+                settings=llm_settings,
+            )
+        )
+    except Exception:
+        LOGGER.warning("Applicant profile extraction from resume failed", exc_info=True)
+        return {}
+
+    extracted_values = extracted.model_dump()
+    config_to_field = {
+        APPLICANT_FIRST_NAME_CONFIG_KEY: "first_name",
+        APPLICANT_LAST_NAME_CONFIG_KEY: "last_name",
+        APPLICANT_EMAIL_CONFIG_KEY: "email",
+        APPLICANT_PHONE_CONFIG_KEY: "phone",
+        APPLICANT_INSTITUTION_CONFIG_KEY: "institution",
+        APPLICANT_DEGREE_CONFIG_KEY: "degree",
+    }
+    populated: dict[str, str] = {}
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        for key in missing_keys:
+            if get_config_value(connection, key):
+                continue
+            raw_value = extracted_values[config_to_field[key]]
+            try:
+                value = (
+                    _clean_applicant_name_part(raw_value)
+                    if key
+                    in {APPLICANT_FIRST_NAME_CONFIG_KEY, APPLICANT_LAST_NAME_CONFIG_KEY}
+                    else _clean_applicant_profile_text(key, raw_value)
+                )
+            except ValueError:
+                LOGGER.warning("Ignoring invalid extracted applicant profile value for %s", key)
+                continue
+            if value:
+                set_config_value(connection, key, value)
+                populated[key] = value
+    return populated
 
 
 def build_config_payload() -> dict[str, Any]:

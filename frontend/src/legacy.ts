@@ -694,7 +694,11 @@ function renderStatuses(statuses) {
             <span class="count">${status.count}</span>
           </button>
           <div class="pane-body" hidden>
-            ${jobs ? `<div class="jobs">${jobs}</div>` : `<p class="empty-copy">no jobs in this status.</p>`}
+            ${
+              jobs
+                ? `<div class="jobs">${jobs}</div>`
+                : `<p class="empty-copy">${status.key === "archived" && status.count > 0 ? "archived role details are hidden." : "no jobs in this status."}</p>`
+            }
           </div>
         </section>
       `;

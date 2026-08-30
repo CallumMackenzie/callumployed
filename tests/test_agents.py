@@ -7,6 +7,10 @@ import httpx
 import pytest
 from pydantic import BaseModel, ValidationError
 
+from callumployed.agents.applicant_profile_extractor import (
+    ApplicantProfileExtractor,
+    build_applicant_profile_prompt,
+)
 from callumployed.agents.codex_chat_model import CodexStructuredChatModel
 from callumployed.agents.cover_letter import (
     ApplicantProfile,
@@ -39,6 +43,38 @@ from callumployed.webscraping.models import (
     RenderedPageState,
     ScoredLinkCandidate,
 )
+
+
+def test_applicant_profile_prompt_contains_resume_and_extraction_rules() -> None:
+    prompt = build_applicant_profile_prompt(
+        r"\name{Callum Mackenzie}\email{callum@example.com}"
+    )
+
+    assert "Callum Mackenzie" in prompt
+    assert "use only information explicitly present" in prompt
+    assert '"format": "latex"' in prompt
+
+
+def test_applicant_profile_extractor_returns_structured_profile() -> None:
+    class FakeProfileModel:
+        async def ainvoke(self, _prompt: str) -> dict[str, str]:
+            return {
+                "first_name": "Callum",
+                "last_name": "Mackenzie",
+                "email": "callum@example.com",
+                "phone": "+1 250 555 0123",
+                "institution": "University of Victoria",
+                "degree": "BEng Software Engineering",
+            }
+
+    result = asyncio.run(
+        ApplicantProfileExtractor(chat_model_factory=lambda _settings: FakeProfileModel()).extract(
+            resume_content=r"\documentclass{article}"
+        )
+    )
+
+    assert result.first_name == "Callum"
+    assert result.institution == "University of Victoria"
 
 
 def _classification_item(company_id: int = 1) -> PostingLinkClassificationItem:

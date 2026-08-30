@@ -40,7 +40,7 @@ import{t as e}from"./preload-helper-Czpn1I53.js";var{sankey:t,sankeyLinkHorizont
             <span class="count">${e.count}</span>
           </button>
           <div class="pane-body" hidden>
-            ${t?`<div class="jobs">${t}</div>`:`<p class="empty-copy">no jobs in this status.</p>`}
+            ${t?`<div class="jobs">${t}</div>`:`<p class="empty-copy">${e.key===`archived`&&e.count>0?`archived role details are hidden.`:`no jobs in this status.`}</p>`}
           </div>
         </section>
       `}).join(``)}function jn(e,t){return`

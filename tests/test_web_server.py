@@ -2782,6 +2782,79 @@ def test_persisted_llm_provider_overrides_environment_default(
     assert selected.openai_api_key is not None
 
 
+def test_profile_extraction_fills_only_blank_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "profile-extraction.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+
+    async def fake_extract_applicant_profile(**_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            model_dump=lambda: {
+                "first_name": "Extracted",
+                "last_name": "Mackenzie",
+                "email": "callum@example.com",
+                "phone": "+1 (250) 555-0123",
+                "institution": "University of Victoria",
+                "degree": "BEng Software Engineering",
+            }
+        )
+
+    monkeypatch.setattr(
+        web_server,
+        "extract_applicant_profile",
+        fake_extract_applicant_profile,
+    )
+    with web_server.db.connect() as connection:
+        web_server.db.run_migrations(connection)
+        web_server.upsert_master_resume(
+            connection,
+            filename="resume.tex",
+            content=r"\documentclass{article}\begin{document}Resume\end{document}",
+        )
+        web_server.set_config_value(connection, "applicant_first_name", "Callum")
+
+    populated = web_server._populate_missing_applicant_profile_from_resume()
+
+    assert populated["applicant_last_name"] == "Mackenzie"
+    with web_server.db.connect() as connection:
+        assert web_server.get_config_value(connection, "applicant_first_name") == "Callum"
+        assert web_server.get_config_value(connection, "applicant_last_name") == "Mackenzie"
+        assert web_server.get_config_value(connection, "applicant_email") == "callum@example.com"
+
+
+def test_profile_extraction_skips_llm_when_profile_is_complete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "complete-profile.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+
+    async def unexpected_extract(**_kwargs: object) -> None:
+        raise AssertionError("extractor should not run")
+
+    monkeypatch.setattr(web_server, "extract_applicant_profile", unexpected_extract)
+    with web_server.db.connect() as connection:
+        web_server.db.run_migrations(connection)
+        web_server.upsert_master_resume(
+            connection,
+            filename="resume.tex",
+            content=r"\documentclass{article}\begin{document}Resume\end{document}",
+        )
+        for key, value in {
+            "applicant_first_name": "Callum",
+            "applicant_last_name": "Mackenzie",
+            "applicant_email": "callum@example.com",
+            "applicant_phone": "+1 250 555 0123",
+            "applicant_institution": "University of Victoria",
+            "applicant_degree": "BEng Software Engineering",
+        }.items():
+            web_server.set_config_value(connection, key, value)
+
+    assert web_server._populate_missing_applicant_profile_from_resume() == {}
+
+
 def test_config_payload_returns_current_settings(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3743,6 +3816,36 @@ def test_tracker_payload_groups_roles_by_status(
     assert applied["jobs"][0]["created_at"] is not None
     assert applied["jobs"][0]["created_at"].endswith("Z")
     assert applied["jobs"][0]["updated_at"].endswith("Z")
+
+
+def test_tracker_payload_sends_archived_count_without_archived_roles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-archived-count.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        company = add_company(connection, Company(name="Acme"))
+        assert company.id is not None
+        archived = add_role(
+            connection,
+            Role(
+                company_id=company.id,
+                title="Archived Engineer",
+                role_url="https://example.com/jobs/archived",
+            ),
+        )
+        assert archived.id is not None
+        set_role_status(connection, archived.id, RoleStatus.ARCHIVED, summary="Archived.")
+
+    payload = build_tracker_payload()
+
+    archived_status = next(
+        status for status in payload["statuses"] if status["key"] == "archived"
+    )
+    assert archived_status["count"] == 1
+    assert archived_status["jobs"] == []
 
 
 def test_tracker_payload_marks_closed_roles_updated_in_latest_scan_only(
