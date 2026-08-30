@@ -36,6 +36,9 @@ const materialIndexButton = document.querySelector("#material-index-button");
 const materialIndexWarning = document.querySelector("#material-index-warning");
 const materialIndexStatus = document.querySelector("#material-index-status");
 const reviewDiscoveredButton = document.querySelector("#review-discovered");
+const roleInformationView = document.querySelector("#role-information-view");
+const roleInformationCard = document.querySelector("#role-information-card");
+const closeRoleInformationButton = document.querySelector("#close-role-information");
 const reviewView = document.querySelector("#review-view");
 const reviewHeading = document.querySelector("#review-heading");
 const reviewProgress = document.querySelector("#review-progress");
@@ -685,6 +688,10 @@ function renderStatuses(statuses) {
   statusListEl.innerHTML = statuses
     .map((status) => {
       const jobs = status.jobs.map((job) => renderJob(job, status.key)).join("");
+      const hiddenCount = Math.max(Number(status.count) - status.jobs.length, 0);
+      const moreEntry = ["disinterested", "rejected", "closed"].includes(status.key) && hiddenCount > 0
+        ? `<p class="empty-copy status-more-copy">... and ${hiddenCount} more</p>`
+        : "";
 
       return `
         <section class="status-pane ${status.count === 0 ? "empty" : ""} ${hideEmpty ? "hidden-empty" : ""}" id="status-${escapeHtml(status.key)}" data-bucket="${escapeHtml(status.key)}">
@@ -695,8 +702,8 @@ function renderStatuses(statuses) {
           </button>
           <div class="pane-body" hidden>
             ${
-              jobs
-                ? `<div class="jobs">${jobs}</div>`
+              jobs || moreEntry
+                ? `<div class="jobs">${jobs}${moreEntry}</div>`
                 : `<p class="empty-copy">${status.key === "archived" && status.count > 0 ? "archived role details are hidden." : "no jobs in this status."}</p>`
             }
           </div>
@@ -801,6 +808,7 @@ function renderAppliedActions(job) {
 function renderOaActions(job) {
   return `
     <div class="job-actions job-actions-nowrap" aria-label="oa role actions">
+      <button class="job-action" type="button" data-view-role-info="${job.id}">view information</button>
       <button class="job-action" type="button" data-role-id="${job.id}" data-status="interview">interview</button>
       <button class="job-action" type="button" data-role-id="${job.id}" data-status="disinterested">disinterested</button>
       <button class="job-action danger" type="button" data-role-id="${job.id}" data-status="rejected">rejected</button>
@@ -811,6 +819,7 @@ function renderOaActions(job) {
 function renderInterviewActions(job) {
   return `
     <div class="job-actions" aria-label="interview role actions">
+      <button class="job-action" type="button" data-view-role-info="${job.id}">view information</button>
       <button class="job-action danger" type="button" data-role-id="${job.id}" data-status="rejected">rejected</button>
       <button class="job-action success" type="button" data-role-id="${job.id}" data-status="offer">offer</button>
     </div>
@@ -1587,7 +1596,6 @@ async function syncCompaniesOnPageLoad() {
 }
 
 async function loadInitialTrackerData() {
-  const companySync = syncCompaniesOnPageLoad().catch(() => {});
   await Promise.all([
     loadTracker().catch(() => {
       statusListEl.innerHTML = '<p class="empty-copy">could not load jobs.</p>';
@@ -1596,7 +1604,12 @@ async function loadInitialTrackerData() {
       roleAddStatus.textContent = "could not load companies.";
     }),
   ]);
-  await companySync;
+}
+
+function scheduleCentralCompanySync() {
+  window.setTimeout(() => {
+    syncCompaniesOnPageLoad().catch(() => {});
+  }, 10_000);
 }
 
 async function updateApp() {
@@ -2284,6 +2297,16 @@ scanAllButton.addEventListener("click", () => {
 });
 
 statusListEl.addEventListener("click", (event) => {
+  const roleInformationAction = event.target.closest("[data-view-role-info]");
+  if (roleInformationAction) {
+    try {
+      openRoleInformation(roleInformationAction.dataset.viewRoleInfo);
+    } catch {
+      window.alert("Could not load role information.");
+    }
+    return;
+  }
+
   const reviewAction = event.target.closest("[data-review-role-id]");
   if (reviewAction) {
     openReviewView(reviewAction.dataset.reviewRoleId);
@@ -2488,6 +2511,45 @@ function openReviewView(focusedRoleId = null) {
   reviewView.hidden = false;
   document.body.classList.add("review-open");
   renderReviewRole();
+}
+
+function openRoleInformation(roleId) {
+  const focusedId = String(roleId);
+  const role = (trackerData?.statuses ?? [])
+    .flatMap((status) => status.jobs ?? [])
+    .find((candidate) => String(candidate.id) === focusedId);
+  if (!role) throw new Error("Role information not found");
+  roleInformationCard.innerHTML = `
+    <div class="review-title-row">
+      <p class="review-company">${escapeUiText(role.company_name)}</p>
+      <p class="review-role-title">${escapeUiText(role.title)}</p>
+    </div>
+    <dl class="review-details review-primary-details">
+      ${renderReviewDetail("location", role.location, false, "review-location-detail")}
+      ${renderReviewDetail("first", formatCompactDate(role.first_seen_at))}
+      ${renderReviewDetail("last", formatCompactDate(role.last_seen_at))}
+    </dl>
+    ${renderReviewDescription(role.description)}
+    <dl class="review-details review-technical-details">
+      ${renderReviewDetail("notes", role.notes, false, "review-wide-detail")}
+      ${renderReviewDetail("company id", role.company_id)}
+      ${renderReviewDetail("role id", role.id)}
+      ${renderReviewDetail("status", role.role_status)}
+      ${renderReviewDetail("posting id", role.posting_id)}
+      ${renderReviewDetail("created", formatCompactDate(role.created_at))}
+      ${renderReviewDetail("updated", formatCompactDate(role.updated_at))}
+      ${renderReviewDetail("url", role.role_url, false, "review-wide-detail")}
+    </dl>
+  `;
+  roleInformationView.hidden = false;
+  document.body.classList.add("review-open");
+  closeRoleInformationButton.focus();
+}
+
+function closeRoleInformation() {
+  roleInformationView.hidden = true;
+  roleInformationCard.innerHTML = "";
+  document.body.classList.remove("review-open");
 }
 
 function closeReviewView() {
@@ -4075,6 +4137,7 @@ async function markPreppedRoleApplied(roleId, button) {
 reviewDiscoveredButton.addEventListener("click", openReviewView);
 
 closeReviewButton.addEventListener("click", closeReviewView);
+closeRoleInformationButton.addEventListener("click", closeRoleInformation);
 
 preppedRolesButton.addEventListener("click", () => openPreppedView());
 
@@ -4473,6 +4536,7 @@ function appendPrepResumeTweak(roleId, tweakPrompt) {
 }
 
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !roleInformationView.hidden) closeRoleInformation();
   if (event.key === "Escape" && !scanFailuresDialog.hidden) closeScanFailuresDialog();
   if (event.key === "Escape" && !searchDialog.hidden) closeSearchDialog();
   if (event.key === "Escape" && !reviewView.hidden) closeReviewView();
@@ -4684,7 +4748,7 @@ function syncWorkspaceRoute() {
 
 window.addEventListener("popstate", syncWorkspaceRoute);
 
-loadInitialTrackerData();
+loadInitialTrackerData().finally(scheduleCentralCompanySync);
 
 if (window.location.hash === "#prepped-roles") {
   syncWorkspaceRoute();

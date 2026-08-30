@@ -311,8 +311,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="autoprep-view"' not in markup
         assert 'id="autoprep-selected"' not in markup
         assert 'id="autoprep-interested"' not in app_javascript
-        assert 'function submitAutoprepSelection' not in app_javascript
-        assert 'body: JSON.stringify({role_ids:' not in app_javascript
+        assert "function submitAutoprepSelection" not in app_javascript
+        assert "body: JSON.stringify({role_ids:" not in app_javascript
         assert 'id="role-add-form"' in markup
         assert "Add Explicit Role" in markup
         assert 'id="role-url-input"' in markup
@@ -403,7 +403,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert ">View PDF</a>" in app_javascript
         assert 'id="regenerate-all-cover-letters"' in markup
         assert 'id="prepped-bulk-status"' in markup
-        assert 'data-autoprep-disinterested' in app_javascript
+        assert "data-autoprep-disinterested" in app_javascript
         assert 'updateRoleStatusById(roleId, "disinterested")' in app_javascript
         assert 'fetch("/api/autoprep/cover-letters/regenerate", {' in app_javascript
         assert 'idempotency_key: autoprepActionKey("regenerate-all-cover-letters")' in (
@@ -423,8 +423,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "autoprepJobIsGenerating(job)" in app_javascript
         assert '" is-document-generating"' in app_javascript
         assert (
-            "const documentGenerating = !hasGenerationFailure && "
-            "autoprepJobIsGenerating(job);"
+            "const documentGenerating = !hasGenerationFailure && autoprepJobIsGenerating(job);"
         ) in app_javascript
         assert ".prepped-list-item.is-document-generating" in app_styles
         assert "@keyframes prepped-cover-letter-pulse" in app_styles
@@ -443,7 +442,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         )
         assert failed_list_item_class in app_javascript
         assert ".prepped-list-item.has-generation-failure" in app_styles
-        assert 'data-autoprep-retry' not in app_javascript
+        assert "data-autoprep-retry" not in app_javascript
         assert "async function retryAutoprepDocument" not in app_javascript
         assert 'const retryingFailedDocument = ["failed", "interrupted"].includes(status);' in (
             app_javascript
@@ -452,12 +451,11 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'if (!comments && documentKind !== "cover-letter" && !retryingFailedDocument)' in (
             app_javascript
         )
-        assert '["failed", "interrupted"].includes(job.cover_letter_status)' in (
-            app_javascript
-        )
+        assert '["failed", "interrupted"].includes(job.cover_letter_status)' in (app_javascript)
         bulk_function = app_javascript[
-            app_javascript.index("async function regenerateAllPreppedCoverLetters()") :
-            app_javascript.index("async function markPreppedRoleDisinterested")
+            app_javascript.index(
+                "async function regenerateAllPreppedCoverLetters()"
+            ) : app_javascript.index("async function markPreppedRoleDisinterested")
         ]
         assert "await refreshPreppedRoles();\n    startPreppedPolling();" in bulk_function
         assert ".prep-role-hero" in app_styles
@@ -466,15 +464,10 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);" in app_styles
         assert "height: clamp(640px, 78vh, 900px);" in app_styles
         assert 'fetch("/api/central/resolve-companies", { method: "POST" })' in app_javascript
-        assert "const companySync = syncCompaniesOnPageLoad().catch(() => {});" in app_javascript
-        assert "await companySync;" in app_javascript
-        assert app_javascript.index("const companySync = syncCompaniesOnPageLoad()") < (
-            app_javascript.index("await Promise.all([")
-        )
-        assert app_javascript.index("await Promise.all([") < app_javascript.index(
-            "await companySync;"
-        )
-        assert "loadInitialTrackerData();" in app_javascript
+        assert "loadInitialTrackerData().finally(scheduleCentralCompanySync);" in app_javascript
+        assert "}, 10_000);" in app_javascript
+        assert "await companySync;" not in app_javascript
+        assert "syncCompaniesOnPageLoad().catch(() => {});" in app_javascript
         assert "settingsProfileOptions.innerHTML" in app_javascript
         assert 'setting.input_type ?? "text"' in app_javascript
         assert 'setting.autocomplete ?? "name"' in app_javascript
@@ -545,8 +538,7 @@ def test_autoprep_pdf_filename_uses_job_description_company_identity(
             "company_name": "Ramp",
             "title": "Machine Learning Intern Co-op",
             "description": (
-                "Who are we?\n"
-                "Cohere is the leading security-first enterprise AI company."
+                "Who are we?\nCohere is the leading security-first enterprise AI company."
             ),
         },
         source_pdf,
@@ -564,8 +556,7 @@ def test_autoprep_pdf_filename_uses_job_description_company_identity(
             "company_name": "Ramp",
             "title": "Machine Learning Intern Co-op",
             "description": (
-                "Who are we?\n"
-                "Cohere is the leading security-first enterprise AI company."
+                "Who are we?\nCohere is the leading security-first enterprise AI company."
             ),
         },
         {"resume_status": "ready", "resume_artifact_path": str(old_resume)},
@@ -583,8 +574,7 @@ def test_autoprep_pdf_filename_uses_job_description_company_identity(
             "company_name": "Ramp",
             "title": "Machine Learning Intern Co-op",
             "description": (
-                "Who are we?\n"
-                "Cohere is the leading security-first enterprise AI company."
+                "Who are we?\nCohere is the leading security-first enterprise AI company."
             ),
         },
         source_pdf,
@@ -1081,9 +1071,7 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         cwd = Path(kwargs["cwd"])
         (cwd / "cover-letter.pdf").write_bytes(
             _positioned_text_pdf_bytes(
-                (740, 670, 600, 530)
-                if compile_attempts <= 5
-                else (740, 600, 450, 300, 150, 60)
+                (740, 670, 600, 530) if compile_attempts <= 5 else (740, 600, 450, 300, 150, 60)
             )
         )
 
@@ -1200,9 +1188,7 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         assert "materially underfilled" in str(captured_calls[1]["tweaks"])
         assert "smooth, natural prose" in str(captured_calls[1]["tweaks"])
         assert "source-supported detail" in str(captured_calls[1]["tweaks"])
-        assert "Dear Hiring Manager" in str(
-            captured_calls[1]["previous_cover_letter_latex"]
-        )
+        assert "Dear Hiring Manager" in str(captured_calls[1]["previous_cover_letter_latex"])
         indexed_context = captured_calls[0]["other_experience_context"]
         assert isinstance(indexed_context, list)
         assert len(indexed_context) == 1
@@ -1574,9 +1560,7 @@ def test_cover_letter_latex_normalizer_separates_and_professionalizes_salutation
 
     assert "Dear Hiring Team" not in normalized
     assert (
-        "\\noindent Dear Hiring Manager,\\par\n"
-        "\\vspace{0.35em}\n\n"
-        "I am applying for the role."
+        "\\noindent Dear Hiring Manager,\\par\n\\vspace{0.35em}\n\nI am applying for the role."
     ) in normalized
 
 
@@ -2021,9 +2005,7 @@ def test_role_resume_endpoint_regenerates_with_tweaks(
         nonlocal compile_attempts
         compile_attempts += 1
         cwd = Path(kwargs["cwd"])
-        (cwd / "resume.pdf").write_bytes(
-            _valid_pdf_bytes(2 if compile_attempts <= 3 else 1)
-        )
+        (cwd / "resume.pdf").write_bytes(_valid_pdf_bytes(2 if compile_attempts <= 3 else 1))
 
         class Completed:
             returncode = 0
@@ -3849,6 +3831,7 @@ def test_tracker_payload_groups_roles_by_status(
     assert applied["jobs"][0]["title"] == "Backend Engineer"
     assert applied["jobs"][0]["location"] == "Vancouver"
     assert applied["jobs"][0]["notes"] == "Remote-friendly team."
+    assert "description" not in applied["jobs"][0]
     assert applied["jobs"][0]["first_seen_at"] is not None
     assert applied["jobs"][0]["first_seen_at"].endswith("Z")
     assert applied["jobs"][0]["created_at"] is not None
@@ -3879,11 +3862,141 @@ def test_tracker_payload_sends_archived_count_without_archived_roles(
 
     payload = build_tracker_payload()
 
-    archived_status = next(
-        status for status in payload["statuses"] if status["key"] == "archived"
-    )
+    archived_status = next(status for status in payload["statuses"] if status["key"] == "archived")
     assert archived_status["count"] == 1
     assert archived_status["jobs"] == []
+
+
+def test_tracker_payload_only_sends_recently_disinterested_roles_but_keeps_full_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-recent-disinterested.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        company = add_company(connection, Company(name="Acme"))
+        assert company.id is not None
+        for title in ("Recently dismissed", "Dismissed earlier"):
+            role = add_role(
+                connection,
+                Role(
+                    company_id=company.id,
+                    title=title,
+                    role_url=f"https://example.com/jobs/{title.lower().replace(' ', '-')}",
+                ),
+            )
+            assert role.id is not None
+            set_role_status(
+                connection,
+                role.id,
+                RoleStatus.DISINTERESTED,
+                summary="Not interested.",
+            )
+        connection.execute(
+            """
+            UPDATE events
+            SET created_at = datetime('now', '-3 days')
+            WHERE role_id = 2 AND event_type = 'status_changed'
+            """
+        )
+        connection.commit()
+
+    payload = build_tracker_payload()
+
+    disinterested = next(
+        status for status in payload["statuses"] if status["key"] == "disinterested"
+    )
+    assert disinterested["count"] == 2
+    assert [job["title"] for job in disinterested["jobs"]] == ["Recently dismissed"]
+
+    search_payload = build_tracker_payload(query="Dismissed earlier")
+    search_disinterested = next(
+        status for status in search_payload["statuses"] if status["key"] == "disinterested"
+    )
+    assert search_disinterested["count"] == 1
+    assert [job["title"] for job in search_disinterested["jobs"]] == ["Dismissed earlier"]
+
+
+@pytest.mark.parametrize("limited_status", [RoleStatus.REJECTED, RoleStatus.CLOSED])
+def test_tracker_payload_limits_terminal_roles_unless_searching(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    limited_status: RoleStatus,
+) -> None:
+    status_label = limited_status.value.title()
+    database = tmp_path / f"tracker-{limited_status.value}-limit.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        company = add_company(connection, Company(name="Acme"))
+        assert company.id is not None
+        for index in range(12):
+            role = add_role(
+                connection,
+                Role(
+                    company_id=company.id,
+                    title=f"{status_label} Role {index:02d}",
+                    role_url=f"https://example.com/jobs/{limited_status.value}-{index:02d}",
+                ),
+            )
+            assert role.id is not None
+            set_role_status(
+                connection,
+                role.id,
+                limited_status,
+                summary=f"{status_label}.",
+            )
+
+    payload = build_tracker_payload()
+    limited = next(
+        status for status in payload["statuses"] if status["key"] == limited_status.value
+    )
+    assert limited["count"] == 12
+    assert len(limited["jobs"]) == 10
+    assert f"{status_label} Role 00" not in {job["title"] for job in limited["jobs"]}
+
+    search_payload = build_tracker_payload(query=f"{status_label} Role 00")
+    search_limited = next(
+        status for status in search_payload["statuses"] if status["key"] == limited_status.value
+    )
+    assert search_limited["count"] == 1
+    assert [job["title"] for job in search_limited["jobs"]] == [f"{status_label} Role 00"]
+
+
+@pytest.mark.parametrize(
+    "status",
+    [RoleStatus.APPLIED, RoleStatus.REJECTED, RoleStatus.CLOSED],
+)
+def test_tracker_payload_omits_descriptions_for_inactive_application_roles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: RoleStatus,
+) -> None:
+    database = tmp_path / f"tracker-{status.value}-description.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        company = add_company(connection, Company(name="Acme"))
+        assert company.id is not None
+        role = add_role(
+            connection,
+            Role(
+                company_id=company.id,
+                title="Backend Engineer",
+                role_url="https://example.com/jobs/backend",
+                description="A deliberately large job description.",
+                notes="Keep this useful role metadata.",
+            ),
+        )
+        assert role.id is not None
+        set_role_status(connection, role.id, status, summary="Status updated.")
+
+    payload = build_tracker_payload()
+
+    status_payload = next(item for item in payload["statuses"] if item["key"] == status.value)
+    assert status_payload["jobs"][0]["notes"] == "Keep this useful role metadata."
+    assert "description" not in status_payload["jobs"][0]
 
 
 def test_tracker_payload_marks_closed_roles_updated_in_latest_scan_only(

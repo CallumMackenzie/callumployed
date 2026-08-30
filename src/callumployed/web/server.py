@@ -20,7 +20,7 @@ import unicodedata
 from collections import Counter
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
@@ -532,9 +532,25 @@ class LocalThreadingHTTPServer(ThreadingHTTPServer):
 
 
 def build_tracker_payload(query: str | None = None) -> dict[str, Any]:
+    is_search = bool(query and query.strip())
     with db.connect() as connection:
         stats = get_tracking_stats(connection)
         roles = list_role_items(connection, query=query)
+        disinterested_cutoff = (datetime.now(UTC) - timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+        recently_disinterested_role_ids = {
+            int(row["role_id"])
+            for row in connection.execute(
+                """
+                SELECT DISTINCT role_id
+                FROM events
+                WHERE event_type = 'status_changed'
+                  AND new_status = ?
+                  AND role_id IS NOT NULL
+                  AND created_at >= ?
+                """,
+                (RoleStatus.DISINTERESTED.value, disinterested_cutoff),
+            ).fetchall()
+        }
         active_roles = [role for role in roles if role.role_status is not RoleStatus.ARCHIVED]
         latest_scan_ids_by_company: dict[int, int] = {}
         latest_scan_role_ids_by_company: dict[int, set[int]] = {}
@@ -562,7 +578,19 @@ def build_tracker_payload(query: str | None = None) -> dict[str, Any]:
 
     grouped_roles: dict[str, list[dict[str, Any]]] = {status.value: [] for status in RoleStatus}
     for role in active_roles:
+        if (
+            not is_search
+            and role.role_status is RoleStatus.DISINTERESTED
+            and role.id not in recently_disinterested_role_ids
+        ):
+            continue
         payload = _role_payload(role)
+        if role.role_status in {
+            RoleStatus.APPLIED,
+            RoleStatus.REJECTED,
+            RoleStatus.CLOSED,
+        }:
+            payload.pop("description", None)
         latest_scan_role_ids = latest_scan_role_ids_by_company.get(role.company_id, set())
         latest_scan_role_urls = latest_scan_role_urls_by_company.get(role.company_id, set())
         seen_in_latest_scan = (
@@ -578,6 +606,9 @@ def build_tracker_payload(query: str | None = None) -> dict[str, Any]:
             _role_has_prep_started(role.id) if isinstance(role.id, int) else False
         )
         grouped_roles[role.role_status.value].append(payload)
+    if not is_search:
+        grouped_roles[RoleStatus.REJECTED.value] = grouped_roles[RoleStatus.REJECTED.value][:10]
+        grouped_roles[RoleStatus.CLOSED.value] = grouped_roles[RoleStatus.CLOSED.value][:10]
     grouped_roles[RoleStatus.INTERESTED.value].sort(
         key=lambda role: bool(role.get("prep_started")),
         reverse=True,
@@ -587,15 +618,12 @@ def build_tracker_payload(query: str | None = None) -> dict[str, Any]:
         reverse=True,
     )
 
+    role_counts = Counter(role.role_status.value for role in roles)
     statuses = [
         {
             "key": status.value,
             "label": STATUS_LABELS[status.value],
-            "count": (
-                sum(role.role_status is RoleStatus.ARCHIVED for role in roles)
-                if status is RoleStatus.ARCHIVED
-                else len(grouped_roles[status.value])
-            ),
+            "count": role_counts[status.value],
             "jobs": grouped_roles[status.value],
         }
         for status in RoleStatus
@@ -2364,8 +2392,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 with db.connect() as connection:
                     db.run_migrations(connection)
                     applicant_profile_changed = any(
-                        key in payload
-                        and (get_config_value(connection, key) or "") != payload[key]
+                        key in payload and (get_config_value(connection, key) or "") != payload[key]
                         for key in APPLICANT_PROFILE_CONFIG_KEYS
                     )
                     if "include_graduate_degree_roles" in payload:
@@ -2655,8 +2682,7 @@ def _populate_missing_applicant_profile_from_resume() -> dict[str, str]:
             try:
                 value = (
                     _clean_applicant_name_part(raw_value)
-                    if key
-                    in {APPLICANT_FIRST_NAME_CONFIG_KEY, APPLICANT_LAST_NAME_CONFIG_KEY}
+                    if key in {APPLICANT_FIRST_NAME_CONFIG_KEY, APPLICANT_LAST_NAME_CONFIG_KEY}
                     else _clean_applicant_profile_text(key, raw_value)
                 )
             except ValueError:
@@ -2716,8 +2742,7 @@ def build_config_payload() -> dict[str, Any]:
         values = list_config_values(connection)
         try:
             llm_provider = _clean_llm_provider(
-                get_config_value(connection, LLM_PROVIDER_CONFIG_KEY)
-                or configured_llm_provider
+                get_config_value(connection, LLM_PROVIDER_CONFIG_KEY) or configured_llm_provider
             )
         except ValueError:
             llm_provider = DEFAULT_LLM_PROVIDER
@@ -3535,9 +3560,7 @@ def _prepare_autoprep_resume(
             minimum_page_fill_ratio=0.82,
         )
     source_pdf = _required_generated_pdf(generated, "resume")
-    artifact_directory, artifact_path = _copy_autoprep_pdf(
-        role_payload, source_pdf, kind="resume"
-    )
+    artifact_directory, artifact_path = _copy_autoprep_pdf(role_payload, source_pdf, kind="resume")
     counterpart = _copy_autoprep_counterpart(
         role_payload,
         current_job,
@@ -3603,9 +3626,7 @@ def _prepare_autoprep_cover_letter(
         role_payload,
         resume_for_generation,
         tweaks=_autoprep_generation_prompt(configured_prompt, instruction),
-        previous_cover_letter_latex=(
-            str((previous_cover_letter or {}).get("latex") or "") or None
-        ),
+        previous_cover_letter_latex=(str((previous_cover_letter or {}).get("latex") or "") or None),
         allow_local_fallback=False,
         required_page_count=1,
     )
@@ -4361,9 +4382,7 @@ def _one_page_resume_candidates(latex: str) -> list[str]:
     candidates = [latex]
     for content, profile in ((latex, modest_profile), (compact, compact_profile)):
         if "\\begin{document}" in content:
-            candidate = content.replace(
-                "\\begin{document}", f"{profile}\\begin{{document}}", 1
-            )
+            candidate = content.replace("\\begin{document}", f"{profile}\\begin{{document}}", 1)
         else:
             candidate = f"{profile}{content}"
         if candidate not in candidates:
@@ -4398,11 +4417,7 @@ def save_role_resume(
         selected_pdf: Path | None = None
         page_counts: list[int] = []
         page_fill_ratios: list[float | None] = []
-        candidates = (
-            _one_page_resume_candidates(latex)
-            if required_page_count == 1
-            else [latex]
-        )
+        candidates = _one_page_resume_candidates(latex) if required_page_count == 1 else [latex]
         for candidate_latex in candidates:
             candidate_path.write_text(candidate_latex)
             candidate_pdf = _compile_role_resume_pdf(
@@ -4417,15 +4432,9 @@ def save_role_resume(
             page_counts.append(page_count)
             page_fill_ratio = _pdf_page_fill_ratio(candidate_pdf) if page_count == 1 else None
             page_fill_ratios.append(page_fill_ratio)
-            if page_count and (
-                required_page_count is None or page_count == required_page_count
-            ):
-                if (
-                    minimum_page_fill_ratio is not None
-                    and (
-                        page_fill_ratio is None
-                        or page_fill_ratio < minimum_page_fill_ratio
-                    )
+            if page_count and (required_page_count is None or page_count == required_page_count):
+                if minimum_page_fill_ratio is not None and (
+                    page_fill_ratio is None or page_fill_ratio < minimum_page_fill_ratio
                 ):
                     continue
                 selected_latex = candidate_latex
@@ -4434,9 +4443,7 @@ def save_role_resume(
         if selected_latex is None or selected_pdf is None:
             one_page_attempted = 1 in page_counts
             if minimum_page_fill_ratio is not None and one_page_attempted:
-                measured_fill_ratios = [
-                    ratio for ratio in page_fill_ratios if ratio is not None
-                ]
+                measured_fill_ratios = [ratio for ratio in page_fill_ratios if ratio is not None]
                 if not measured_fill_ratios:
                     raise GeneratedDocumentLayoutError(
                         "Generated resume page fill could not be measured; refusing to publish."
@@ -4735,9 +4742,7 @@ def _write_role_cover_letter(
         page_counts: list[int] = []
         page_fill_ratios: list[float | None] = []
         candidates = (
-            _one_page_cover_letter_candidates(latex)
-            if required_page_count == 1
-            else [latex]
+            _one_page_cover_letter_candidates(latex) if required_page_count == 1 else [latex]
         )
         for candidate_latex in candidates:
             candidate_path.write_text(candidate_latex)
@@ -4747,9 +4752,8 @@ def _write_role_cover_letter(
             page_fill_ratio = _pdf_page_fill_ratio(candidate_pdf) if page_count == 1 else None
             page_fill_ratios.append(page_fill_ratio)
             if required_page_count is None or page_count == required_page_count:
-                if (
-                    minimum_page_fill_ratio is not None
-                    and (page_fill_ratio is None or page_fill_ratio < minimum_page_fill_ratio)
+                if minimum_page_fill_ratio is not None and (
+                    page_fill_ratio is None or page_fill_ratio < minimum_page_fill_ratio
                 ):
                     continue
                 selected_latex = candidate_latex
@@ -4945,9 +4949,7 @@ def _repair_single_cover_letter_line_breaks(latex: str) -> str:
     )
 
 
-def _normalize_cover_letter_salutation(
-    latex: str, *, hiring_contact: str | None = None
-) -> str:
+def _normalize_cover_letter_salutation(latex: str, *, hiring_contact: str | None = None) -> str:
     resolved_contact = hiring_contact or "Hiring Manager"
     content = re.sub(
         r"\\opening\{Dear\s+[^{}]+,?\}",
@@ -5355,8 +5357,7 @@ def _llm_settings_for_generation(
 ) -> LlmSettings:
     environment_settings = LlmSettings()
     provider = _clean_llm_provider(
-        get_config_value(connection, LLM_PROVIDER_CONFIG_KEY)
-        or environment_settings.provider
+        get_config_value(connection, LLM_PROVIDER_CONFIG_KEY) or environment_settings.provider
     )
     return LlmSettings(
         provider=provider,
@@ -5398,9 +5399,7 @@ def _autoprep_generation_prompt(base_prompt: str, feedback: str) -> str:
     if not cleaned_feedback:
         return cleaned_base
     return (
-        f"{cleaned_base}\n\n"
-        "User feedback for this specific document version:\n"
-        f"{cleaned_feedback}"
+        f"{cleaned_base}\n\nUser feedback for this specific document version:\n{cleaned_feedback}"
     )
 
 
@@ -5926,8 +5925,7 @@ def _generation_experience_context(
         )
     retrieval_content_limit = max(
         1,
-        total_content_limit
-        - len(str(ai_project_context.get("content") or ""))
+        total_content_limit - len(str(ai_project_context.get("content") or ""))
         if ai_project_context
         else total_content_limit,
     )
@@ -5958,9 +5956,7 @@ def _generation_experience_context(
 
 
 def _role_requests_ai_experience(role: dict[str, Any]) -> bool:
-    role_text = " ".join(
-        str(role.get(key) or "") for key in ("title", "description")
-    )
+    role_text = " ".join(str(role.get(key) or "") for key in ("title", "description"))
     return bool(
         re.search(
             r"(?i)\b(?:ai|artificial intelligence|machine learning|ml platform|llm|"
@@ -6186,9 +6182,7 @@ def _cover_letter_content_from_payload(
     if suffix in {".pdf", ".docx"}:
         if not isinstance(content_base64, str):
             document_type = suffix.upper().removeprefix(".")
-            raise ValueError(
-                f"{document_type} cover letter uploads require content_base64"
-            )
+            raise ValueError(f"{document_type} cover letter uploads require content_base64")
         try:
             document_bytes = base64.b64decode(content_base64, validate=True)
         except (binascii.Error, ValueError) as error:
