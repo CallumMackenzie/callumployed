@@ -168,15 +168,15 @@ import{t as e}from"./preload-helper-Czpn1I53.js";var{sankey:t,sankeyLinkHorizont
         maxlength="8000"
       >${K(e.value??``)}</textarea>
     </label>
-  `}function rr(e){let t=Array.isArray(e.options)?e.options:[],n=`default: ${G(e.default)}`;return`
+  `}function rr(e){let t=Array.isArray(e.options)?e.options:[],n=`default: ${G(e.default)}`,r=e.key===`application_generation_backend`,i=r?`setting-select setting-select-application-backend`:`setting-select`;return`
     <label class="setting-option">
       <span class="setting-copy">
         <span class="setting-label">${K(e.label)}</span>
         <span class="setting-description">${K(e.description)}</span>
         <span class="setting-default">${K(n)}</span>
       </span>
-      <select class="setting-select" name="${W(e.key)}">
-        ${t.map(t=>{let n=t.value===e.value?`selected`:``,r=t.available===!1||t.disabled===!0,i=t.reason?` — ${G(t.reason)}`:``;return`<option value="${W(t.value)}" ${n} ${r?`disabled`:``}>${K(t.label)}${K(i)}</option>`}).join(``)}
+      <select class="${i}" name="${W(e.key)}">
+        ${t.map(t=>{let n=t.value===e.value?`selected`:``,i=t.available===!1||t.disabled===!0,a=r&&i?` — unavailable`:``;return`<option value="${W(t.value)}" ${n} ${i?`disabled`:``}>${K(t.label)}${K(a)}</option>`}).join(``)}
       </select>
     </label>
   `}function ir(e){let t=e.default?`on by default`:`off by default`,n=e.value?`automatic`:`off`;return`

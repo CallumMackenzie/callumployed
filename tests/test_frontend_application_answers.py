@@ -7,6 +7,7 @@ STATIC_DIRECTORY = REPOSITORY_ROOT / "src" / "callumployed" / "web" / "static"
 
 def test_application_backend_settings_render_availability_defensively() -> None:
     source = FRONTEND_SOURCE.read_text()
+    styles = (STATIC_DIRECTORY / "app.css").read_text()
 
     assert 'setting.key === "application_generation_backend"' in source
     assert "renderApplicationRuntimeAvailability" in source
@@ -21,6 +22,10 @@ def test_application_backend_settings_render_availability_defensively() -> None:
     ]
     assert "data-application-runtime-test" in renderer
     assert "/api/application-generation/backends/" in source
+    assert "setting-select-application-backend" in source
+    assert ".setting-select-application-backend" in styles
+    assert "width: 280px" in styles
+    assert 'unavailable ? " — unavailable" : ""' in source
 
 
 def test_prepped_application_questions_workspace_is_persistent_and_safe() -> None:
@@ -55,5 +60,4 @@ def test_application_questions_styles_and_cache_keys_are_versioned() -> None:
     assert ".application-questions-workspace" in styles
     assert ".application-answer-record" in styles
     assert ".application-question-composer" in styles
-    assert "react-ts-20260829-17" in index
-    assert "react-ts-20260829-23" in index
+    assert index.count("react-ts-20260830-24") == 2

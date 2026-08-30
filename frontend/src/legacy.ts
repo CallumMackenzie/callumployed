@@ -1074,6 +1074,10 @@ function renderTextareaSettingOption(setting) {
 function renderSelectSettingOption(setting) {
   const options = Array.isArray(setting.options) ? setting.options : [];
   const defaultText = `default: ${formatUiText(setting.default)}`;
+  const isApplicationBackend = setting.key === "application_generation_backend";
+  const selectClass = isApplicationBackend
+    ? "setting-select setting-select-application-backend"
+    : "setting-select";
   return `
     <label class="setting-option">
       <span class="setting-copy">
@@ -1081,12 +1085,12 @@ function renderSelectSettingOption(setting) {
         <span class="setting-description">${escapeUiText(setting.description)}</span>
         <span class="setting-default">${escapeUiText(defaultText)}</span>
       </span>
-      <select class="setting-select" name="${escapeHtml(setting.key)}">
+      <select class="${selectClass}" name="${escapeHtml(setting.key)}">
         ${options
           .map((option) => {
             const selected = option.value === setting.value ? "selected" : "";
             const unavailable = option.available === false || option.disabled === true;
-            const reason = option.reason ? ` — ${formatUiText(option.reason)}` : "";
+            const reason = isApplicationBackend && unavailable ? " — unavailable" : "";
             return `<option value="${escapeHtml(option.value)}" ${selected} ${unavailable ? "disabled" : ""}>${escapeUiText(option.label)}${escapeUiText(reason)}</option>`;
           })
           .join("")}

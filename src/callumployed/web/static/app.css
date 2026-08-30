@@ -2858,6 +2858,12 @@ a:hover .role-link-icon {
   font-weight: 900;
 }
 
+.setting-select-application-backend {
+  width: 280px;
+  max-width: 100%;
+  min-width: 0;
+}
+
 .setting-select:focus-visible {
   outline: 3px solid rgb(45 224 111 / 0.38);
   outline-offset: 2px;
