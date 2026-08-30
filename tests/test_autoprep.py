@@ -16,9 +16,12 @@ from callumployed.data.models import Company, Role, RoleStatus
 from callumployed.data.repositories import (
     add_company,
     add_role,
+    get_config_value,
+    set_config_value,
     set_role_status,
     upsert_master_resume,
 )
+from callumployed.services.app_settings import APPLICANT_PROFILE_REPREP_DUE_CONFIG_KEY
 from callumployed.services.autoprep import (
     AutoprepConflictError,
     AutoprepCoordinator,
@@ -963,3 +966,32 @@ def test_autoprep_cover_letter_only_mode_copies_master_resume_with_public_filena
     )
     assert Path(completed["resume_artifact_path"]).is_file()
     assert Path(completed["cover_letter_artifact_path"]).is_file()
+
+
+def test_due_applicant_profile_refresh_is_durable_and_debounced(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(tmp_path / "profile-due.sqlite3"))
+    db.ensure_initialized()
+    queued_keys: list[str] = []
+
+    def fake_queue(_connection: object, *, idempotency_key: str) -> dict[str, object]:
+        queued_keys.append(idempotency_key)
+        return {"requested_count": 0, "queued_role_ids": [], "skipped": []}
+
+    monkeypatch.setattr(
+        autoprep_service,
+        "queue_all_prepped_cover_letter_regenerations",
+        fake_queue,
+    )
+    with db.connect() as connection:
+        set_config_value(connection, APPLICANT_PROFILE_REPREP_DUE_CONFIG_KEY, "130.0")
+        monkeypatch.setattr(autoprep_service.time, "time", lambda: 129.0)
+        assert autoprep_service._queue_due_applicant_profile_reprep(connection) is False
+        assert queued_keys == []
+
+        monkeypatch.setattr(autoprep_service.time, "time", lambda: 130.0)
+        assert autoprep_service._queue_due_applicant_profile_reprep(connection) is True
+        assert queued_keys == ["profile-settings-130.0"]
+        assert get_config_value(connection, APPLICANT_PROFILE_REPREP_DUE_CONFIG_KEY) == ""

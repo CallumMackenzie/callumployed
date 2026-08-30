@@ -1,3 +1,4 @@
+import asyncio
 import tomllib
 from pathlib import Path
 
@@ -6,6 +7,7 @@ import pytest
 from callumployed import mcp_server
 from callumployed.central.config import DEFAULT_CENTRAL_API_URL
 from callumployed.central.models import CentralCompaniesResponse, ResolveCompanyResponse
+from callumployed.config import LlmSettings
 
 
 @pytest.fixture(autouse=True)
@@ -131,21 +133,17 @@ def test_mcp_config_tools_return_defaults_and_updates(
     monkeypatch.setattr(mcp_server, "get_central_passkey", lambda: None)
 
     defaults = mcp_server.show_config()
-    assert defaults == {
-        "values": {},
-        "include_graduate_degree_roles": False,
-        "include_hardware_roles": False,
-        "require_software_keywords": True,
-        "internship_mode": True,
-        "location_filter": "all",
-        "central": {
-            "api_url": DEFAULT_CENTRAL_API_URL,
-            "passkey_configured": False,
-            "companies_linked": 0,
-            "companies_unlinked": 0,
-            "companies_needs_review": 0,
-            "companies_failed": 0,
-        },
+    assert defaults["values"] == {}
+    assert defaults["settings"]["scan_headless"] is False
+    assert defaults["settings"]["applicant_email"] == ""
+    assert defaults["include_graduate_degree_roles"] is False
+    assert defaults["central"] == {
+        "api_url": DEFAULT_CENTRAL_API_URL,
+        "passkey_configured": False,
+        "companies_linked": 0,
+        "companies_unlinked": 0,
+        "companies_needs_review": 0,
+        "companies_failed": 0,
     }
 
     updated = mcp_server.update_config(
@@ -166,6 +164,38 @@ def test_mcp_config_tools_return_defaults_and_updates(
         "location_filter": "canada",
         "require_software_keywords": "false",
     }
+
+    profile_update = mcp_server.set_config("applicant_email", "callum@example.com")
+    assert profile_update["value"] == "callum@example.com"
+    assert profile_update["config"]["settings"]["applicant_email"] == "callum@example.com"
+
+
+def test_mcp_scan_uses_persisted_headless_setting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(tmp_path / "scan-config.sqlite3"))
+    observed_headless: list[bool] = []
+    observed_providers: list[str] = []
+
+    async def fake_scan_url(
+        url: str,
+        *,
+        browser_profile_manager: object,
+        llm_settings: LlmSettings,
+    ) -> dict[str, object]:
+        observed_headless.append(bool(browser_profile_manager.headless))
+        observed_providers.append(str(llm_settings.provider))
+        return {"source_url": url, "links": []}
+
+    monkeypatch.setattr(mcp_server, "run_scan_url", fake_scan_url)
+    mcp_server.set_config("scan_headless", False)
+    mcp_server.set_config("llm_provider", "codex")
+
+    asyncio.run(mcp_server.scan_url("https://example.com/careers"))
+
+    assert observed_headless == [False]
+    assert observed_providers == ["codex"]
 
 
 def test_mcp_central_tools_configure_resolve_and_pull(

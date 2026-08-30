@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import suppress
 from typing import Any, Literal
@@ -11,6 +12,8 @@ from typing import Any, Literal
 import turso
 
 from callumployed.data import db
+from callumployed.data.repositories import get_config_value, set_config_value
+from callumployed.services.app_settings import APPLICANT_PROFILE_REPREP_DUE_CONFIG_KEY
 
 DocumentKind = Literal["resume", "cover_letter"]
 LOGGER = logging.getLogger(__name__)
@@ -107,6 +110,7 @@ class AutoprepCoordinator:
                     try:
                         with db.connect() as connection:
                             ensure_autoprep_schema(connection)
+                            _queue_due_applicant_profile_reprep(connection)
                             job = claim_next_autoprep_job(connection)
                     except Exception:  # noqa: BLE001 - keep the durable queue alive.
                         LOGGER.exception("Autoprep coordinator could not claim queued work")
@@ -1022,6 +1026,27 @@ def queue_all_prepped_cover_letter_regenerations(
         connection.rollback()
         raise
     return _bulk_cover_letter_result(connection, saved)
+
+
+def _queue_due_applicant_profile_reprep(connection: turso.Connection) -> bool:
+    raw_due_at = get_config_value(connection, APPLICANT_PROFILE_REPREP_DUE_CONFIG_KEY)
+    if not raw_due_at:
+        return False
+    try:
+        due_at = float(raw_due_at)
+    except ValueError:
+        set_config_value(connection, APPLICANT_PROFILE_REPREP_DUE_CONFIG_KEY, "")
+        return False
+    if due_at > time.time():
+        return False
+
+    queue_all_prepped_cover_letter_regenerations(
+        connection,
+        idempotency_key=f"profile-settings-{raw_due_at}",
+    )
+    if get_config_value(connection, APPLICANT_PROFILE_REPREP_DUE_CONFIG_KEY) == raw_due_at:
+        set_config_value(connection, APPLICANT_PROFILE_REPREP_DUE_CONFIG_KEY, "")
+    return True
 
 
 def clear_autoprep_instruction(

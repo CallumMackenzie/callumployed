@@ -22,9 +22,14 @@ from callumployed.central.sync import pull_companies, pull_roles, resolve_unlink
 from callumployed.data import db
 from callumployed.data import repositories as repo
 from callumployed.data.models import Company, CompanyCareerPage, Role, RoleStatus
+from callumployed.services.app_settings import (
+    configured_browser_profile_manager,
+    configured_llm_settings,
+    get_settings,
+    set_setting,
+)
 from callumployed.services.scan_workflow import scan_company as run_scan_company
 from callumployed.services.scan_workflow import scan_url as run_scan_url
-from callumployed.webscraping.profile_manager import BrowserProfileManager
 
 mcp = FastMCP("callumployed")
 
@@ -78,6 +83,7 @@ def _config_payload() -> dict[str, Any]:
         central = _central_status_payload(connection)
         payload = {
             "values": values,
+            "settings": get_settings(connection),
             "include_graduate_degree_roles": repo.should_include_graduate_degree_roles(
                 connection
             ),
@@ -396,6 +402,15 @@ def show_config() -> dict[str, Any]:
 
 
 @mcp.tool()
+def set_config(key: str, value: str | bool) -> dict[str, Any]:
+    """Set a web setting; profile changes refresh prep after 30s, never submit/apply."""
+    _ensure_initialized()
+    with db.connect() as connection:
+        saved = set_setting(connection, key, value)
+    return {"key": key, "value": saved, "config": _config_payload()}
+
+
+@mcp.tool()
 def update_config(
     include_graduate_degree_roles: bool | None = None,
     include_hardware_roles: bool | None = None,
@@ -499,9 +514,16 @@ def central_sync() -> dict[str, Any]:
 async def scan_url(url: str) -> dict[str, Any]:
     """Scan a careers page URL and return discovered job links."""
     _ensure_initialized()
+    connection = db.connect()
+    try:
+        browser_profile_manager = configured_browser_profile_manager(connection)
+        llm_settings = configured_llm_settings(connection)
+    finally:
+        connection.close()
     result = await run_scan_url(
         url,
-        browser_profile_manager=BrowserProfileManager(),
+        browser_profile_manager=browser_profile_manager,
+        llm_settings=llm_settings,
     )
     return _to_json_object(result)
 
@@ -510,11 +532,17 @@ async def scan_url(url: str) -> dict[str, Any]:
 async def scan_company(company_id: int, retry_rejected_roles: bool = False) -> dict[str, Any]:
     """Scan a saved company's careers pages."""
     _ensure_initialized()
-    with db.connect() as connection:
+    connection = db.connect()
+    try:
         company = repo.get_company(connection, company_id)
+        browser_profile_manager = configured_browser_profile_manager(connection)
+        llm_settings = configured_llm_settings(connection)
+    finally:
+        connection.close()
     result = await run_scan_company(
         company,
-        browser_profile_manager=BrowserProfileManager(),
+        browser_profile_manager=browser_profile_manager,
+        llm_settings=llm_settings,
         retry_rejected_roles=retry_rejected_roles,
     )
     return {"company": _to_json(company), "scan": _to_json(result)}

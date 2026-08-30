@@ -7,6 +7,7 @@ from typer.testing import CliRunner
 from callumployed import cli as cli_module
 from callumployed.central.config import DEFAULT_CENTRAL_API_URL
 from callumployed.cli import app
+from callumployed.config import LlmSettings
 from callumployed.data.models import (
     Company,
     Role,
@@ -421,16 +422,52 @@ def test_config_show_prints_defaults(tmp_path: Path) -> None:
     show_result = runner.invoke(app, ["config", "show"], env=env)
 
     assert show_result.exit_code == 0
-    assert show_result.output == (
-        "No app config set.\n"
-        "include_graduate_degree_roles: false (default)\n"
-        "include_hardware_roles: false (default)\n"
-        "require_software_keywords: true (default)\n"
-        "internship_mode: true (default)\n"
-        "location_filter: all (default)\n"
-        "scan_schedule_enabled: false (default)\n"
-        "scan_schedule_time: 04:30 (default)\n"
-    )
+    assert "No app config set." in show_result.output
+    assert "applicant_first_name:  (default)" in show_result.output
+    assert "scan_headless: false (default)" in show_result.output
+    assert "include_graduate_degree_roles: false (default)" in show_result.output
+    assert "scan_schedule_enabled: false (default)" in show_result.output
+    assert "scan_schedule_time: 04:30 (default)" in show_result.output
+
+
+def test_config_set_and_scan_use_persisted_headless_setting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "config-set-scan.sqlite3"
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    observed_headless: list[bool] = []
+    observed_providers: list[str] = []
+
+    async def fake_scan_url(
+        url: str,
+        *,
+        browser_profile_manager: object,
+        llm_settings: LlmSettings,
+    ) -> CareersPageScanResult:
+        observed_headless.append(bool(browser_profile_manager.headless))
+        observed_providers.append(str(llm_settings.provider))
+        return CareersPageScanResult(
+            source_url=url,
+            final_url=url,
+            title="Careers",
+            candidates_scanned=0,
+            confidence=ExtractionConfidence.HIGH,
+            links=[],
+        )
+
+    monkeypatch.setattr(cli_module, "run_scan_url", fake_scan_url)
+
+    save_result = runner.invoke(app, ["config", "set", "scan_headless", "false"], env=env)
+    provider_result = runner.invoke(app, ["config", "set", "llm_provider", "codex"], env=env)
+    scan_result = runner.invoke(app, ["scan", "url", "https://example.com"], env=env)
+
+    assert save_result.exit_code == 0
+    assert save_result.output == "scan_headless: false\n"
+    assert provider_result.exit_code == 0
+    assert scan_result.exit_code == 0
+    assert observed_headless == [False]
+    assert observed_providers == ["codex"]
 
 
 def test_config_scan_schedule_commands(tmp_path: Path) -> None:
@@ -805,6 +842,7 @@ def test_scan_url_command_prints_discovered_links(monkeypatch: pytest.MonkeyPatc
         url: str,
         *,
         browser_profile_manager: object,
+        llm_settings: LlmSettings,
     ) -> CareersPageScanResult:
         return CareersPageScanResult(
             source_url=url,
@@ -844,6 +882,7 @@ def test_scan_company_uses_saved_career_page(
         company: Company,
         *,
         browser_profile_manager: object,
+        llm_settings: LlmSettings,
     ) -> dict[str, object]:
         url = "https://example.com/careers"
         result = CareersPageScanResult(
@@ -917,6 +956,7 @@ def test_scan_company_prints_scan_summary_metrics(
         company: Company,
         *,
         browser_profile_manager: object,
+        llm_settings: LlmSettings,
     ) -> dict[str, object]:
         assert company.name == "Acme"
         url = "https://example.com/careers"
@@ -1013,6 +1053,7 @@ def test_scan_company_rejects_removed_agent_flag(
         company: Company,
         *,
         browser_profile_manager: object,
+        llm_settings: LlmSettings,
     ) -> dict[str, object]:
         assert company.name == "Acme"
         result = CareersPageScanResult(
@@ -1044,6 +1085,7 @@ def test_scan_company_calls_service_with_company_context(
         company: Company,
         *,
         browser_profile_manager: object,
+        llm_settings: LlmSettings,
     ) -> dict[str, object]:
         company_names.append(company.name)
         result = CareersPageScanResult(
@@ -1075,6 +1117,7 @@ def test_scan_company_can_retry_rejected_roles(
         company: Company,
         *,
         browser_profile_manager: object,
+        llm_settings: LlmSettings,
         retry_rejected_roles: bool = False,
     ) -> dict[str, object]:
         assert company.name == "Acme"
@@ -1108,6 +1151,7 @@ def test_scan_company_uses_managed_browser_profiles(
         company: Company,
         *,
         browser_profile_manager: object,
+        llm_settings: LlmSettings,
     ) -> dict[str, object]:
         assert company.name == "Tesla"
         assert browser_profile_manager is not None
@@ -1145,6 +1189,7 @@ def test_scan_all_scans_saved_companies_sequentially(
         company: Company,
         *,
         browser_profile_manager: object,
+        llm_settings: LlmSettings,
     ) -> dict[str, object]:
         url = (
             "https://example.com/careers"
