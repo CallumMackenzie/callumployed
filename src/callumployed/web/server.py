@@ -452,6 +452,60 @@ def _mark_latest_running_scan_failed(company_id: int, error_message: str) -> Non
 SCAN_COORDINATOR = ScanCoordinator()
 
 
+class DebouncedAction:
+    """Run one background action after changes have been quiet for a fixed window."""
+
+    def __init__(self, callback: Any, *, delay_seconds: float) -> None:
+        self._callback = callback
+        self._delay_seconds = delay_seconds
+        self._lock = threading.Lock()
+        self._timer: threading.Timer | None = None
+        self._generation = 0
+        self._closed = False
+
+    def schedule(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            if self._timer is not None:
+                self._timer.cancel()
+            self._generation += 1
+            generation = self._generation
+            self._timer = threading.Timer(
+                self._delay_seconds,
+                lambda: self._run(generation),
+            )
+            self._timer.daemon = True
+            self._timer.start()
+
+    def cancel(self) -> None:
+        with self._lock:
+            self._generation += 1
+            timer = self._timer
+            self._timer = None
+        if timer is not None:
+            timer.cancel()
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            self._generation += 1
+            timer = self._timer
+            self._timer = None
+        if timer is not None:
+            timer.cancel()
+
+    def _run(self, generation: int) -> None:
+        with self._lock:
+            if self._closed or generation != self._generation:
+                return
+            self._timer = None
+        try:
+            self._callback()
+        except Exception:
+            LOGGER.exception("Debounced background action failed")
+
+
 class DailyScanScheduler:
     def __init__(self) -> None:
         self._stop = threading.Event()
@@ -2597,9 +2651,15 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
 
             payload = validated_payload
+            applicant_profile_changed = False
             try:
                 with db.connect() as connection:
                     db.run_migrations(connection)
+                    applicant_profile_changed = any(
+                        key in payload
+                        and (get_config_value(connection, key) or "") != payload[key]
+                        for key in APPLICANT_PROFILE_CONFIG_KEYS
+                    )
                     if "include_graduate_degree_roles" in payload:
                         set_include_graduate_degree_roles(
                             connection,
@@ -2700,6 +2760,8 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 self.send_error(HTTPStatus.SERVICE_UNAVAILABLE, str(error))
                 return
             SCAN_SCHEDULER.wake()
+            if applicant_profile_changed:
+                _schedule_applicant_profile_reprep()
 
             self._send_json(build_config_payload())
 
@@ -2903,7 +2965,38 @@ def _populate_missing_applicant_profile_from_resume() -> dict[str, str]:
             if value:
                 set_config_value(connection, key, value)
                 populated[key] = value
+    if populated:
+        _schedule_applicant_profile_reprep()
     return populated
+
+
+def _queue_applicant_profile_reprep() -> None:
+    """Refresh every ready cover letter so it uses the latest applicant profile."""
+    idempotency_key = f"applicant-profile-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%f')}"
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        ensure_autoprep_schema(connection)
+        result = queue_all_prepped_cover_letter_regenerations(
+            connection,
+            idempotency_key=idempotency_key,
+        )
+    if result["queued_count"]:
+        LOGGER.info(
+            "Queued %s cover letters after applicant profile changes",
+            result["queued_count"],
+        )
+        _wake_autoprep_coordinator()
+
+
+APPLICANT_PROFILE_REPREP_SCHEDULER = DebouncedAction(
+    _queue_applicant_profile_reprep,
+    delay_seconds=30,
+)
+
+
+def _schedule_applicant_profile_reprep() -> None:
+    if AUTOPREP_COORDINATOR is not None:
+        APPLICANT_PROFILE_REPREP_SCHEDULER.schedule()
 
 
 def build_config_payload() -> dict[str, Any]:
@@ -6921,8 +7014,9 @@ def run_server(host: str, port: int) -> None:
     try:
         server.serve_forever()
     finally:
-        SCAN_SCHEDULER.stop()
         AUTOPREP_COORDINATOR.stop_claiming()
+        APPLICANT_PROFILE_REPREP_SCHEDULER.close()
+        SCAN_SCHEDULER.stop()
         AUTOPREP_COORDINATOR.wait_for_workers()
         _close_server(server)
 

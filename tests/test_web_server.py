@@ -64,6 +64,49 @@ from callumployed.web.server import (
 runner = CliRunner()
 
 
+def test_debounced_action_collapses_changes_into_one_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timers: list[SimpleNamespace] = []
+
+    def fake_timer(_delay: float, callback: object) -> SimpleNamespace:
+        timer = SimpleNamespace(
+            callback=callback,
+            daemon=False,
+            cancelled=False,
+            start=lambda: None,
+        )
+        timer.cancel = lambda: setattr(timer, "cancelled", True)
+        timers.append(timer)
+        return timer
+
+    monkeypatch.setattr(web_server.threading, "Timer", fake_timer)
+    calls: list[bool] = []
+    action = web_server.DebouncedAction(lambda: calls.append(True), delay_seconds=30)
+
+    action.schedule()
+    action.schedule()
+    action.schedule()
+    assert [timer.cancelled for timer in timers] == [True, True, False]
+
+    timers[0].callback()
+    timers[1].callback()
+    assert calls == []
+
+    timers[-1].callback()
+    assert calls == [True]
+
+    action.schedule()
+    final_timer = timers[-1]
+    action.close()
+    action.schedule()
+    final_timer.callback()
+
+    assert final_timer.cancelled is True
+    assert len(timers) == 4
+    assert calls == [True]
+
+
 def _add_positioned_text(
     writer: PdfWriter,
     page: object,
@@ -397,6 +440,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="settings-profile-options"' in markup
         assert 'id="settings-profile-extract"' in markup
         assert "selected AI provider only when you click this button" in markup
+        assert "saved profile changes refresh prepared cover letters after 30 seconds" in markup
+        assert "never submits an application or marks a role Applied" in markup
         assert 'fetch("/api/config/extract-profile", {method: "POST"})' in app_javascript
         assert '<button type="submit">save settings</button>' in markup
         assert "input[data-setting-text][name]" in app_javascript
@@ -442,8 +487,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=react-ts-20260830-31" in index_markup
-        assert "/assets/build/app.js?v=react-ts-20260830-31" in index_markup
+        assert "/assets/app.css?v=react-ts-20260830-32" in index_markup
+        assert "/assets/build/app.js?v=react-ts-20260830-32" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -3261,6 +3306,13 @@ def test_config_endpoint_updates_settings(
     monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
     monkeypatch.setenv("CALLUMPLOYED_LLM_PROVIDER", "openai")
     monkeypatch.setattr(web_server, "get_central_passkey", lambda: None)
+    scheduled_repreps: list[bool] = []
+    monkeypatch.setattr(web_server, "AUTOPREP_COORDINATOR", object())
+    monkeypatch.setattr(
+        web_server,
+        "APPLICANT_PROFILE_REPREP_SCHEDULER",
+        SimpleNamespace(schedule=lambda: scheduled_repreps.append(True)),
+    )
     server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -3347,6 +3399,7 @@ def test_config_endpoint_updates_settings(
             "scan_schedule_enabled": True,
             "scan_schedule_time": "06:15",
         }
+        assert scheduled_repreps == [True]
         assert web_server._configured_browser_profile_manager().headless is False
     finally:
         server.shutdown()
