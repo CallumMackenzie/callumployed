@@ -151,6 +151,43 @@ def test_prompt_contains_complete_material_and_source_policy() -> None:
         assert phrase.lower() in prompt.lower()
 
 
+def test_prompt_bounds_every_source_category_without_dropping_its_edges() -> None:
+    def oversized(name: str) -> str:
+        return f"{name}_HEAD_" + ("x" * 220_000) + f"_{name}_TAIL"
+
+    prompt = generation.build_application_prompt(
+        task="answer_question",
+        role={"id": 4, "title": "Engineer", "description": oversized("ROLE")},
+        question=oversized("QUESTION"),
+        master_resume=oversized("MASTER"),
+        tailored_resume=oversized("TAILORED"),
+        cover_letter=oversized("COVER"),
+        previous_output=oversized("PREVIOUS"),
+        deterministic_instructions=oversized("INSTRUCTIONS"),
+        cover_letter_examples=[{"content": oversized("EXAMPLE")}],
+        experience_sections=[{"content": oversized("EXPERIENCE")}],
+        role_context=[{"content": oversized("CONTEXT")}],
+        backend="hermes",
+    )
+
+    assert len(prompt) <= generation.MAX_APPLICATION_CONTEXT_CHARS
+    for name in (
+        "ROLE",
+        "QUESTION",
+        "MASTER",
+        "TAILORED",
+        "COVER",
+        "PREVIOUS",
+        "INSTRUCTIONS",
+        "EXAMPLE",
+        "EXPERIENCE",
+        "CONTEXT",
+    ):
+        assert f"{name}_HEAD" in prompt
+        assert f"{name}_TAIL" in prompt
+    assert prompt.count("[... truncated by Callumployed ...]") == 10
+
+
 def test_runtime_availability_missing_is_nonfatal(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("callumployed.services.hermes_generation.shutil.which", lambda _name: None)
     monkeypatch.delenv("CALLUMPLOYED_HERMES_EXECUTABLE", raising=False)

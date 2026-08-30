@@ -17,6 +17,18 @@ ApplicationBackend = Literal["openai", "hermes", "openclaw"]
 SUPPORTED_APPLICATION_BACKENDS = frozenset({"openai", "hermes", "openclaw"})
 DEFAULT_APPLICATION_BACKEND: ApplicationBackend = "openai"
 MAX_APPLICATION_CONTEXT_CHARS = 180_000
+TRUNCATION_MARKER = "\n[... truncated by Callumployed ...]\n"
+
+
+def _bounded_text(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    if limit <= len(TRUNCATION_MARKER):
+        return TRUNCATION_MARKER[:limit]
+    available = limit - len(TRUNCATION_MARKER)
+    head_length = available * 2 // 3
+    tail_length = available - head_length
+    return value[:head_length] + TRUNCATION_MARKER + value[-tail_length:]
 
 
 def clean_application_generation_backend(value: str | None) -> ApplicationBackend:
@@ -59,7 +71,7 @@ def build_application_prompt(
         "resume": '{"latex":"complete LaTeX document","summary":"short summary","sources":[]}',
         "cover_letter": '{"latex":"complete LaTeX document","example_ids":[],"sources":[]}',
     }.get(task, '{"answer":"..."}')
-    sections = [
+    fixed_sections = [
         "CALLUMPLOYED APPLICATION GENERATION TASK",
         f"Task: {task}",
         "Return strict JSON only, with no markdown fence or commentary.",
@@ -73,25 +85,45 @@ def build_application_prompt(
             "facts or the saved job description. If sources conflict, preserve the exact saved "
             "role and explicitly note the conflict."
         ),
-        f"Deterministic Callumployed instructions:\n{deterministic_instructions or '(none)'}",
-        f"Exact saved role JSON:\n{json.dumps(role, ensure_ascii=False, default=str)}",
-        f"Question:\n{question or '(not applicable)'}",
-        f"Master resume (authoritative applicant document):\n{master_resume}",
-        f"Current tailored resume:\n{tailored_resume or '(none)'}",
-        f"Current cover letter:\n{cover_letter or '(none)'}",
-        f"Prior generated output for bounded revision:\n{previous_output or '(none)'}",
-        "Saved cover-letter examples:\n" + _json_material(cover_letter_examples),
-        "All bounded indexed experience-note sections:\n" + _json_material(experience_sections),
-        "Saved role-context chunks:\n" + _json_material(role_context),
     ]
-    prompt = "\n\n".join(sections)
-    if len(prompt) <= MAX_APPLICATION_CONTEXT_CHARS:
-        return prompt
-    # Keep authority/policy, exact role, and current documents intact; trim bulk evidence tail only.
-    fixed = "\n\n".join(sections[:13])
-    remaining = max(0, MAX_APPLICATION_CONTEXT_CHARS - len(fixed) - 80)
-    bounded = _json_material(experience_sections)[:remaining]
-    return f"{fixed}\n\nBounded additional saved materials (truncated by Callumployed):\n{bounded}"
+    variable_sections = [
+        (
+            "Deterministic Callumployed instructions:",
+            deterministic_instructions or "(none)",
+            8,
+        ),
+        (
+            "Exact saved role JSON:",
+            json.dumps(role, ensure_ascii=False, default=str),
+            20,
+        ),
+        ("Question:", question or "(not applicable)", 5),
+        ("Master resume (authoritative applicant document):", master_resume, 45),
+        ("Current tailored resume:", tailored_resume or "(none)", 18),
+        ("Current cover letter:", cover_letter or "(none)", 18),
+        ("Prior generated output for bounded revision:", previous_output or "(none)", 18),
+        ("Saved cover-letter examples:", _json_material(cover_letter_examples), 10),
+        (
+            "All bounded indexed experience-note sections:",
+            _json_material(experience_sections),
+            15,
+        ),
+        ("Saved role-context chunks:", _json_material(role_context), 10),
+    ]
+    empty_variable_sections = [f"{label}\n" for label, _value, _weight in variable_sections]
+    overhead = len("\n\n".join([*fixed_sections, *empty_variable_sections]))
+    available = MAX_APPLICATION_CONTEXT_CHARS - overhead
+    if available < 0:
+        raise RuntimeError("Application prompt fixed contract exceeds its context ceiling.")
+    total_weight = sum(weight for _label, _value, weight in variable_sections)
+    bounded_sections = [
+        f"{label}\n{_bounded_text(value, available * weight // total_weight)}"
+        for label, value, weight in variable_sections
+    ]
+    prompt = "\n\n".join([*fixed_sections, *bounded_sections])
+    if len(prompt) > MAX_APPLICATION_CONTEXT_CHARS:
+        raise RuntimeError("Application prompt exceeded its context ceiling after budgeting.")
+    return prompt
 
 
 def build_public_research_prompt(*, role: dict[str, Any]) -> str:
