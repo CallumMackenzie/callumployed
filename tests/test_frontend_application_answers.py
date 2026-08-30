@@ -67,5 +67,9 @@ def test_application_questions_styles_and_cache_keys_are_versioned() -> None:
     assert ".application-questions-workspace" in styles
     assert ".application-answer-record" in styles
     assert ".application-question-composer" in styles
+    assert ".application-question-composer textarea" in styles
+    assert ".application-question-submit" in styles
+    assert "padding-top: 20px" in styles
+    assert "#close-prepped" in styles
     assert "text-transform: none" in styles
-    assert index.count("react-ts-20260830-28") == 2
+    assert index.count("react-ts-20260830-29") == 2

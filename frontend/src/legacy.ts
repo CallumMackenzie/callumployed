@@ -780,11 +780,12 @@ function renderInterestedActions(job) {
   return `
     <div class="job-actions" aria-label="interested role actions">
       <button class="job-action success" type="button" data-prep-role-id="${job.id}">prep</button>
-      <button class="job-action success" type="button" data-autoprep-role-id="${job.id}">autoprep</button>
+      <button class="job-action success" type="button" data-autoprep-role-id="${job.id}">${job.autoprep_started ? "view / regenerate prep" : "autoprep"}</button>
       <button class="job-action" type="button" data-role-id="${job.id}" data-status="applied">applied</button>
       <button class="job-action" type="button" data-role-id="${job.id}" data-status="disinterested">disinterested</button>
       <button class="job-action danger" type="button" data-role-id="${job.id}" data-status="closed">closed</button>
     </div>
+    ${job.autoprep_started ? '<p class="job-prepped-note">already prepped</p>' : ""}
   `;
 }
 
@@ -2354,6 +2355,15 @@ statusListEl.addEventListener("click", (event) => {
 
   const autoprepAction = event.target.closest("[data-autoprep-role-id]");
   if (autoprepAction) {
+    const trackedRole = getInterestedJobs().find(
+      (role) => String(role.id) === String(autoprepAction.dataset.autoprepRoleId),
+    );
+    if (trackedRole?.autoprep_started) {
+      openExistingPreppedRole(trackedRole.id).catch(() => {
+        toolbarSummary.textContent = "could not open that prepared role. try again.";
+      });
+      return;
+    }
     queueRoleForAutoprep(autoprepAction.dataset.autoprepRoleId).catch(() => {
       toolbarSummary.textContent = "could not add that role to Autoprep. try again.";
     });
@@ -2936,6 +2946,10 @@ async function renderPrepRole(message = "") {
   prepView.querySelectorAll(".review-action").forEach((button) => {
     button.disabled = total === 0;
   });
+  const autoprepButton = prepView.querySelector('[data-prep-action="autoprep"]');
+  if (autoprepButton) {
+    autoprepButton.textContent = current?.autoprep_started ? "view / regenerate prep" : "autoprep";
+  }
 
   if (!current) {
     prepCard.innerHTML = `
@@ -2977,6 +2991,7 @@ async function renderPrepRole(message = "") {
         </button>
       </nav>
     </section>
+    ${current.autoprep_started ? '<p class="prep-autoprep-note">already prepped — open Prepped Roles to view or regenerate its documents.</p>' : ""}
     <div class="prep-workspace">
       ${renderPrepResume(current)}
       ${renderPrepCoverLetter(current)}
@@ -3422,6 +3437,10 @@ async function handlePrepAction(action) {
 
   if (action === "autoprep") {
     try {
+      if (current.autoprep_started) {
+        await openExistingPreppedRole(current.id);
+        return;
+      }
       await queueRoleForAutoprep(current.id);
     } catch {
       renderPrepRole("could not add that role to Autoprep. try again.");
@@ -3669,6 +3688,14 @@ function autoprepActionKey(prefix) {
   return `${prefix}-${suffix}`;
 }
 
+async function openExistingPreppedRole(roleId) {
+  const numericRoleId = Number(roleId);
+  if (!Number.isInteger(numericRoleId) || numericRoleId <= 0) return;
+  selectedPreppedRoleId = numericRoleId;
+  if (!prepView.hidden) closePrepView();
+  await openPreppedView();
+}
+
 async function queueRoleForAutoprep(roleId) {
   const numericRoleId = Number(roleId);
   if (!Number.isInteger(numericRoleId) || numericRoleId <= 0) return null;
@@ -3698,6 +3725,13 @@ async function queueRoleForAutoprep(roleId) {
       preppedJobs.map((job) => [Number(job.role_id), job]),
     );
     acceptedJobs.forEach((job) => seededJobsByRoleId.set(Number(job.role_id), job));
+    const acceptedForRole = acceptedJobs.find((job) => Number(job.role_id) === numericRoleId);
+    const trackedRole = getInterestedJobs().find((role) => Number(role.id) === numericRoleId);
+    if (acceptedForRole && trackedRole && trackerData) {
+      trackedRole.autoprep_started = true;
+      trackedRole.autoprep_status = acceptedForRole.overall_status ?? "queued";
+      render(trackerData);
+    }
     selectedPreppedRoleId = numericRoleId;
     if (!prepView.hidden) closePrepView();
     await openPreppedView({seedJobs: [...seededJobsByRoleId.values()]});
@@ -3707,7 +3741,10 @@ async function queueRoleForAutoprep(roleId) {
     buttons.forEach((button) => {
       button.disabled = false;
       button.removeAttribute("aria-busy");
-      button.textContent = "autoprep";
+      const trackedRole = getInterestedJobs().find(
+        (role) => Number(role.id) === numericRoleId,
+      );
+      button.textContent = trackedRole?.autoprep_started ? "view / regenerate prep" : "autoprep";
     });
   }
 }
@@ -3967,9 +4004,9 @@ function renderPreppedDetail() {
     </div>
     ${renderApplicationQuestionsWorkspace(job)}
     <div class="prepped-detail-actions">
-      <button type="button" data-prepped-nav="previous" ${currentIndex <= 0 ? "disabled" : ""}>Previous</button>
-      <button type="button" data-prepped-nav="next" ${currentIndex >= preppedJobs.length - 1 ? "disabled" : ""}>Next</button>
-      <button type="button" data-autoprep-open-folder ${job.artifact_directory ? "" : "disabled"}>Open Documents Folder</button>
+      <button class="prepped-nav-action" type="button" data-prepped-nav="previous" ${currentIndex <= 0 ? "disabled" : ""}>Previous</button>
+      <button class="prepped-nav-action" type="button" data-prepped-nav="next" ${currentIndex >= preppedJobs.length - 1 ? "disabled" : ""}>Next</button>
+      <button class="prepped-folder-action" type="button" data-autoprep-open-folder ${job.artifact_directory ? "" : "disabled"}>Open Documents Folder</button>
       <button class="prepped-disinterested" type="button" data-autoprep-disinterested aria-busy="${movingToDisinterested ? "true" : "false"}" ${disinterestedUnavailable ? "disabled" : ""} title="${autoprepJobIsActive(job) ? "Wait for preparation to finish before moving this role" : "Move this role out of Prepped"}">${movingToDisinterested ? "Moving to Disinterested..." : "Move to Disinterested"}</button>
       <button class="success" type="button" data-autoprep-applied ${job.overall_status === "ready" ? "" : "disabled"}>Applied</button>
     </div>
@@ -4005,7 +4042,7 @@ function renderApplicationQuestionsWorkspace(job) {
     <div class="application-question-composer">
       <label for="application-question-${roleId}">Question</label>
       <textarea id="application-question-${roleId}" data-application-question-draft rows="4" placeholder="Paste an application question…" ${pending ? "disabled" : ""}>${escapeHtml(draft)}</textarea>
-      <div><small>Answers are saved to this role. Asking never changes its status.</small><button type="button" data-application-question-submit aria-busy="${pending ? "true" : "false"}" ${pending || !draft.trim() ? "disabled" : ""}>${pending ? "Generating…" : "Generate answer"}</button></div>
+      <div><small>Answers are saved to this role. Asking never changes its status.</small><button class="application-question-submit" type="button" data-application-question-submit aria-busy="${pending ? "true" : "false"}" ${pending || !draft.trim() ? "disabled" : ""}>${pending ? "Generating…" : "Generate answer"}</button></div>
     </div>
   </section>`;
 }

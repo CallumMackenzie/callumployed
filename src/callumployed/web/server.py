@@ -444,9 +444,16 @@ class LocalThreadingHTTPServer(ThreadingHTTPServer):
 
 
 def build_tracker_payload(query: str | None = None) -> dict[str, Any]:
+    autoprep_status_by_role_id: dict[int, str | None] = {}
     with db.connect() as connection:
         stats = get_tracking_stats(connection)
         roles = list_role_items(connection, query=query)
+        ensure_autoprep_schema(connection)
+        autoprep_status_by_role_id = {
+            int(role["id"]): role.get("preparation_status")
+            for role in list_interested_autoprep_roles(connection)
+            if isinstance(role.get("id"), int)
+        }
         latest_scan_ids_by_company: dict[int, int] = {}
         latest_scan_role_ids_by_company: dict[int, set[int]] = {}
         latest_scan_role_urls_by_company: dict[int, set[str]] = {}
@@ -488,6 +495,11 @@ def build_tracker_payload(query: str | None = None) -> dict[str, Any]:
         payload["prep_started"] = (
             _role_has_prep_started(role.id) if isinstance(role.id, int) else False
         )
+        autoprep_status = (
+            autoprep_status_by_role_id.get(role.id) if isinstance(role.id, int) else None
+        )
+        payload["autoprep_started"] = autoprep_status is not None
+        payload["autoprep_status"] = autoprep_status
         grouped_roles[role.role_status.value].append(payload)
     grouped_roles[RoleStatus.INTERESTED.value].sort(
         key=lambda role: bool(role.get("prep_started")),

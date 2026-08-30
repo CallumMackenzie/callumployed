@@ -438,8 +438,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=react-ts-20260830-28" in index_markup
-        assert "/assets/build/app.js?v=react-ts-20260830-28" in index_markup
+        assert "/assets/app.css?v=react-ts-20260830-29" in index_markup
+        assert "/assets/build/app.js?v=react-ts-20260830-29" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -534,12 +534,19 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'setting.autocomplete ?? "name"' in app_javascript
         assert 'aria-label="disinterested role actions"' in app_javascript
         assert 'data-autoprep-role-id="${job.id}"' in app_javascript
-        assert '>autoprep</button>' in app_javascript
+        assert 'job.autoprep_started ? "view / regenerate prep" : "autoprep"' in app_javascript
+        assert 'class="job-prepped-note">already prepped</p>' in app_javascript
+        assert 'current?.autoprep_started ? "view / regenerate prep" : "autoprep"' in app_javascript
+        assert 'class="prep-autoprep-note">already prepped' in app_javascript
+        assert "if (trackedRole?.autoprep_started)" in app_javascript
+        assert "if (current.autoprep_started)" in app_javascript
+        assert "await openExistingPreppedRole(current.id);" in app_javascript
         assert 'async function queueRoleForAutoprep(roleId)' in app_javascript
         assert 'if (queuingAutoprepRoleIds.has(numericRoleId)) return null;' in app_javascript
         assert 'queuingAutoprepRoleIds.add(numericRoleId);' in app_javascript
         assert 'body: JSON.stringify({' in app_javascript
         assert 'role_ids: [numericRoleId]' in app_javascript
+        assert "trackedRole.autoprep_started = true;" in app_javascript
         assert 'selectedPreppedRoleId = numericRoleId;' in app_javascript
         assert (
             'await openPreppedView({seedJobs: [...seededJobsByRoleId.values()]});'
@@ -3928,6 +3935,15 @@ def test_tracker_payload_marks_and_sorts_roles_with_prep_started(
     for role_id in (1, 2, 3):
         runner.invoke(app, ["roles", "set-status", str(role_id), "interested"], env=env)
 
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        autoprep_service.ensure_autoprep_schema(connection)
+        autoprep_service.enqueue_autoprep_jobs(
+            connection,
+            [1],
+            idempotency_key="tracker-existing-autoprep",
+        )
+
     cover_letter_dir = resume_root / "role-2"
     cover_letter_dir.mkdir(parents=True)
     (cover_letter_dir / "cover-letter.tex").write_text("\\documentclass{letter}")
@@ -3948,6 +3964,14 @@ def test_tracker_payload_marks_and_sorts_roles_with_prep_started(
         "Cover Letter Prep": True,
         "Resume Prep": True,
         "No Prep": False,
+    }
+    autoprep_by_title = {
+        job["title"]: job["autoprep_started"] for job in interested["jobs"]
+    }
+    assert autoprep_by_title == {
+        "Cover Letter Prep": False,
+        "Resume Prep": False,
+        "No Prep": True,
     }
 
 
