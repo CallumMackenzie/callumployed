@@ -91,8 +91,8 @@ class AutoprepCoordinator:
         """Wait until active workers have recorded their final durable state."""
         if self._executor is not None:
             # Every submitted future owns a persisted running claim. Let queued
-            # executor futures start so the stopped Hermes runner can mark them
-            # Interrupted; canceling them would strand the claim as running.
+            # executor futures start so each worker can record its terminal state;
+            # canceling them would strand the durable claim as running.
             self._executor.shutdown(wait=True, cancel_futures=False)
 
     def stop(self) -> None:
@@ -161,8 +161,8 @@ def ensure_autoprep_schema(connection: turso.Connection) -> None:
             worker_state TEXT NOT NULL DEFAULT 'queued',
             resume_status TEXT NOT NULL DEFAULT 'queued',
             cover_letter_status TEXT NOT NULL DEFAULT 'queued',
-            -- Legacy Hermes session references are retained for historical jobs only.
-            -- Direct LangChain generation never reads or writes these values.
+            -- Legacy external-runtime session references remain as historical metadata only.
+            -- OpenAI generation never reads or writes these values.
             resume_session_id TEXT,
             cover_letter_session_id TEXT,
             resume_artifact_path TEXT,
@@ -225,7 +225,7 @@ def ensure_autoprep_schema(connection: turso.Connection) -> None:
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             completed_at TEXT,
             FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE,
-            CHECK (backend IN ('openai', 'hermes', 'openclaw')),
+            CHECK (backend = 'openai'),
             CHECK (status IN ('pending', 'completed', 'failed'))
         );
         CREATE INDEX IF NOT EXISTS idx_application_answers_role
@@ -267,8 +267,8 @@ def create_application_answer(
         raise ValueError("An application question is required.")
     if len(clean_question) > 4000:
         raise ValueError("Application question must be 4000 characters or fewer.")
-    if backend not in {"openai", "hermes", "openclaw"}:
-        raise ValueError("Unsupported application answer backend.")
+    if backend != "openai":
+        raise ValueError("Application answers use openai only.")
     role = connection.execute("SELECT id FROM roles WHERE id = ?", (role_id,)).fetchone()
     if role is None:
         raise ValueError(f"Role {role_id} was not found.")
@@ -307,8 +307,8 @@ def queue_application_answer_regeneration(
     *,
     backend: str,
 ) -> dict[str, Any]:
-    if backend not in {"openai", "hermes", "openclaw"}:
-        raise ValueError("Unsupported application answer backend.")
+    if backend != "openai":
+        raise ValueError("Application answers use openai only.")
     try:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
@@ -342,12 +342,11 @@ def queue_application_answer_regeneration(
         connection.execute(
             """
             UPDATE application_answers
-            SET backend = ?, status = 'pending', error = NULL,
-                session_id = CASE WHEN backend = ? THEN session_id ELSE NULL END,
+            SET backend = ?, status = 'pending', error = NULL, session_id = NULL,
                 completed_at = NULL, updated_at = datetime('now')
             WHERE id = ? AND role_id = ?
             """,
-            (backend, backend, answer_id, role_id),
+            (backend, answer_id, role_id),
         )
         connection.commit()
     except Exception:
@@ -390,21 +389,19 @@ def complete_application_answer(
     answer_id: int,
     *,
     answer: str,
-    session_id: str | None = None,
     sources: object = None,
     research: object = None,
 ) -> dict[str, Any]:
     connection.execute(
         """
         UPDATE application_answers
-        SET answer = ?, status = 'completed', error = NULL, session_id = ?,
+        SET answer = ?, status = 'completed', error = NULL, session_id = NULL,
             source_metadata_json = ?, research_metadata_json = ?,
             completed_at = datetime('now'), updated_at = datetime('now')
         WHERE id = ? AND status = 'pending'
         """,
         (
             answer.strip(),
-            session_id,
             json.dumps(sources, ensure_ascii=False) if sources is not None else None,
             json.dumps(research, ensure_ascii=False) if research is not None else None,
             answer_id,
@@ -447,6 +444,7 @@ def recover_interrupted_application_answers(connection: turso.Connection) -> int
 
 def _application_answer_payload(row: Any) -> dict[str, Any]:
     payload = dict(row)
+    payload.pop("session_id", None)
     for stored, exposed in (
         ("source_metadata_json", "sources"),
         ("research_metadata_json", "research"),
@@ -620,21 +618,6 @@ def get_autoprep_resume_latex(connection: turso.Connection, job_id: int) -> str 
     return str(row["resume_latex"])
 
 
-def get_autoprep_document_session_id(
-    connection: turso.Connection,
-    role_id: int,
-    document_kind: str,
-) -> str | None:
-    """Read an internal runtime session without exposing it in API payloads."""
-    if document_kind == "resume":
-        query = "SELECT resume_session_id AS session_id FROM autoprep_jobs WHERE role_id = ?"
-    elif document_kind == "cover_letter":
-        query = "SELECT cover_letter_session_id AS session_id FROM autoprep_jobs WHERE role_id = ?"
-    else:
-        raise ValueError(f"Unsupported Autoprep document kind: {document_kind}")
-    row = connection.execute(query, (role_id,)).fetchone()
-    return str(row["session_id"]) if row and row["session_id"] is not None else None
-
 
 def claim_next_autoprep_job(connection: turso.Connection) -> dict[str, Any] | None:
     try:
@@ -688,7 +671,6 @@ def mark_autoprep_document(
     document_kind: DocumentKind,
     status: str,
     *,
-    session_id: str | None = None,
     artifact_path: str | None = None,
     artifact_directory: str | None = None,
     resume_latex: str | None = None,
@@ -699,9 +681,6 @@ def mark_autoprep_document(
     prefix = _document_prefix(document_kind)
     assignments = [f"{prefix}_status = ?", f"{prefix}_error = ?", "updated_at = datetime('now')"]
     values: list[object] = [status, error]
-    if session_id is not None:
-        assignments.append(f"{prefix}_session_id = ?")
-        values.append(session_id)
     if artifact_path is not None:
         assignments.append(f"{prefix}_artifact_path = ?")
         values.append(artifact_path)

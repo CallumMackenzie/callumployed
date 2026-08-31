@@ -933,13 +933,10 @@ function renderSettings(payload, message = "") {
   settingsData = payload;
   const settings = Array.isArray(payload?.settings) ? payload.settings : [];
   const profileSettings = settings.filter((setting) => setting.key?.startsWith("applicant_"));
-  const autoprepSettings = settings.filter((setting) => (
-    setting.key?.startsWith("autoprep_") || setting.key === "application_generation_backend"
-  ));
+  const autoprepSettings = settings.filter((setting) => setting.key?.startsWith("autoprep_"));
   const filterSettings = settings.filter(
     (setting) => !setting.key?.startsWith("applicant_")
-      && !setting.key?.startsWith("autoprep_")
-      && setting.key !== "application_generation_backend",
+      && !setting.key?.startsWith("autoprep_"),
   );
   const central = payload?.central ?? {};
   settingsStatus.textContent = message;
@@ -955,50 +952,14 @@ function renderSettings(payload, message = "") {
     .map((setting) => renderSettingOption(setting))
     .join("");
   settingsAutoprepOptions.innerHTML = autoprepSettings
-    .map((setting) => renderSettingOption(applyRuntimeAvailabilityToSetting(setting, payload)))
-    .join("") + renderApplicationRuntimeAvailability(payload);
+    .map((setting) => renderSettingOption(setting))
+    .join("");
   settingsOptions.innerHTML = filterSettings
     .map((setting) => renderSettingOption(setting))
     .join("");
   setSettingsDisabled(false);
 }
 
-function applyRuntimeAvailabilityToSetting(setting, payload) {
-  if (setting.key !== "application_generation_backend" || !Array.isArray(setting.options)) return setting;
-  const runtimes = payload?.application_generation_runtimes ?? {};
-  return {
-    ...setting,
-    options: setting.options.map((option) => {
-      const runtime = runtimes?.[option.value];
-      if (!runtime || option.available === false || option.disabled === true) return option;
-      return {...option, available: runtime.available ?? runtime.detected ?? true, reason: runtime.reason};
-    }),
-  };
-}
-
-function renderApplicationRuntimeAvailability(payload) {
-  const runtimes = payload?.application_generation_runtimes
-    ?? payload?.runtime_availability
-    ?? payload?.runtimes
-    ?? {};
-  const entries = [
-    ["hermes", runtimes?.hermes ?? runtimes?.Hermes],
-    ["openclaw", runtimes?.openclaw ?? runtimes?.OpenClaw],
-  ];
-  if (!entries.some(([, runtime]) => runtime && typeof runtime === "object")) return "";
-  return `<div class="application-runtime-statuses" aria-label="application generation runtime detection">
-    ${entries.map(([runtimeName, runtime]) => {
-      const detected = runtime?.available ?? runtime?.detected ?? false;
-      const reason = runtime?.reason ?? runtime?.message ?? (detected ? "Runtime detected" : "Runtime unavailable");
-      return `<div class="application-runtime-status" data-application-runtime="${escapeHtml(runtimeName)}">
-        <span><strong>${escapeUiText(runtimeName === "openclaw" ? "OpenClaw" : "Hermes")}</strong> ${detected ? "available" : "unavailable"}</span>
-        <small>${escapeUiText(reason)}</small>
-        <button type="button" data-application-runtime-test="${escapeHtml(runtimeName)}" ${detected ? "" : "disabled"}>Test connection</button>
-        <small data-application-runtime-test-status="${escapeHtml(runtimeName)}" aria-live="polite"></small>
-      </div>`;
-    }).join("")}
-  </div>`;
-}
 
 function renderCentralSettings(central) {
   const apiUrl = central?.api_url ?? "";
@@ -1091,10 +1052,6 @@ function renderTextareaSettingOption(setting) {
 function renderSelectSettingOption(setting) {
   const options = Array.isArray(setting.options) ? setting.options : [];
   const defaultText = `default: ${formatUiText(setting.default)}`;
-  const isApplicationBackend = setting.key === "application_generation_backend";
-  const selectClass = isApplicationBackend
-    ? "setting-select setting-select-application-backend"
-    : "setting-select";
   return `
     <label class="setting-option">
       <span class="setting-copy">
@@ -1102,13 +1059,12 @@ function renderSelectSettingOption(setting) {
         <span class="setting-description">${escapeUiText(setting.description)}</span>
         <span class="setting-default">${escapeUiText(defaultText)}</span>
       </span>
-      <select class="${selectClass}" name="${escapeHtml(setting.key)}">
+      <select class="setting-select" name="${escapeHtml(setting.key)}">
         ${options
           .map((option) => {
             const selected = option.value === setting.value ? "selected" : "";
             const unavailable = option.available === false || option.disabled === true;
-            const reason = isApplicationBackend && unavailable ? " — unavailable" : "";
-            return `<option value="${escapeHtml(option.value)}" ${selected} ${unavailable ? "disabled" : ""}>${escapeUiText(option.label)}${escapeUiText(reason)}</option>`;
+            return `<option value="${escapeHtml(option.value)}" ${selected} ${unavailable ? "disabled" : ""}>${escapeUiText(option.label)}</option>`;
           })
           .join("")}
       </select>
@@ -5107,36 +5063,6 @@ settingsForm.addEventListener("change", (event) => {
   );
   if (!control) return;
   saveSetting(control);
-});
-
-settingsForm.addEventListener("click", async (event) => {
-  const button = event.target.closest("[data-application-runtime-test]");
-  if (!button || button.disabled) return;
-  const backend = button.dataset.applicationRuntimeTest;
-  const status = settingsForm.querySelector(
-    `[data-application-runtime-test-status="${CSS.escape(backend)}"]`,
-  );
-  button.disabled = true;
-  button.textContent = "Testing…";
-  if (status) status.textContent = "Creating a bounded Callumployed session…";
-  try {
-    const response = await fetch(
-      `/api/application-generation/backends/${encodeURIComponent(backend)}/test`,
-      {method: "POST"},
-    );
-    const payload = await response.json();
-    if (!response.ok || payload?.ok !== true) {
-      throw new Error(payload?.error || "Connection test failed.");
-    }
-    if (status) status.textContent = payload.message || "Connection succeeded.";
-  } catch (error) {
-    if (status) {
-      status.textContent = error instanceof Error ? error.message : "Connection test failed.";
-    }
-  } finally {
-    button.disabled = false;
-    button.textContent = "Test connection";
-  }
 });
 
 settingsForm.addEventListener("submit", async (event) => {

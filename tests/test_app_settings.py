@@ -72,7 +72,6 @@ def test_shared_settings_can_modify_every_current_setting(
         "autoprep_resume_prompt": "Tailor truthfully.",
         "autoprep_cover_letter_prompt": "Use current evidence.",
         "llm_provider": "codex",
-        "application_generation_backend": "hermes",
         "scan_headless": False,
         "scan_schedule_enabled": False,
         "scan_schedule_time": "06:15",
@@ -92,20 +91,20 @@ def test_shared_settings_can_modify_every_current_setting(
     assert saved == requested
 
 
-@pytest.mark.parametrize("backend", ["openai", "hermes", "openclaw"])
-def test_shared_settings_preserve_every_application_generation_backend(
+def test_shared_settings_reject_retired_application_generation_backend(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    backend: str,
 ) -> None:
     monkeypatch.setenv(
-        "CALLUMPLOYED_DATABASE_PATH", str(tmp_path / f"application-backend-{backend}.sqlite3")
+        "CALLUMPLOYED_DATABASE_PATH", str(tmp_path / "application-backend-retired.sqlite3")
     )
 
     with db.connect() as connection:
         db.run_migrations(connection)
-        assert set_setting(connection, "application_generation_backend", backend) == backend
-        assert get_settings(connection)["application_generation_backend"] == backend
+        assert "application_generation_backend" not in SETTING_KEYS
+        assert "application_generation_backend" not in get_settings(connection)
+        with pytest.raises(ValueError, match="Unknown setting"):
+            set_setting(connection, "application_generation_backend", "hermes")
 
 
 def test_applicant_profile_settings_debounce_durable_cover_letter_refresh(
