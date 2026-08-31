@@ -3858,6 +3858,7 @@ def _generate_agent_application_document(
     current_document: str | None,
     instructions: str,
     session_id: str | None,
+    research_cache: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str]:
     role_id = role.get("id")
     if not isinstance(role_id, int):
@@ -3905,13 +3906,19 @@ def _generate_agent_application_document(
     authoritative_role = role_model.model_dump(mode="json")
     authoritative_role["company_name"] = company.name
     authoritative_role = _role_with_effective_company(authoritative_role)
-    public_research, _ = run_agent_generation(
-        clean_application_generation_backend(backend),
-        build_public_research_prompt(role=authoritative_role),
-        stable_key=f"callumployed-{session_namespace}-role-{role_id}-research",
-        cwd=Path.cwd(),
-        mode="research",
-    )
+    cached_research = research_cache.get("payload") if research_cache is not None else None
+    if isinstance(cached_research, dict):
+        public_research = cached_research
+    else:
+        public_research, _ = run_agent_generation(
+            clean_application_generation_backend(backend),
+            build_public_research_prompt(role=authoritative_role),
+            stable_key=f"callumployed-{session_namespace}-role-{role_id}-research",
+            cwd=Path.cwd(),
+            mode="research",
+        )
+        if research_cache is not None:
+            research_cache["payload"] = public_research
     fixed_contract = _agent_document_contract(
         task,
         applicant_profile=applicant_profile,
@@ -4653,9 +4660,11 @@ def build_role_cover_letter(
     cover_letter_model = DEFAULT_COVER_LETTER_MODEL
     application_backend = DEFAULT_APPLICATION_BACKEND
     llm_settings = LlmSettings(model=cover_letter_model)
-    role_for_prompt = _role_with_effective_company(role)
+    fallback_role = _role_with_effective_company(role)
+    role_for_prompt = dict(fallback_role)
     role_for_prompt.pop("description", None)
     agent_session_id: str | None = None
+    agent_research_cache: dict[str, Any] = {}
 
     def search_cover_letters(query: str, *, limit: int = 3) -> list[dict[str, object]]:
         with db.connect() as connection:
@@ -4672,6 +4681,9 @@ def build_role_cover_letter(
             db.run_migrations(connection)
             authoritative_role = get_role(connection, role_id)
             company = get_company(connection, authoritative_role.company_id)
+            fallback_role = authoritative_role.model_dump(mode="json")
+            fallback_role["company_name"] = company.name
+            fallback_role = _role_with_effective_company(fallback_role)
             sync_role_context_vectors(
                 connection,
                 role=authoritative_role,
@@ -4723,6 +4735,7 @@ def build_role_cover_letter(
                 current_document=previous_cover_letter_latex,
                 instructions=tweaks or "",
                 session_id=None,
+                research_cache=agent_research_cache,
             )
             agent_latex = agent_payload.get("latex")
             if not isinstance(agent_latex, str) or not agent_latex.strip():
@@ -4766,7 +4779,7 @@ def build_role_cover_letter(
             raise
         LOGGER.exception("AI cover letter generation failed for role %s", role_id)
         return _publish_reliable_cover_letter_fallback(
-            role_for_prompt,
+            fallback_role,
             resume,
             applicant_profile=applicant_profile,
             experience_context=experience_context,
@@ -4791,9 +4804,14 @@ def build_role_cover_letter(
                 written["session_id"] = agent_session_id
             return written
         except Exception as error:  # noqa: BLE001 - generated output must fall back safely.
-            if attempt == 2 or source != "ai_cover_letter":
+            agent_attempts_exhausted = source == "agent_cover_letter" and attempt >= 1
+            if (
+                attempt == 2
+                or agent_attempts_exhausted
+                or source not in {"ai_cover_letter", "agent_cover_letter"}
+            ):
                 return _publish_reliable_cover_letter_fallback(
-                    role_for_prompt,
+                    fallback_role,
                     resume,
                     applicant_profile=applicant_profile,
                     experience_context=experience_context,
@@ -4831,23 +4849,47 @@ def build_role_cover_letter(
                     "no unsupported packages or commands. Keep it concise and at most one page."
                 )
             try:
-                draft = asyncio.run(
-                    generate_cover_letter(
-                        role=role_for_prompt,
-                        resume_content=resume.content,
-                        search_tool=search_cover_letters,
-                        applicant_profile=applicant_profile,
-                        other_experience_context=experience_context,
-                        role_context=role_context,
-                        tweaks=retry_tweaks,
-                        previous_cover_letter_latex=latex,
-                        settings=llm_settings,
+                if source == "agent_cover_letter":
+                    agent_payload, agent_session_id = _generate_agent_application_document(
+                        task="cover_letter",
+                        backend=application_backend,
+                        role=role,
+                        master_resume=resume,
+                        current_document=latex,
+                        instructions=retry_tweaks,
+                        session_id=agent_session_id,
+                        research_cache=agent_research_cache,
                     )
-                )
+                    agent_latex = agent_payload.get("latex")
+                    if not isinstance(agent_latex, str) or not agent_latex.strip():
+                        raise RuntimeError("Application agent returned no cover letter LaTeX.")
+                    draft_latex = agent_latex
+                    raw_example_ids = agent_payload.get("example_ids")
+                    example_ids = (
+                        [int(value) for value in raw_example_ids]
+                        if isinstance(raw_example_ids, list)
+                        else []
+                    )
+                else:
+                    draft = asyncio.run(
+                        generate_cover_letter(
+                            role=role_for_prompt,
+                            resume_content=resume.content,
+                            search_tool=search_cover_letters,
+                            applicant_profile=applicant_profile,
+                            other_experience_context=experience_context,
+                            role_context=role_context,
+                            tweaks=retry_tweaks,
+                            previous_cover_letter_latex=latex,
+                            settings=llm_settings,
+                        )
+                    )
+                    draft_latex = draft.latex
+                    example_ids = draft.example_ids
             except Exception:
                 LOGGER.exception("AI cover letter repair failed for role %s", role_id)
                 return _publish_reliable_cover_letter_fallback(
-                    role_for_prompt,
+                    fallback_role,
                     resume,
                     applicant_profile=applicant_profile,
                     experience_context=experience_context,
@@ -4855,11 +4897,10 @@ def build_role_cover_letter(
                     required_page_count=required_page_count,
                 )
             latex = _normalize_cover_letter_latex(
-                draft.latex,
+                draft_latex,
                 hiring_contact=find_named_hiring_contact(role_for_prompt.get("description")),
                 role_title=str(role_for_prompt.get("title") or ""),
             )
-            example_ids = draft.example_ids
     raise AssertionError("bounded cover letter generation loop did not return")
 
 
@@ -6165,6 +6206,118 @@ def _cover_letter_display_summary(
     return f"Drafted cover letter for {role_label} using resume and job description."
 
 
+_FALLBACK_CAPABILITIES = (
+    (
+        "enterprise AI products",
+        ("enterprise ai", "machine learning", "nlp", "foundation model", "ai models"),
+    ),
+    ("an API platform", ("api", "apis")),
+    (
+        "scalable services and infrastructure",
+        ("scalable", "infrastructure", "scaling", "distributed", "cloud"),
+    ),
+    ("data pipelines", ("data pipeline", "pipelines", "data processing")),
+    ("security", ("security", "secure", "authentication", "authorization", "oidc")),
+    ("developer tooling and CI/CD", ("tooling", "ci/cd", "developer tools", "utilities")),
+    ("testing and reliability", ("testing", "tests", "reliability", "performance")),
+    ("frontend and backend product development", ("frontend", "backend", "full-stack")),
+)
+
+
+def _plain_text_from_latex(value: str) -> str:
+    text = value
+    text = re.sub(r"\\href\{[^{}]*\}\{([^{}]*)\}", r"\1", text)
+    for _ in range(4):
+        updated = re.sub(
+            r"\\(?:textbf|textit|underline|emph|small)\{([^{}]*)\}",
+            r"\1",
+            text,
+        )
+        if updated == text:
+            break
+        text = updated
+    text = re.sub(r"\\[A-Za-z@]+(?:\[[^\]]*\])?", " ", text)
+    text = text.replace(r"\%", "%").replace(r"\&", "&").replace("--", "-")
+    text = text.replace("{", " ").replace("}", " ")
+    return " ".join(text.split()).strip(" -;,")
+
+
+def _fallback_role_priorities(role: dict[str, Any]) -> list[str]:
+    role_text = " ".join(
+        str(role.get(key) or "") for key in ("title", "description")
+    ).casefold()
+    return [
+        label
+        for label, patterns in _FALLBACK_CAPABILITIES
+        if any(pattern in role_text for pattern in patterns)
+    ]
+
+
+def _fallback_cover_letter_evidence(
+    role: dict[str, Any],
+    resume: MasterResume,
+    other_experience_context: list[dict[str, Any]] | None,
+) -> list[str]:
+    candidates = [
+        _plain_text_from_latex(arguments[0])
+        for arguments in _latex_command_arguments(resume.content, "resumeItem", 1)
+    ]
+    for item in other_experience_context or []:
+        content = str(item.get("content") or "")
+        candidates.extend(
+            " ".join(line.lstrip("#-* ").split())
+            for line in content.splitlines()
+            if 40 <= len(line.strip()) <= 320 and not line.lstrip().startswith("#")
+        )
+    candidates = list(dict.fromkeys(candidate for candidate in candidates if candidate))
+    role_terms = _prep_keywords(
+        " ".join(str(role.get(key) or "") for key in ("title", "description"))
+    )
+    active_capabilities = [
+        patterns
+        for label, patterns in _FALLBACK_CAPABILITIES
+        if label in _fallback_role_priorities(role)
+    ]
+
+    def score(candidate: str) -> tuple[int, int]:
+        candidate_text = candidate.casefold()
+        overlap = len(role_terms & _prep_keywords(candidate))
+        capability_matches = sum(
+            1
+            for patterns in active_capabilities
+            if any(pattern in candidate_text for pattern in patterns)
+        )
+        return (overlap * 2 + capability_matches * 5, -len(candidate))
+
+    ranked = sorted(
+        enumerate(candidates),
+        key=lambda item: (score(item[1]), -item[0]),
+        reverse=True,
+    )
+    relevant = [candidate for _index, candidate in ranked if score(candidate)[0] > 0]
+    if len(relevant) < 4:
+        relevant.extend(candidate for candidate in candidates if candidate not in relevant)
+    return relevant[:4]
+
+
+def _first_person_evidence_sentence(value: str) -> str:
+    sentence = value.strip().rstrip(".")
+    if not sentence:
+        return "I have delivered source-supported software engineering work"
+    return f"I {sentence[0].lower()}{sentence[1:]}"
+
+
+def _joined_priority_text(priorities: list[str]) -> str:
+    selected = priorities[:3]
+    if not selected:
+        return "reliable, user-focused software engineering"
+    if len(selected) == 1:
+        return selected[0]
+    if len(selected) == 2:
+        return f"{selected[0]} and {selected[1]}"
+    return f"{selected[0]}, {selected[1]}, and {selected[2]}"
+
+
 def _fallback_cover_letter_latex(
     role: dict[str, Any],
     resume: MasterResume,
@@ -6174,18 +6327,20 @@ def _fallback_cover_letter_latex(
 ) -> str:
     title = str(role.get("title") or "this role")
     company = str(role.get("company_name") or "your team")
-    description = str(role.get("description") or "")
-    experience_text = " ".join(
-        str(item.get("content") or "") for item in other_experience_context or []
-    )
-    resume_terms = sorted(_prep_keywords(" ".join([resume.content, experience_text])))
-    job_terms = sorted(_prep_keywords(" ".join([title, description])))
-    matched_terms = ", ".join(sorted(set(resume_terms) & set(job_terms))[:5])
-    match_sentence = (
-        f"My background aligns especially around {matched_terms}."
-        if matched_terms
-        else "My resume includes software engineering experience relevant to this role."
-    )
+    priorities = _fallback_role_priorities(role)
+    priority_text = _joined_priority_text(priorities)
+    evidence = _fallback_cover_letter_evidence(role, resume, other_experience_context)
+    evidence_sentences = [_first_person_evidence_sentence(item) for item in evidence]
+    primary_evidence = ". ".join(evidence_sentences[:2])
+    if primary_evidence:
+        primary_evidence += "."
+    else:
+        primary_evidence = (
+            "My application is grounded only in the experience documented in my resume."
+        )
+    secondary_evidence = ". ".join(evidence_sentences[2:4])
+    if secondary_evidence:
+        secondary_evidence += ". "
     return (
         "\\documentclass[letterpaper,11pt]{article}\n"
         "\\usepackage[margin=1in]{geometry}\n"
@@ -6202,13 +6357,18 @@ def _fallback_cover_letter_latex(
         "\\vspace{1.1em}\n\n"
         "\\noindent Dear Hiring Manager,\\par\n"
         "\\vspace{0.35em}\n\n"
-        f"I am applying for the {title} position at {company}. The role's focus aligns "
-        "with the experience documented in my resume, and I would value the opportunity "
-        "to contribute that experience to your team.\n\n"
-        f"{match_sentence} I approach technical work with care, ownership, and an emphasis "
-        "on clear outcomes.\n\n"
-        "Thank you for considering my application. I would welcome an interview to discuss "
-        "how my experience can support this role.\n\n"
+        f"I am applying for the {title} position at {company}. The opportunity to work on "
+        f"{priority_text} is a strong match for the concrete engineering work documented in my "
+        "resume. I would bring hands-on experience building, testing, and improving production "
+        "software across those areas.\n\n"
+        f"{primary_evidence} These projects required me to turn "
+        "specific product and platform requirements into maintainable implementations while "
+        "checking the resulting behavior and reliability.\n\n"
+        f"{secondary_evidence}I would apply the same practical, "
+        f"evidence-driven approach to {company}'s work across {priority_text}. Thank you for "
+        "considering my "
+        "application. I would welcome an interview to discuss how this experience can contribute "
+        "to the team.\n\n"
         "\\vspace{0.35em}\n"
         "\\noindent Sincerely,\\\\[12pt]\n"
         f"{applicant_profile.full_name}\n"
@@ -6234,7 +6394,13 @@ def _prep_keywords(text: str) -> set[str]:
         "your",
     }
     normalized = "".join(character.lower() if character.isalnum() else " " for character in text)
-    return {word for word in normalized.split() if len(word) >= 4 and word not in ignored_terms}
+    return {
+        word
+        for word in normalized.split()
+        if len(word) >= 4
+        and any(character.isalpha() for character in word)
+        and word not in ignored_terms
+    }
 
 
 def _optional_comment(value: object) -> str | None:
