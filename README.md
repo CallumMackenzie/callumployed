@@ -20,15 +20,8 @@ callumployed update
 
 Start: `callumployed serve`
 
-The web UI is built with React and TypeScript while retaining the existing tracker
-controller and behavior. To rebuild its bundled static assets:
-
-```bash
-cd frontend
-npm install
-npm run typecheck
-npm run build
-```
+The web UI is served directly from the vanilla HTML, CSS, and JavaScript files in
+`src/callumployed/web/static/`. It has no frontend build step or framework runtime.
 
 ## Details
 

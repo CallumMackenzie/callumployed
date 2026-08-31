@@ -372,15 +372,26 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
 
         with urlopen(url, timeout=5) as response:
             index_markup = response.read().decode()
-        with urlopen(f"http://127.0.0.1:{port}/assets/build/app.js", timeout=5) as response:
+        with urlopen(f"http://127.0.0.1:{port}/assets/app.js", timeout=5) as response:
             assert response.status == 200
             assert response.headers["Content-Type"] == "text/javascript; charset=utf-8"
+            app_javascript = response.read().decode()
 
         static_directory = Path(web_server.__file__).with_name("static")
-        markup = (static_directory / "shell.html").read_text()
         repository_root = Path(web_server.__file__).parents[3]
-        app_javascript = (repository_root / "frontend" / "src" / "legacy.ts").read_text()
+        markup = index_markup
         app_styles = (static_directory / "app.css").read_text()
+
+        assert not (repository_root / "frontend").exists()
+        assert not (static_directory / "build").exists()
+        assert not (static_directory / "shell.html").exists()
+        assert (static_directory / "app.js").read_text() == app_javascript
+        assert "dangerouslySetInnerHTML" not in markup
+        assert "dangerouslySetInnerHTML" not in app_javascript
+        assert '<div id="root"></div>' not in index_markup
+        assert '<script type="module" src="/assets/app.js?v=vanilla-20260831-1"></script>' in (
+            index_markup
+        )
 
         assert 'id="toggle-all"' in markup
         assert (
@@ -393,7 +404,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert '<link rel="manifest" href="/assets/manifest.webmanifest" />' in index_markup
         assert '<meta name="apple-mobile-web-app-capable" content="yes" />' in index_markup
         assert '<meta name="apple-mobile-web-app-title" content="callumployed" />' in index_markup
-        assert '<div id="root"></div>' in index_markup
+
         assert "expand all" in markup
         assert 'id="expand-all"' not in markup
         assert 'id="collapse-all"' not in markup
@@ -488,8 +499,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=react-ts-20260830-34" in index_markup
-        assert "/assets/build/app.js?v=react-ts-20260830-34" in index_markup
+        assert "/assets/app.css?v=vanilla-20260831-1" in index_markup
+        assert "/assets/app.js?v=vanilla-20260831-1" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles

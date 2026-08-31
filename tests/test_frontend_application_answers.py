@@ -1,8 +1,8 @@
 from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).parents[1]
-FRONTEND_SOURCE = REPOSITORY_ROOT / "frontend" / "src" / "legacy.ts"
 STATIC_DIRECTORY = REPOSITORY_ROOT / "src" / "callumployed" / "web" / "static"
+FRONTEND_SOURCE = STATIC_DIRECTORY / "app.js"
 
 
 def test_application_backend_settings_render_availability_defensively() -> None:
@@ -72,4 +72,18 @@ def test_application_questions_styles_and_cache_keys_are_versioned() -> None:
     assert "padding-top: 20px" in styles
     assert "#close-prepped" in styles
     assert "text-transform: none" in styles
-    assert index.count("react-ts-20260830-34") == 2
+    assert index.count("vanilla-20260831-1") == 2
+
+
+def test_frontend_uses_direct_vanilla_assets_without_framework_shell() -> None:
+    index = (STATIC_DIRECTORY / "index.html").read_text()
+    source = FRONTEND_SOURCE.read_text()
+
+    assert not (REPOSITORY_ROOT / "frontend").exists()
+    assert not (STATIC_DIRECTORY / "build").exists()
+    assert not (STATIC_DIRECTORY / "shell.html").exists()
+    assert '<script type="module" src="/assets/app.js?v=vanilla-20260831-1"></script>' in index
+    assert '<div id="root"></div>' not in index
+    assert "dangerouslySetInnerHTML" not in index
+    assert "dangerouslySetInnerHTML" not in source
+    assert "from \"./d3-sankey.js\"" in source

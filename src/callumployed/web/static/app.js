@@ -1,8 +1,4 @@
-// @ts-nocheck -- Legacy controller preserved during the React/TypeScript shell migration.
-export {};
-const {sankey: d3Sankey, sankeyLinkHorizontal} = await import(
-  /* @vite-ignore */ "/assets/d3-sankey.js"
-);
+import {sankey as d3Sankey, sankeyLinkHorizontal} from "./d3-sankey.js";
 
 const statsEl = document.querySelector("#stats");
 const statusListEl = document.querySelector("#status-list");
