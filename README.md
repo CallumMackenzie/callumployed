@@ -224,39 +224,15 @@ CALLUMPLOYED_LLM_MODEL=gpt-5.6-terra
 OPENAI_API_KEY=...
 ```
 
-### Optional application-generation runtimes
+### Application generation
 
-Resume, cover-letter, and saved Prepped-role question generation continues to use the
-configured OpenAI/Codex provider by default. Settings can instead select a locally
-installed Hermes Agent or OpenClaw runtime. These integrations are optional external
-processes: neither runtime is a Python or Node dependency of this repository, and a
-missing, incompatible, or unauthenticated runtime does not prevent Callumployed from
-starting or using its built-in generation path.
+Résumé, cover-letter, and saved Prepped-role question generation use the built-in
+OpenAI path only. The scan/classification provider setting remains separate and does
+not change application generation. Hermes and OpenClaw are not application-generation
+runtimes and are not required or invoked by Callumployed.
 
-Callumployed discovers `hermes` or `openclaw` from the launcher's `PATH`. A portable
-installation can override discovery without embedding a developer-specific path:
-
-```bash
-CALLUMPLOYED_HERMES_EXECUTABLE=/path/to/hermes
-CALLUMPLOYED_OPENCLAW_EXECUTABLE=/path/to/openclaw
-```
-
-Install and authenticate the selected runtime using its own official instructions on
-the laptop that runs Callumployed. Settings reports local detection state and provides
-a bounded connection test before selection. Hermes sessions are invoked with the web
-toolset in a public-research-only session. OpenClaw requires two app-owned agents:
-`callumployed-research` with `tools.profile=minimal` plus only `web_search` and
-`web_fetch`, and `callumployed-generation` with `tools.profile=minimal` and no
-additional tools. Configure those agents in OpenClaw once (or override their IDs with
-`CALLUMPLOYED_OPENCLAW_RESEARCH_AGENT` and
-`CALLUMPLOYED_OPENCLAW_GENERATION_AGENT`). Settings refuses OpenClaw when either
-policy is missing or broader than expected. Private applicant material is sent only to
-a no-network generation session; public research receives only company, title, and role
-URL. Callumployed supplies approved/indexed applicant materials directly to the bounded
-generation session and treats public-web facts only as company/product research, never as
-applicant evidence. External-runtime session keys include a random local-database-owned
-namespace, so separate Callumployed clones or databases on one laptop cannot share
-application context.
+Applicant claims are grounded in saved/indexed application materials. Application
+generation does not submit applications or change role status.
 
 Examples:
 

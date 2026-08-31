@@ -20,11 +20,6 @@ from callumployed.data.repositories import (
     should_require_software_keywords,
     should_use_internship_mode,
 )
-from callumployed.services.application_generation import (
-    DEFAULT_APPLICATION_BACKEND,
-    SUPPORTED_APPLICATION_BACKENDS,
-    clean_application_generation_backend,
-)
 from callumployed.services.scan_schedule import (
     SCAN_SCHEDULE_ENABLED_CONFIG_KEY,
     SCAN_SCHEDULE_TIME_CONFIG_KEY,
@@ -59,7 +54,6 @@ TEXT_KEYS = (
     "autoprep_resume_prompt",
     "autoprep_cover_letter_prompt",
     "llm_provider",
-    "application_generation_backend",
     SCAN_SCHEDULE_TIME_CONFIG_KEY,
     "location_filter",
 )
@@ -114,10 +108,6 @@ def get_settings(connection: turso.Connection) -> dict[str, str | bool]:
         "llm_provider": _clean_llm_provider_or_default(
             persisted_provider or environment_provider
         ),
-        "application_generation_backend": get_config_value(
-            connection, "application_generation_backend"
-        )
-        or DEFAULT_APPLICATION_BACKEND,
         "scan_headless": _config_bool(
             get_config_value(connection, "scan_headless"), default=False
         ),
@@ -222,10 +212,6 @@ def _clean_text_setting(key: str, value: object) -> str:
         raise ValueError("Choose a supported cover letter model")
     if key == "llm_provider" and cleaned not in SUPPORTED_LLM_PROVIDERS:
         raise ValueError("llm_provider must be one of: codex, openai")
-    if key == "application_generation_backend":
-        cleaned = clean_application_generation_backend(cleaned)
-        if cleaned not in SUPPORTED_APPLICATION_BACKENDS:
-            raise ValueError("Choose a supported application generation backend")
     if key in {"autoprep_resume_prompt", "autoprep_cover_letter_prompt"} and len(cleaned) > 8000:
         raise ValueError("Autoprep prompts must be 8,000 characters or fewer")
     return cleaned

@@ -2857,11 +2857,6 @@ a:hover .role-link-icon {
   font-weight: 900;
 }
 
-.setting-select-application-backend {
-  width: 280px;
-  max-width: 100%;
-  min-width: 0;
-}
 
 .setting-select:focus-visible {
   outline: 3px solid rgb(45 224 111 / 0.38);
@@ -4912,28 +4907,6 @@ body.prepped-open {
   }
 }
 
-/* Application-generation runtime detection */
-.application-runtime-statuses {
-  display: grid;
-  gap: 8px;
-  width: 100%;
-  padding: 12px;
-  border: 1px solid #d8dfdc;
-  border-radius: 12px;
-  background: #f7faf9;
-}
-
-.application-runtime-status {
-  display: grid;
-  grid-template-columns: minmax(110px, auto) minmax(0, 1fr);
-  align-items: baseline;
-  gap: 12px;
-}
-
-.application-runtime-status small {
-  color: #59645f;
-  overflow-wrap: anywhere;
-}
 
 /* Persisted role-specific application Q&A workspace */
 .application-questions-workspace {
@@ -5096,10 +5069,6 @@ body.prepped-open {
 }
 
 @media (max-width: 520px) {
-  .application-runtime-status {
-    grid-template-columns: 1fr;
-    gap: 3px;
-  }
 
   .application-questions-workspace {
     margin-inline: -4px;

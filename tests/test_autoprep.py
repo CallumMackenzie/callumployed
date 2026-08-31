@@ -9,7 +9,6 @@ import pytest
 from pypdf import PdfWriter
 
 import callumployed.services.autoprep as autoprep_service
-import callumployed.services.hermes_generation as hermes_generation
 import callumployed.web.server as web_server
 from callumployed.data import db
 from callumployed.data.models import Company, Role, RoleStatus
@@ -36,13 +35,6 @@ from callumployed.services.autoprep import (
     recover_interrupted_autoprep_jobs,
     release_autoprep_claim,
     retry_autoprep_document,
-)
-from callumployed.services.hermes_generation import (
-    HermesGenerationError,
-    HermesSessionRunner,
-    parse_hermes_generation_output,
-    parse_json_response,
-    resolve_hermes_executable,
 )
 from callumployed.web.server import LocalThreadingHTTPServer, create_handler
 
@@ -167,7 +159,6 @@ def test_partial_failure_preserves_resume_and_retries_only_cover_letter(tmp_path
             queued["id"],
             "resume",
             "ready",
-            session_id="resume-session",
             artifact_path=str(resume_pdf),
         )
         partial = mark_autoprep_document(
@@ -175,7 +166,6 @@ def test_partial_failure_preserves_resume_and_retries_only_cover_letter(tmp_path
             queued["id"],
             "cover_letter",
             "failed",
-            session_id="cover-session",
             error="generation failed",
         )
 
@@ -256,7 +246,6 @@ def test_ready_document_can_be_regenerated_with_persisted_comments(tmp_path: Pat
             job["id"],
             "resume",
             "ready",
-            session_id="resume-session",
             artifact_path=str(resume_pdf),
             resume_latex="\\documentclass{article}",
         )
@@ -265,7 +254,6 @@ def test_ready_document_can_be_regenerated_with_persisted_comments(tmp_path: Pat
             job["id"],
             "cover_letter",
             "ready",
-            session_id="cover-session",
             artifact_path=str(tmp_path / "cover-letter.pdf"),
         )
         finish_autoprep_worker(connection, job["id"])
@@ -290,7 +278,7 @@ def test_ready_document_can_be_regenerated_with_persisted_comments(tmp_path: Pat
         stored_session_id = connection.execute(
             "SELECT resume_session_id FROM autoprep_jobs WHERE id = ?", (job["id"],)
         ).fetchone()["resume_session_id"]
-        assert stored_session_id == "resume-session"
+        assert stored_session_id is None
         assert regenerated["role_url"].startswith("https://example.com/")
         assert regenerated["description"] == "Build reliable Python services."
 
@@ -353,57 +341,6 @@ def test_startup_recovery_marks_unfinished_documents_interrupted(tmp_path: Path)
         assert recovered["resume_status"] == "interrupted"
         assert recovered["cover_letter_status"] == "interrupted"
         assert "restart" in recovered["resume_error"].lower()
-
-
-def test_hermes_output_keeps_traceable_session_and_structured_payload() -> None:
-    result = parse_hermes_generation_output(
-        "notice before output\nsession_id: 20260828_abc123\n```json\n"
-        '{"latex":"\\\\documentclass{article}","summary":"Tailored"}\n```\n'
-    )
-
-    assert result.session_id == "20260828_abc123"
-    assert parse_json_response(result.content)["summary"] == "Tailored"
-
-    with pytest.raises(HermesGenerationError, match="session ID"):
-        parse_hermes_generation_output('{"summary":"untraceable"}')
-
-
-def test_hermes_runner_combines_stderr_session_metadata_with_stdout_result(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class FakeProcess:
-        returncode = 0
-
-        def communicate(self, *, timeout: float) -> tuple[str, str]:
-            assert timeout > 0
-            return ('{"summary":"generated"}\n', "\nsession_id: real-session\n")
-
-    monkeypatch.setattr(
-        "callumployed.services.hermes_generation.subprocess.Popen",
-        lambda *_args, **_kwargs: FakeProcess(),
-    )
-    result = HermesSessionRunner(cwd=tmp_path).start(
-        "Return JSON.",
-        model="gpt-5.6-terra",
-        source="callumployed-test",
-    )
-    assert result.session_id == "real-session"
-    assert parse_json_response(result.content) == {"summary": "generated"}
-
-
-def test_hermes_executable_resolves_outside_gui_launcher_path(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    hermes = tmp_path / "hermes-agent" / "venv" / "bin" / "hermes"
-    hermes.parent.mkdir(parents=True)
-    hermes.write_text("#!/bin/sh\n")
-    monkeypatch.delenv("CALLUMPLOYED_HERMES_EXECUTABLE", raising=False)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(hermes_generation.shutil, "which", lambda _name: None)
-
-    assert resolve_hermes_executable() == str(hermes)
 
 
 def test_database_connections_wait_for_brief_concurrent_write_lock(tmp_path: Path) -> None:
@@ -532,7 +469,6 @@ def test_autoprep_api_lists_only_interested_and_returns_accepted_jobs_immediatel
                 accepted["jobs"][0]["id"],
                 "resume",
                 status="ready",
-                session_id="resume-session",
                 artifact_path=str(resume_pdf),
                 artifact_directory=str(documents),
             )
@@ -541,7 +477,6 @@ def test_autoprep_api_lists_only_interested_and_returns_accepted_jobs_immediatel
                 accepted["jobs"][0]["id"],
                 "cover_letter",
                 status="ready",
-                session_id="cover-session",
                 artifact_path=str(cover_pdf),
                 artifact_directory=str(documents),
             )
@@ -581,7 +516,6 @@ def test_autoprep_api_lists_only_interested_and_returns_accepted_jobs_immediatel
                 accepted["jobs"][0]["id"],
                 "resume",
                 status="ready",
-                session_id="resume-session",
                 artifact_path=str(resume_pdf),
             )
             finish_autoprep_worker(connection, accepted["jobs"][0]["id"])

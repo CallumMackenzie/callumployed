@@ -213,7 +213,7 @@ def test_application_answer_can_be_regenerated_and_deleted_through_role_scoped_a
     monkeypatch.setattr(
         web_server,
         "generate_saved_application_answer",
-        lambda role_id, *, question, backend: {
+        lambda role_id, *, question: {
             "answer": "Acme Builds Reliable Products.",
             "session_id": None,
             "sources": [{"kind": "saved_material", "title": "Resume"}],
@@ -235,6 +235,8 @@ def test_application_answer_can_be_regenerated_and_deleted_through_role_scoped_a
 
         assert regenerated["id"] == saved["id"]
         assert regenerated["answer"] == "Acme Builds Reliable Products."
+        assert regenerated["backend"] == "openai"
+        assert "session_id" not in regenerated
         assert regenerated["status"] == "completed"
 
         with urlopen(Request(endpoint, method="DELETE"), timeout=5) as response:
@@ -389,7 +391,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "dangerouslySetInnerHTML" not in markup
         assert "dangerouslySetInnerHTML" not in app_javascript
         assert '<div id="root"></div>' not in index_markup
-        assert '<script type="module" src="/assets/app.js?v=vanilla-20260831-1"></script>' in (
+        assert '<script type="module" src="/assets/app.js?v=vanilla-20260831-2"></script>' in (
             index_markup
         )
 
@@ -499,8 +501,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=vanilla-20260831-1" in index_markup
-        assert "/assets/app.js?v=vanilla-20260831-1" in index_markup
+        assert "/assets/app.css?v=vanilla-20260831-2" in index_markup
+        assert "/assets/app.js?v=vanilla-20260831-2" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -1364,6 +1366,7 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         }
         settings = captured_calls[0]["settings"]
         assert isinstance(settings, web_server.LlmSettings)
+        assert settings.provider == "openai"
         assert settings.model == "gpt-5.6-terra"
         saved_latex = (resume_root / "role-1" / "cover-letter.tex").read_text()
         assert "Dear Hiring Manager" in saved_latex
@@ -2985,56 +2988,6 @@ def test_cover_letter_publication_rolls_back_tex_and_pdf_together(
     assert target_pdf.read_bytes() == b"old cover pdf"
 
 
-@pytest.mark.parametrize("backend", ["hermes", "openclaw"])
-def test_agent_cover_letter_failure_publishes_local_fallback(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    backend: str,
-) -> None:
-    database = tmp_path / f"tracker-{backend}-cover-letter.sqlite3"
-    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
-
-    def unavailable_agent(**_kwargs: object) -> tuple[dict[str, object], str]:
-        raise RuntimeError("agent unavailable")
-
-    def write_document(
-        role: dict[str, object],
-        latex: str,
-        *,
-        source: str,
-        **_kwargs: object,
-    ) -> dict[str, object]:
-        assert source == "local_cover_letter_fallback"
-        return {"role_id": role["id"], "source": source, "latex": latex}
-
-    monkeypatch.setattr(web_server, "_generate_agent_application_document", unavailable_agent)
-    monkeypatch.setattr(web_server, "_write_role_cover_letter", write_document)
-    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
-    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
-    runner.invoke(
-        app,
-        ["roles", "add", "1", "Backend Intern", "https://example.com/jobs/backend"],
-        env=env,
-    )
-    with db.connect() as connection:
-        web_server.set_config_value(connection, "application_generation_backend", backend)
-    resume = web_server.MasterResume(
-        id=1,
-        filename="resume.tex",
-        content="Python backend experience.",
-        content_sha256="source",
-        created_at=None,
-        updated_at=None,
-    )
-
-    result = web_server.build_role_cover_letter(
-        {"id": 1, "company_name": "Acme", "title": "Backend Intern"},
-        resume,
-    )
-
-    assert result["source"] == "local_cover_letter_fallback"
-
-
 def test_cover_letter_fallback_retains_prior_verified_pair(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3115,145 +3068,6 @@ def test_resume_fallback_rejects_stale_prior_pdf(
             tweaks="Tailor truthfully.",
             summary="fallback",
         )
-
-
-@pytest.mark.parametrize(
-    ("valid_call", "expected_calls", "expected_source"),
-    [(2, 2, "agent_cover_letter"), (None, 2, "local_cover_letter_fallback")],
-)
-def test_agent_cover_letter_layout_repair_is_bounded_and_reuses_session(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    valid_call: int | None,
-    expected_calls: int,
-    expected_source: str,
-) -> None:
-    database = tmp_path / "tracker-hermes-cover-letter-repair.sqlite3"
-    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
-    calls: list[dict[str, object]] = []
-
-    def agent_document(**kwargs: object) -> tuple[dict[str, object], str]:
-        calls.append(dict(kwargs))
-        word_count = 180 if len(calls) == valid_call else 301
-        latex = (
-            "\\documentclass{article}\\begin{document}"
-            "\\noindent Dear Hiring Manager,\\par\n\n"
-            + " ".join(["grounded"] * word_count)
-            + "\n\n\\noindent Sincerely,\\\\\nCallum Mackenzie"
-            "\\end{document}"
-        )
-        return ({"latex": latex, "example_ids": []}, f"agent-session-{len(calls)}")
-
-    def write_document(
-        role: dict[str, object],
-        latex: str,
-        *,
-        source: str,
-        **_kwargs: object,
-    ) -> dict[str, object]:
-        word_count = web_server._cover_letter_body_word_count(latex)
-        if word_count > 300:
-            raise web_server.GeneratedDocumentLengthError(word_count, 0, 300)
-        return {"role_id": role["id"], "source": source, "latex": latex}
-
-    monkeypatch.setattr(web_server, "_generate_agent_application_document", agent_document)
-    monkeypatch.setattr(web_server, "_write_role_cover_letter", write_document)
-    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
-    runner.invoke(app, ["companies", "add", "Cohere", "https://example.com"], env=env)
-    runner.invoke(
-        app,
-        ["roles", "add", "1", "Software Engineer Intern", "https://example.com/jobs/swe"],
-        env=env,
-    )
-    with db.connect() as connection:
-        web_server.set_config_value(connection, "application_generation_backend", "hermes")
-    resume = web_server.MasterResume(
-        filename="resume.tex",
-        content="Built AWS Lambda and Docker services.",
-        content_sha256="source",
-    )
-
-    result = web_server.build_role_cover_letter(
-        {"id": 1, "company_name": "Cohere", "title": "Software Engineer Intern"},
-        resume,
-    )
-
-    assert len(calls) == expected_calls
-    assert calls[0]["session_id"] is None
-    assert calls[1]["session_id"] == "agent-session-1"
-    assert calls[0]["research_cache"] is calls[1]["research_cache"]
-    assert "no more than 300 words" in str(calls[1]["instructions"])
-    assert result["source"] == expected_source
-
-
-def test_agent_cover_letter_research_is_cached_across_single_repair(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    database = tmp_path / "tracker-agent-research-cache.sqlite3"
-    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
-    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
-    runner.invoke(app, ["companies", "add", "Cohere", "https://example.com"], env=env)
-    runner.invoke(
-        app,
-        ["roles", "add", "1", "Software Engineer Intern", "https://example.com/jobs/swe"],
-        env=env,
-    )
-    with db.connect() as connection:
-        web_server.ensure_autoprep_schema(connection)
-    calls: list[str] = []
-
-    def run_generation(
-        _backend: str,
-        _prompt: str,
-        **kwargs: object,
-    ) -> tuple[dict[str, object], object]:
-        mode = str(kwargs.get("mode") or "document")
-        calls.append(mode)
-        payload = (
-            {"company": "Cohere", "products": ["enterprise AI"]}
-            if mode == "research"
-            else {
-                "latex": "\\documentclass{article}\\begin{document}Draft\\end{document}",
-                "example_ids": [],
-            }
-        )
-        return payload, SimpleNamespace(session_id=f"{mode}-session")
-
-    monkeypatch.setattr(web_server, "run_agent_generation", run_generation)
-    role = {"id": 1, "company_name": "Cohere", "title": "Software Engineer Intern"}
-    resume = web_server.MasterResume(
-        filename="resume.tex",
-        content="Built AWS Lambda services.",
-        content_sha256="source",
-    )
-    research_cache: dict[str, object] = {}
-
-    _first_payload, first_session = web_server._generate_agent_application_document(
-        task="cover_letter",
-        backend="hermes",
-        role=role,
-        master_resume=resume,
-        current_document=None,
-        instructions="Draft a concise letter.",
-        session_id=None,
-        research_cache=research_cache,
-    )
-    _second_payload, second_session = web_server._generate_agent_application_document(
-        task="cover_letter",
-        backend="hermes",
-        role=role,
-        master_resume=resume,
-        current_document="previous draft",
-        instructions="Tighten to one page.",
-        session_id=first_session,
-        research_cache=research_cache,
-    )
-
-    assert calls == ["research", "document", "document"]
-    assert first_session == "document-session"
-    assert second_session == "document-session"
-    assert research_cache["payload"] == {"company": "Cohere", "products": ["enterprise AI"]}
 
 
 def test_local_cover_letter_fallback_uses_concrete_resume_and_role_evidence() -> None:
@@ -3620,7 +3434,7 @@ def test_llm_provider_accepts_only_settings_options(provider: str) -> None:
         web_server._clean_llm_provider("hermes")
 
 
-def test_persisted_llm_provider_overrides_environment_default(
+def test_application_generation_stays_openai_when_scan_provider_is_codex(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3637,7 +3451,7 @@ def test_persisted_llm_provider_overrides_environment_default(
 
     assert defaults.provider == "openai"
     assert defaults.openai_api_key is not None
-    assert selected.provider == "codex"
+    assert selected.provider == "openai"
     assert selected.openai_api_key is not None
 
 
@@ -3768,10 +3582,18 @@ def test_config_payload_returns_current_settings(
     monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
     monkeypatch.setenv("CALLUMPLOYED_LLM_PROVIDER", "openai")
     monkeypatch.setattr(web_server, "get_central_passkey", lambda: None)
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        web_server.set_config_value(connection, "application_generation_backend", "hermes")
 
     defaults = build_config_payload()
 
     assert defaults["values"] == {}
+    assert "application_generation_runtimes" not in defaults
+    assert all(
+        setting["key"] != "application_generation_backend"
+        for setting in defaults["settings"]
+    )
     assert defaults["recommendation_history_count"] == 0
     assert defaults["central"] == {
         "api_url": DEFAULT_CENTRAL_API_URL,
@@ -3844,9 +3666,10 @@ def test_config_payload_returns_current_settings(
         },
         {
             "key": "llm_provider",
-            "label": "AI provider",
+            "label": "scan AI provider",
             "description": (
-                "Codex uses the local Codex subscription; OpenAI uses this installation's API key"
+                "used for job scanning and classification only; application documents and saved "
+                "Q&A always use OpenAI"
             ),
             "control": "select",
             "value": "openai",
@@ -3857,22 +3680,7 @@ def test_config_payload_returns_current_settings(
                 {"value": "codex", "label": "Codex subscription (local CLI)"},
             ],
         },
-        {
-            "key": "application_generation_backend",
-            "label": "application generation backend",
-            "description": (
-                "backend used only for resumes, cover letters, and saved application Q&A"
-            ),
-            "control": "select",
-            "value": "openai",
-            "default": "openai",
-            "editable": True,
-            "options": [
-                {"value": "openai", "label": "OpenAI"},
-                {"value": "hermes", "label": "Hermes Agent"},
-                {"value": "openclaw", "label": "OpenClaw"},
-            ],
-        },
+
         {
             "key": "cover_letter_model",
             "label": "cover letter model",
@@ -4089,7 +3897,7 @@ def test_config_endpoint_updates_settings(
         }
         setting_values = {setting["key"]: setting["value"] for setting in updated["settings"]}
         assert setting_values == {
-            "application_generation_backend": "openai",
+
             "applicant_degree": "Bachelor of Engineering in Software Engineering",
             "applicant_email": "callum@example.com",
             "applicant_first_name": "Callum",
@@ -4112,6 +3920,17 @@ def test_config_endpoint_updates_settings(
         }
         assert scheduled_repreps == [True]
         assert web_server.APPLICANT_PROFILE_REPREP_DUE_CONFIG_KEY not in updated["values"]
+
+        retired_backend_request = Request(
+            f"{base_url}/api/config",
+            data=json.dumps({"application_generation_backend": "hermes"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(HTTPError) as retired_backend_error:
+            urlopen(retired_backend_request, timeout=5)
+        assert retired_backend_error.value.code == 400
+
         with db.connect() as connection:
             durable_reprep_due = get_config_value(
                 connection,
