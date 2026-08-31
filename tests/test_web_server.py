@@ -3117,6 +3117,198 @@ def test_resume_fallback_rejects_stale_prior_pdf(
         )
 
 
+@pytest.mark.parametrize(
+    ("valid_call", "expected_calls", "expected_source"),
+    [(2, 2, "agent_cover_letter"), (None, 2, "local_cover_letter_fallback")],
+)
+def test_agent_cover_letter_layout_repair_is_bounded_and_reuses_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    valid_call: int | None,
+    expected_calls: int,
+    expected_source: str,
+) -> None:
+    database = tmp_path / "tracker-hermes-cover-letter-repair.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    calls: list[dict[str, object]] = []
+
+    def agent_document(**kwargs: object) -> tuple[dict[str, object], str]:
+        calls.append(dict(kwargs))
+        word_count = 180 if len(calls) == valid_call else 301
+        latex = (
+            "\\documentclass{article}\\begin{document}"
+            "\\noindent Dear Hiring Manager,\\par\n\n"
+            + " ".join(["grounded"] * word_count)
+            + "\n\n\\noindent Sincerely,\\\\\nCallum Mackenzie"
+            "\\end{document}"
+        )
+        return ({"latex": latex, "example_ids": []}, f"agent-session-{len(calls)}")
+
+    def write_document(
+        role: dict[str, object],
+        latex: str,
+        *,
+        source: str,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        word_count = web_server._cover_letter_body_word_count(latex)
+        if word_count > 300:
+            raise web_server.GeneratedDocumentLengthError(word_count, 0, 300)
+        return {"role_id": role["id"], "source": source, "latex": latex}
+
+    monkeypatch.setattr(web_server, "_generate_agent_application_document", agent_document)
+    monkeypatch.setattr(web_server, "_write_role_cover_letter", write_document)
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    runner.invoke(app, ["companies", "add", "Cohere", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Software Engineer Intern", "https://example.com/jobs/swe"],
+        env=env,
+    )
+    with db.connect() as connection:
+        web_server.set_config_value(connection, "application_generation_backend", "hermes")
+    resume = web_server.MasterResume(
+        filename="resume.tex",
+        content="Built AWS Lambda and Docker services.",
+        content_sha256="source",
+    )
+
+    result = web_server.build_role_cover_letter(
+        {"id": 1, "company_name": "Cohere", "title": "Software Engineer Intern"},
+        resume,
+    )
+
+    assert len(calls) == expected_calls
+    assert calls[0]["session_id"] is None
+    assert calls[1]["session_id"] == "agent-session-1"
+    assert calls[0]["research_cache"] is calls[1]["research_cache"]
+    assert "no more than 300 words" in str(calls[1]["instructions"])
+    assert result["source"] == expected_source
+
+
+def test_agent_cover_letter_research_is_cached_across_single_repair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-agent-research-cache.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    runner.invoke(app, ["companies", "add", "Cohere", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Software Engineer Intern", "https://example.com/jobs/swe"],
+        env=env,
+    )
+    with db.connect() as connection:
+        web_server.ensure_autoprep_schema(connection)
+    calls: list[str] = []
+
+    def run_generation(
+        _backend: str,
+        _prompt: str,
+        **kwargs: object,
+    ) -> tuple[dict[str, object], object]:
+        mode = str(kwargs.get("mode") or "document")
+        calls.append(mode)
+        payload = (
+            {"company": "Cohere", "products": ["enterprise AI"]}
+            if mode == "research"
+            else {
+                "latex": "\\documentclass{article}\\begin{document}Draft\\end{document}",
+                "example_ids": [],
+            }
+        )
+        return payload, SimpleNamespace(session_id=f"{mode}-session")
+
+    monkeypatch.setattr(web_server, "run_agent_generation", run_generation)
+    role = {"id": 1, "company_name": "Cohere", "title": "Software Engineer Intern"}
+    resume = web_server.MasterResume(
+        filename="resume.tex",
+        content="Built AWS Lambda services.",
+        content_sha256="source",
+    )
+    research_cache: dict[str, object] = {}
+
+    _first_payload, first_session = web_server._generate_agent_application_document(
+        task="cover_letter",
+        backend="hermes",
+        role=role,
+        master_resume=resume,
+        current_document=None,
+        instructions="Draft a concise letter.",
+        session_id=None,
+        research_cache=research_cache,
+    )
+    _second_payload, second_session = web_server._generate_agent_application_document(
+        task="cover_letter",
+        backend="hermes",
+        role=role,
+        master_resume=resume,
+        current_document="previous draft",
+        instructions="Tighten to one page.",
+        session_id=first_session,
+        research_cache=research_cache,
+    )
+
+    assert calls == ["research", "document", "document"]
+    assert first_session == "document-session"
+    assert second_session == "document-session"
+    assert research_cache["payload"] == {"company": "Cohere", "products": ["enterprise AI"]}
+
+
+def test_local_cover_letter_fallback_uses_concrete_resume_and_role_evidence() -> None:
+    assert "2027" not in web_server._prep_keywords("Software Engineer Intern Winter 2027")
+    resume = web_server.MasterResume(
+        filename="resume.tex",
+        content=(
+            "\\documentclass{article}\n"
+            "\\begin{document}\n"
+            "\\resumeProjectHeading{\\textbf{University of British Columbia}}"
+            "{Graduation Date: 2027}\n"
+            "\\resumeItem{Built AWS Lambda and Docker pipelines that generated large PDF and "
+            "DOCX documents for hundreds of researchers.}\n"
+            "\\resumeItem{Implemented OIDC authentication, PostgreSQL features, and GraphQL "
+            "workflows.}\n"
+            "\\resumeProjectHeading{\\textbf{PullUp}}{2026}\n"
+            "\\resumeItem{Strengthened a 34-route Express API with input validation and secure "
+            "HTTP-only session cookies.}\n"
+            "\\resumeItem{Built automated Python and PyTest coverage to catch API regressions.}\n"
+            "\\end{document}\n"
+        ),
+        content_sha256="source",
+    )
+    role = {
+        "id": 1,
+        "company_name": "Cohere",
+        "title": "Software Engineer Intern (Winter 2027)",
+        "description": (
+            "Build features for the API platform, robust data pipelines, scalable services and "
+            "infrastructure, security features, developer tooling, and reliable production code."
+        ),
+    }
+
+    latex = web_server._fallback_cover_letter_latex(
+        role,
+        resume,
+        applicant_profile=ApplicantProfile(first_name="Jake", last_name="Yeo"),
+    )
+    normalized = web_server._normalize_cover_letter_latex(
+        latex,
+        role_title=role["title"],
+    )
+    body_words = web_server._cover_letter_body_word_count(normalized)
+
+    assert 140 <= body_words <= 300
+    assert "My background aligns especially around" not in normalized
+    assert "around 2027" not in normalized
+    assert "AWS Lambda" in normalized
+    assert "Docker" in normalized
+    assert "34-route Express API" in normalized
+    assert "API platform" in normalized
+    assert "scalable services" in normalized
+    assert "role's focus aligns" not in normalized
+
+
 def test_role_chat_endpoint_uses_role_material_contexts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
