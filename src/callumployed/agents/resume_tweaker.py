@@ -25,6 +25,8 @@ only when the edit is supported by the existing resume or explicitly supplied
 other-experience notes. Keep the resume truthful and concise.
 
 Rules:
+- establish a one-page content budget before drafting: preserve every source entry,
+  then allocate the most space to evidence that directly supports the posting
 - preserve the current LaTeX structure, packages, commands, and formatting unless
   a requested tweak requires a narrow content edit
 - actively rewrite bullets and descriptions so the resume is clearer, smoother,
@@ -34,6 +36,8 @@ Rules:
 - select the strongest source-supported accomplishments for each entry; bullets may
   be reordered, split, tightened, or consolidated within the same experience, but
   never awkwardly combine unrelated projects, employers, or accomplishments
+- lead each bullet with a strong action verb and make the action, context, and outcome
+  easy to scan; Quantify only when the source provides the number
 - use readable spacing and typography to fill one page effectively; if the page is
   sparse, add useful source-supported specificity rather than filler or repetition
 - do not invent employers, projects, metrics, skills, dates, schools, awards, or

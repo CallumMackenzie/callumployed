@@ -891,7 +891,7 @@ def test_autoprep_worker_uses_direct_generation_and_preserves_document_artifacts
     assert resume_calls[0]["tweaks"] == "Use the saved resume prompt."
     assert cover_calls[0]["tweaks"] == "Review indexed evidence before drafting."
     assert resume_calls[0]["required_page_count"] == 1
-    assert cover_calls[0]["allow_local_fallback"] is False
+    assert cover_calls[0]["allow_local_fallback"] is True
     assert cover_calls[0]["required_page_count"] == 1
     assert Path(completed["resume_artifact_path"]).is_file()
     assert Path(completed["cover_letter_artifact_path"]).is_file()

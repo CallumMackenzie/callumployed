@@ -226,17 +226,20 @@ DEFAULT_AUTOPREP_TAILOR_RESUME = True
 DEFAULT_AUTOPREP_RESUME_PROMPT = (
     "Tailor this resume truthfully for the saved role context. Preserve every employer, "
     "project, education entry, date, and link while actively improving the wording. "
-    "Do not invent claims or awkwardly combine unrelated experiences."
+    "Budget the content for one page before drafting. Lead bullets with strong action verbs, "
+    "emphasize source-supported accomplishments, and quantify only when the source provides "
+    "the number. Do not invent claims or awkwardly combine unrelated experiences."
 )
 DEFAULT_AUTOPREP_COVER_LETTER_PROMPT = (
     "Review the indexed application materials as well as the resume and job description. "
-    "Write a balanced, company-specific cover letter using the strongest 2-3 source-supported "
+    "Write a concise, company-specific cover letter using the strongest 2-3 source-supported "
     "examples. Explain the task or problem, action taken, and result delivered; demonstrate "
     "relevant soft skills through evidence rather than generic claims. For AI-related roles, "
     "use a source-supported, independently directed AI application and its outcome when "
     "available, naming Hermes when the source supports it. Close by thanking the reader and "
-    "inviting an interview. Do not invent experience, referrals, company research, outcomes, "
-    "or metrics."
+    "inviting an interview. Use three short body paragraphs by default, target roughly 200-300 "
+    "words, and never pad the letter to fill the page. The letter must be at most one page. Do "
+    "not invent experience, referrals, company research, outcomes, or metrics."
 )
 DEFAULT_SCAN_HEADLESS = False
 LLM_PROVIDER_OPTIONS = (
@@ -3964,8 +3967,10 @@ def _agent_document_contract(
         contract = (
             "Use the exact persisted role title and deterministic named-contact salutation "
             "when the "
-            "saved posting provides one, otherwise use Dear Hiring Team. Produce exactly four body "
-            "paragraphs containing 325-400 body words and a complete one-page LaTeX letter. Keep "
+            "saved posting provides one, otherwise use Dear Hiring Manager. Produce three concise "
+            "body paragraphs by default and a fourth only for distinct, strong evidence. Target "
+            "roughly 200-300 body words without padding; the complete LaTeX letter must be at most "
+            "one page. Keep "
             "applicant claims grounded in saved materials. Public-web research may support "
             "only the "
             "company/product rationale. Do not use placeholders. Applicant profile JSON: "
@@ -4155,7 +4160,6 @@ def _prepare_autoprep_resume(
             resume,
             resume.content,
             required_page_count=1,
-            minimum_page_fill_ratio=0.82,
         )
     source_pdf = _required_generated_pdf(generated, "resume")
     artifact_directory, artifact_path = _copy_autoprep_pdf(role_payload, source_pdf, kind="resume")
@@ -4226,7 +4230,7 @@ def _prepare_autoprep_cover_letter(
         resume_for_generation,
         tweaks=_autoprep_generation_prompt(configured_prompt, instruction),
         previous_cover_letter_latex=(str((previous_cover_letter or {}).get("latex") or "") or None),
-        allow_local_fallback=False,
+        allow_local_fallback=True,
         required_page_count=1,
     )
     source_pdf = _required_generated_pdf(generated, "cover letter")
@@ -4585,6 +4589,49 @@ def build_prep_analysis(
     }
 
 
+def _publish_reliable_cover_letter_fallback(
+    role: dict[str, Any],
+    resume: MasterResume,
+    *,
+    applicant_profile: ApplicantProfile,
+    experience_context: list[dict[str, object]],
+    tweaks: str | None,
+    required_page_count: int | None,
+) -> dict[str, Any]:
+    role_id = role.get("id")
+    fallback_latex = _normalize_cover_letter_latex(
+        _fallback_cover_letter_latex(
+            role,
+            resume,
+            applicant_profile=applicant_profile,
+            other_experience_context=experience_context,
+        ),
+        hiring_contact=find_named_hiring_contact(role.get("description")),
+        role_title=str(role.get("title") or ""),
+    )
+    try:
+        return _write_role_cover_letter(
+            role,
+            fallback_latex,
+            source="local_cover_letter_fallback",
+            example_ids=[],
+            tweaks=tweaks,
+            required_page_count=required_page_count,
+            minimum_page_fill_ratio=None,
+            minimum_body_word_count=None,
+            maximum_body_word_count=300,
+        )
+    except Exception:
+        existing = _existing_one_page_cover_letter_fallback(role, tweaks=tweaks)
+        if existing is not None:
+            LOGGER.exception(
+                "Cover letter fallback failed for role %s; retaining prior artifact",
+                role_id,
+            )
+            return existing
+        raise
+
+
 def build_role_cover_letter(
     role: dict[str, Any],
     resume: MasterResume,
@@ -4718,18 +4765,14 @@ def build_role_cover_letter(
         if not allow_local_fallback:
             raise
         LOGGER.exception("AI cover letter generation failed for role %s", role_id)
-        latex = _normalize_cover_letter_latex(
-            _fallback_cover_letter_latex(
-                role_for_prompt,
-                resume,
-                applicant_profile=applicant_profile,
-                other_experience_context=experience_context,
-            ),
-            hiring_contact=find_named_hiring_contact(role_for_prompt.get("description")),
-            role_title=str(role_for_prompt.get("title") or ""),
+        return _publish_reliable_cover_letter_fallback(
+            role_for_prompt,
+            resume,
+            applicant_profile=applicant_profile,
+            experience_context=experience_context,
+            tweaks=tweaks,
+            required_page_count=required_page_count,
         )
-        example_ids = []
-        source = "local_cover_letter_fallback"
 
     for attempt in range(3):
         try:
@@ -4740,47 +4783,52 @@ def build_role_cover_letter(
                 example_ids=example_ids,
                 tweaks=tweaks,
                 required_page_count=required_page_count,
-                minimum_page_fill_ratio=0.65,
-                minimum_body_word_count=325,
-                maximum_body_word_count=400,
+                minimum_page_fill_ratio=None,
+                minimum_body_word_count=None,
+                maximum_body_word_count=300,
             )
             if agent_session_id:
                 written["session_id"] = agent_session_id
             return written
-        except (
-            GeneratedDocumentPageCountError,
-            GeneratedDocumentLayoutError,
-            GeneratedDocumentLengthError,
-        ) as error:
+        except Exception as error:  # noqa: BLE001 - generated output must fall back safely.
             if attempt == 2 or source != "ai_cover_letter":
-                raise RuntimeError(
-                    "Cover letter generation could not produce a balanced, full one-page PDF "
-                    "after three bounded attempts."
-                ) from error
+                return _publish_reliable_cover_letter_fallback(
+                    role_for_prompt,
+                    resume,
+                    applicant_profile=applicant_profile,
+                    experience_context=experience_context,
+                    tweaks=tweaks,
+                    required_page_count=required_page_count,
+                )
             if isinstance(error, GeneratedDocumentLengthError):
-                direction = "expand" if error.word_count < error.minimum else "tighten"
                 retry_tweaks = (
                     f"{tweaks or ''}\n\n"
-                    f"The cover letter body was {error.word_count} words. {direction.capitalize()} "
-                    f"the smooth, source-supported prose to {error.minimum}-{error.maximum} words. "
+                    f"The cover letter body was {error.word_count} words. Tighten the smooth, "
+                    "source-supported prose to no more than 300 words. "
                     "Do not add filler, dump resume bullets, combine unrelated experiences, or "
                     "invent facts."
                 )
             elif isinstance(error, GeneratedDocumentLayoutError):
                 retry_tweaks = (
                     f"{tweaks or ''}\n\n"
-                    "The compiled cover letter was materially underfilled. Rewrite it as smooth, "
-                    "natural prose in the applicant's voice with enough source-supported detail "
-                    "to use the page effectively. Develop the strongest relevant experiences "
-                    "instead of adding filler, dumping resume bullets, or combining unrelated work."
+                    "The compiled cover letter layout could not be validated. Keep it concise and "
+                    "complete without adding filler, dumping resume bullets, or combining "
+                    "unrelated work."
+                )
+            elif isinstance(error, GeneratedDocumentPageCountError):
+                retry_tweaks = (
+                    f"{tweaks or ''}\n\n"
+                    "The compiled cover letter exceeded one page. Return a complete letter that "
+                    "fits within one PDF page. Preserve all applicant facts and the role-specific "
+                    "rationale. Tighten prose and remove repetition only; never truncate text or "
+                    "invent facts."
                 )
             else:
                 retry_tweaks = (
                     f"{tweaks or ''}\n\n"
-                    "The compiled cover letter exceeded one page. Return a complete letter that "
-                    "fits exactly one PDF page. Preserve all applicant facts and the role-specific "
-                    "rationale. Tighten prose and remove repetition only; never truncate text or "
-                    "invent facts."
+                    "The previous LaTeX draft did not compile or publish correctly. Return a "
+                    "complete document using the exact supplied scaffold, valid escaped text, and "
+                    "no unsupported packages or commands. Keep it concise and at most one page."
                 )
             try:
                 draft = asyncio.run(
@@ -4796,10 +4844,16 @@ def build_role_cover_letter(
                         settings=llm_settings,
                     )
                 )
-            except Exception as generation_error:
-                raise RuntimeError(
-                    "AI cover letter regeneration was unavailable."
-                ) from generation_error
+            except Exception:
+                LOGGER.exception("AI cover letter repair failed for role %s", role_id)
+                return _publish_reliable_cover_letter_fallback(
+                    role_for_prompt,
+                    resume,
+                    applicant_profile=applicant_profile,
+                    experience_context=experience_context,
+                    tweaks=tweaks,
+                    required_page_count=required_page_count,
+                )
             latex = _normalize_cover_letter_latex(
                 draft.latex,
                 hiring_contact=find_named_hiring_contact(role_for_prompt.get("description")),
@@ -5013,16 +5067,65 @@ def _one_page_resume_candidates(latex: str) -> list[str]:
         "\\addtolength{\\textheight}{0.42in}\n"
         "\\setlength{\\parskip}{0pt}\n"
     )
+    aggressive = (
+        latex.replace("letterpaper,11pt", "letterpaper,10pt")
+        .replace("\\fontsize{9.5pt}{11pt}", "\\fontsize{8.5pt}{9.5pt}")
+        .replace("\\fontsize{10pt}{11.5pt}", "\\fontsize{9pt}{10pt}")
+        .replace("\\vspace{-2pt}", "\\vspace{-4pt}")
+    )
+    aggressive_profile = (
+        "\\addtolength{\\topmargin}{-0.24in}\n"
+        "\\addtolength{\\textheight}{0.58in}\n"
+        "\\setlength{\\parskip}{0pt}\n"
+        "\\linespread{0.94}\\selectfont\n"
+    )
 
     candidates = [latex]
-    for content, profile in ((latex, modest_profile), (compact, compact_profile)):
+    for content, profile in (
+        (latex, modest_profile),
+        (compact, compact_profile),
+        (aggressive, aggressive_profile),
+    ):
         if "\\begin{document}" in content:
             candidate = content.replace("\\begin{document}", f"{profile}\\begin{{document}}", 1)
         else:
             candidate = f"{profile}{content}"
         if candidate not in candidates:
             candidates.append(candidate)
+    emergency = _emergency_one_page_resume_candidate(aggressive)
+    if emergency not in candidates:
+        candidates.append(emergency)
     return candidates
+
+
+def _emergency_one_page_resume_candidate(latex: str) -> str:
+    """Keep all source content while applying one final bounded whole-page fit."""
+    begin_marker = "\\begin{document}"
+    end_marker = "\\end{document}"
+    if begin_marker not in latex or end_marker not in latex:
+        return latex
+    preamble, document = latex.split(begin_marker, 1)
+    body, suffix = document.rsplit(end_marker, 1)
+    if "\\usepackage{graphicx}" not in preamble:
+        documentclass = re.search(r"\\documentclass(?:\[[^\]]*\])?\{[^}]+\}", preamble)
+        if documentclass is not None:
+            insert_at = documentclass.end()
+            preamble = (
+                f"{preamble[:insert_at]}\n\\usepackage{{graphicx}}"
+                f"{preamble[insert_at:]}"
+            )
+    fitted_body = (
+        "\n% callumployed emergency one-page fit\n"
+        "\\pagestyle{empty}\n"
+        "\\noindent\\raisebox{0pt}[0pt][0pt]{%\n"
+        "\\resizebox{\\textwidth}{0.90\\textheight}{%\n"
+        "\\begin{minipage}{\\textwidth}\n"
+        f"{body.strip()}\n"
+        "\\end{minipage}%\n"
+        "}}\\par\n"
+        "\\vspace*{0.90\\textheight}\n"
+    )
+    return f"{preamble}{begin_marker}{fitted_body}{end_marker}{suffix}"
 
 
 def save_role_resume(
@@ -5110,6 +5213,105 @@ def save_role_resume(
     return _saved_role_resume(role, resume)
 
 
+def _source_resume_fallback(
+    role: dict[str, Any],
+    resume: MasterResume,
+    *,
+    required_page_count: int,
+    tweaks: str,
+    summary: str,
+) -> dict[str, Any]:
+    try:
+        generated = save_role_resume(
+            role,
+            resume,
+            resume.content,
+            required_page_count=required_page_count,
+        )
+    except Exception:
+        role_id = role.get("id")
+        if not isinstance(role_id, int):
+            raise
+        resume_path = _role_resume_tex_path(role_id)
+        pdf_path = _current_role_resume_pdf_path(resume_path)
+        if (
+            not resume_path.is_file()
+            or pdf_path is None
+            or not _artifact_pair_is_current_page_count(
+                resume_path,
+                pdf_path,
+                required_page_count=required_page_count,
+            )
+        ):
+            raise
+        LOGGER.exception(
+            "Source resume fallback failed for role %s; retaining last one-page artifact",
+            role_id,
+        )
+        return {
+            "role_id": role_id,
+            "source": "existing_resume_fallback",
+            "summary": "Retained the last verified one-page resume after generation failed.",
+            "latex": resume_path.read_text(),
+            "tweaks": tweaks,
+            "path": str(resume_path),
+            "pdf_path": str(pdf_path),
+            "pdf_base64": base64.b64encode(pdf_path.read_bytes()).decode(),
+        }
+    return {
+        **generated,
+        "source": "source_resume_fallback",
+        "summary": summary,
+        "tweaks": tweaks,
+    }
+
+
+def _artifact_pair_is_current_page_count(
+    tex_path: Path,
+    pdf_path: Path,
+    *,
+    required_page_count: int,
+) -> bool:
+    try:
+        return (
+            tex_path.is_file()
+            and pdf_path.is_file()
+            and pdf_path.stat().st_mtime_ns >= tex_path.stat().st_mtime_ns
+            and len(PdfReader(str(pdf_path)).pages) == required_page_count
+        )
+    except Exception:  # noqa: BLE001 - unreadable artifacts cannot be trusted as fallbacks.
+        return False
+
+
+def _existing_one_page_cover_letter_fallback(
+    role: dict[str, Any],
+    *,
+    tweaks: str | None,
+) -> dict[str, Any] | None:
+    role_id = role.get("id")
+    if not isinstance(role_id, int):
+        return None
+    cover_letter_path = _role_cover_letter_tex_path(role_id)
+    pdf_path = cover_letter_path.with_suffix(".pdf")
+    if not _artifact_pair_is_current_page_count(
+        cover_letter_path,
+        pdf_path,
+        required_page_count=1,
+    ):
+        return None
+    return {
+        "role_id": role_id,
+        "source": "existing_cover_letter_fallback",
+        "summary": "Retained the last verified one-page cover letter after generation failed.",
+        "latex": cover_letter_path.read_text(),
+        "example_ids": [],
+        "tweaks": tweaks,
+        "path": str(cover_letter_path),
+        "pdf_path": str(pdf_path),
+        "pdf_base64": base64.b64encode(pdf_path.read_bytes()).decode(),
+    }
+
+
 def build_role_resume(
     role: dict[str, Any],
     resume: MasterResume,
@@ -5139,31 +5341,43 @@ def build_role_resume(
         tweaks=tweaks,
     )
     if application_backend in {"hermes", "openclaw"}:
-        payload, session_id = _generate_agent_application_document(
-            task="resume",
-            backend=application_backend,
-            role=role,
-            master_resume=resume,
-            current_document=source_latex,
-            instructions=tweaks,
-            session_id=None,
-        )
-        latex = payload.get("latex")
-        if not isinstance(latex, str) or not latex.strip():
-            raise RuntimeError("Application agent returned no resume LaTeX.")
-        missing_experience = _missing_source_resume_entries(authoritative_latex, latex)
-        if missing_experience:
-            raise RuntimeError(
-                "Application agent resume omitted a source employer, project, education entry, "
-                "date, link, or section."
+        try:
+            payload, session_id = _generate_agent_application_document(
+                task="resume",
+                backend=application_backend,
+                role=role,
+                master_resume=resume,
+                current_document=source_latex,
+                instructions=tweaks,
+                session_id=None,
             )
-        generated = save_role_resume(
-            role,
-            resume,
-            latex,
-            required_page_count=required_page_count,
-            minimum_page_fill_ratio=0.82,
-        )
+            latex = payload.get("latex")
+            if not isinstance(latex, str) or not latex.strip():
+                raise RuntimeError("Application agent returned no resume LaTeX.")
+            missing_experience = _missing_source_resume_entries(authoritative_latex, latex)
+            if missing_experience:
+                raise RuntimeError(
+                    "Application agent resume omitted a source employer, project, education "
+                    "entry, date, link, or section."
+                )
+            generated = save_role_resume(
+                role,
+                resume,
+                latex,
+                required_page_count=required_page_count,
+            )
+        except Exception:  # noqa: BLE001 - always publish a bounded source-based artifact.
+            LOGGER.exception("Application-agent resume generation failed for role %s", role_id)
+            return _source_resume_fallback(
+                role,
+                resume,
+                required_page_count=required_page_count,
+                tweaks=tweaks,
+                summary=(
+                    "Preserved and fitted the complete source resume because application-agent "
+                    "generation was unavailable or invalid."
+                ),
+            )
         return {
             **generated,
             "summary": str(payload.get("summary") or "Tailored by application agent."),
@@ -5183,8 +5397,18 @@ def build_role_resume(
                     settings=llm_settings,
                 )
             )
-        except Exception as error:  # noqa: BLE001 - surface a concise UI failure.
-            raise RuntimeError("AI resume regeneration was unavailable.") from error
+        except Exception:  # noqa: BLE001 - always publish a bounded source-based artifact.
+            LOGGER.exception("AI resume generation failed for role %s", role_id)
+            return _source_resume_fallback(
+                role,
+                resume,
+                required_page_count=required_page_count,
+                tweaks=tweaks,
+                summary=(
+                    "Preserved and fitted the complete source resume because AI generation "
+                    "was unavailable."
+                ),
+            )
 
         missing_experience = _missing_source_resume_entries(
             authoritative_latex,
@@ -5192,27 +5416,16 @@ def build_role_resume(
         )
         if missing_experience:
             if attempt == 2:
-                try:
-                    generated = save_role_resume(
-                        role,
-                        resume,
-                        authoritative_latex,
-                        required_page_count=required_page_count,
-                        minimum_page_fill_ratio=0.82,
-                    )
-                except Exception as error:
-                    raise RuntimeError(
-                        "The complete source resume could not fit exactly one PDF page using "
-                        "the bounded layout profiles. No experience was removed."
-                    ) from error
-                return {
-                    **generated,
-                    "summary": (
-                        "Preserved the complete source resume because the generated draft "
-                        "omitted an employer, project, education entry, date, or section."
+                return _source_resume_fallback(
+                    role,
+                    resume,
+                    required_page_count=required_page_count,
+                    tweaks=tweaks,
+                    summary=(
+                        "Preserved and fitted the complete source resume because the generated "
+                        "draft omitted an employer, project, education entry, date, or section."
                     ),
-                    "tweaks": tweaks,
-                }
+                )
             candidate_source = authoritative_latex
             candidate_tweaks = (
                 f"{tweaks}\n\n"
@@ -5230,31 +5443,19 @@ def build_role_resume(
                 resume,
                 draft.latex,
                 required_page_count=required_page_count,
-                minimum_page_fill_ratio=0.82,
             )
         except Exception:
             if attempt == 2:
-                try:
-                    generated = save_role_resume(
-                        role,
-                        resume,
-                        authoritative_latex,
-                        required_page_count=required_page_count,
-                        minimum_page_fill_ratio=0.82,
-                    )
-                except Exception as source_error:
-                    raise RuntimeError(
-                        "The complete source resume could not fit exactly one PDF page using "
-                        "the bounded layout profiles. No experience was removed."
-                    ) from source_error
-                return {
-                    **generated,
-                    "summary": (
-                        "Preserved the complete source resume because the tailored draft did "
-                        "not fit one page without content loss."
+                return _source_resume_fallback(
+                    role,
+                    resume,
+                    required_page_count=required_page_count,
+                    tweaks=tweaks,
+                    summary=(
+                        "Preserved and fitted the complete source resume because the tailored "
+                        "draft did not fit one page without content loss."
                     ),
-                    "tweaks": tweaks,
-                }
+                )
             candidate_source = authoritative_latex
             candidate_tweaks = (
                 f"{tweaks}\n\n"
@@ -5389,15 +5590,13 @@ def _write_role_cover_letter(
         example_count=len(example_ids),
     )
     body_word_count = _cover_letter_body_word_count(latex)
-    if (
-        minimum_body_word_count is not None
-        and maximum_body_word_count is not None
-        and not minimum_body_word_count <= body_word_count <= maximum_body_word_count
-    ):
+    too_short = minimum_body_word_count is not None and body_word_count < minimum_body_word_count
+    too_long = maximum_body_word_count is not None and body_word_count > maximum_body_word_count
+    if too_short or too_long:
         raise GeneratedDocumentLengthError(
             body_word_count,
-            minimum_body_word_count,
-            maximum_body_word_count,
+            minimum_body_word_count or 0,
+            maximum_body_word_count or body_word_count,
         )
 
     cover_letter_path = _role_cover_letter_tex_path(role_id)
@@ -5448,16 +5647,17 @@ def _write_role_cover_letter(
                 f"{required_page_count} PDF page (attempts: {page_counts})."
             )
 
-        staged_tex = cover_letter_path.with_name(f".{cover_letter_path.name}.candidate")
-        staged_pdf = cover_letter_path.with_name(f".{cover_letter_path.stem}.pdf.candidate")
+        staged_tex = Path(temp_dir) / "selected.tex"
+        staged_pdf = Path(temp_dir) / "selected.pdf"
         staged_tex.write_text(selected_latex)
         shutil.copyfile(selected_pdf, staged_pdf)
-        try:
-            staged_tex.replace(cover_letter_path)
-            staged_pdf.replace(cover_letter_path.with_suffix(".pdf"))
-        finally:
-            staged_tex.unlink(missing_ok=True)
-            staged_pdf.unlink(missing_ok=True)
+        _commit_resume_artifact_pair(
+            staged_tex=staged_tex,
+            staged_pdf=staged_pdf,
+            target_tex=cover_letter_path,
+            target_pdf=cover_letter_path.with_suffix(".pdf"),
+            backup_dir=Path(temp_dir),
+        )
     pdf_path = cover_letter_path.with_suffix(".pdf")
     return {
         "role_id": role_id,
@@ -5889,6 +6089,26 @@ def _current_role_resume_pdf_path(resume_path: Path) -> Path | None:
     return max(existing, key=lambda path: path.stat().st_mtime)
 
 
+def _publish_saved_cover_letter_pair(
+    cover_letter_path: Path,
+    latex: str,
+) -> None:
+    with tempfile.TemporaryDirectory(
+        prefix=f".{cover_letter_path.stem}-refresh-",
+        dir=cover_letter_path.parent,
+    ) as temp_dir:
+        staged_tex = Path(temp_dir) / "selected.tex"
+        staged_tex.write_text(latex)
+        staged_pdf, _ = _generate_cover_letter_pdf_preview(staged_tex)
+        _commit_resume_artifact_pair(
+            staged_tex=staged_tex,
+            staged_pdf=staged_pdf,
+            target_tex=cover_letter_path,
+            target_pdf=cover_letter_path.with_suffix(".pdf"),
+            backup_dir=Path(temp_dir),
+        )
+
+
 def _saved_role_cover_letter(role_id: int) -> dict[str, Any] | None:
     cover_letter_path = _role_cover_letter_tex_path(role_id)
     if not cover_letter_path.exists():
@@ -5897,21 +6117,21 @@ def _saved_role_cover_letter(role_id: int) -> dict[str, Any] | None:
     normalized_latex = _normalize_cover_letter_latex(saved_latex)
     pdf_path = cover_letter_path.with_suffix(".pdf")
     pdf_is_stale = (
-        pdf_path.exists() and pdf_path.stat().st_mtime < cover_letter_path.stat().st_mtime
+        pdf_path.exists() and pdf_path.stat().st_mtime_ns < cover_letter_path.stat().st_mtime_ns
     )
     if normalized_latex != saved_latex or not pdf_path.exists() or pdf_is_stale:
-        cover_letter_path.write_text(normalized_latex)
-        with suppress(RuntimeError):
-            pdf_path, _ = _generate_cover_letter_pdf_preview(cover_letter_path)
+        with suppress(Exception):
+            _publish_saved_cover_letter_pair(cover_letter_path, normalized_latex)
+    current_latex = cover_letter_path.read_text()
     pdf_is_current = (
-        pdf_path.exists() and pdf_path.stat().st_mtime >= cover_letter_path.stat().st_mtime
+        pdf_path.exists() and pdf_path.stat().st_mtime_ns >= cover_letter_path.stat().st_mtime_ns
     )
     pdf_base64 = base64.b64encode(pdf_path.read_bytes()).decode() if pdf_is_current else None
     return {
         "role_id": role_id,
         "source": "saved_cover_letter",
         "summary": "Saved cover letter for this role.",
-        "latex": normalized_latex,
+        "latex": current_latex,
         "example_ids": [],
         "path": str(cover_letter_path),
         "pdf_path": str(pdf_path) if pdf_is_current else None,
@@ -5929,7 +6149,10 @@ def _cover_letter_display_summary(
     company = str(role.get("company_name") or "this company").strip()
     role_label = f"{title} at {company}" if company else title
     if source == "local_cover_letter_fallback":
-        return f"Drafted fallback cover letter for {role_label}; AI generation was unavailable."
+        return (
+            f"Drafted reliable fallback cover letter for {role_label}; "
+            "the generated draft could not be published."
+        )
     if source == "edited_cover_letter":
         return f"Saved edited cover letter for {role_label}."
     if example_count > 0:
@@ -5964,18 +6187,31 @@ def _fallback_cover_letter_latex(
         else "My resume includes software engineering experience relevant to this role."
     )
     return (
-        "\\documentclass[11pt]{letter}\n"
+        "\\documentclass[letterpaper,11pt]{article}\n"
         "\\usepackage[margin=1in]{geometry}\n"
+        "\\usepackage[hidelinks]{hyperref}\n"
+        "\\setlength{\\parskip}{0.55em}\n"
+        "\\setlength{\\parindent}{1.5em}\n"
+        "\\pagestyle{empty}\n"
         "\\begin{document}\n"
-        f"{applicant_profile.latex_sender_block}\\\\[12pt]\n"
-        f"\\begin{{letter}}{{{company}}}\n"
-        "\\opening{Dear Hiring Team,}\n\n"
-        f"I am excited to apply for the {title} position at {company}. "
-        f"{match_sentence} "
-        "I would welcome the opportunity to contribute to the team and tailor my "
-        "experience to the needs of this posting.\n\n"
-        f"\\closing{{Sincerely,\\\\{applicant_profile.full_name}}}\n"
-        "\\end{letter}\n"
+        f"\\noindent {applicant_profile.latex_sender_block}\\par\n"
+        "\\vspace{1.1em}\n"
+        f"\\noindent {company}\\\\\n"
+        f"{title}\\\\\n"
+        "\\today\\par\n"
+        "\\vspace{1.1em}\n\n"
+        "\\noindent Dear Hiring Manager,\\par\n"
+        "\\vspace{0.35em}\n\n"
+        f"I am applying for the {title} position at {company}. The role's focus aligns "
+        "with the experience documented in my resume, and I would value the opportunity "
+        "to contribute that experience to your team.\n\n"
+        f"{match_sentence} I approach technical work with care, ownership, and an emphasis "
+        "on clear outcomes.\n\n"
+        "Thank you for considering my application. I would welcome an interview to discuss "
+        "how my experience can support this role.\n\n"
+        "\\vspace{0.35em}\n"
+        "\\noindent Sincerely,\\\\[12pt]\n"
+        f"{applicant_profile.full_name}\n"
         "\\end{document}\n"
     )
 

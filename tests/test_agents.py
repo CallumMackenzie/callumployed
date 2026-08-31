@@ -233,8 +233,9 @@ def test_cover_letter_prompt_includes_resume_job_and_tool_results() -> None:
     assert '"description": "Python distributed systems internship"' in prompt
     assert "Python distributed systems internship" in prompt
     assert "Dear Stripe" in prompt
-    assert "fits on one page" in prompt
-    assert "325-400 words" in prompt
+    assert "at most one page" in prompt
+    assert "roughly 200-300 words" in prompt
+    assert "never add text merely to fill the page" in prompt
     assert "1in margins" in prompt
     assert "sender block, recipient/date block" in prompt
     assert "sender/contact header must contain only" in prompt
@@ -253,7 +254,8 @@ def test_cover_letter_prompt_includes_resume_job_and_tool_results() -> None:
     assert "must name the exact company and role" in prompt
     assert "specific responsibilities or requirements from the posting" in prompt
     assert "avoid generic filler" in prompt
-    assert "exactly four cohesive body paragraphs" in prompt
+    assert "three concise body paragraphs by default" in prompt
+    assert "a fourth paragraph only" in prompt
     assert "how the role was found or a referral only when" in prompt
     assert "task or problem, the action taken, and the result delivered" in prompt
     assert "Never invent a number or metric" in prompt
@@ -395,6 +397,9 @@ def test_resume_tweak_prompt_includes_existing_resume_and_tweaks() -> None:
     assert "rewrite bullets and descriptions" in prompt
     assert "preserve every employer, role, project, education entry, date, and link" in prompt
     assert "strongest source-supported accomplishments" in prompt
+    assert "one-page content budget before drafting" in prompt
+    assert "lead each bullet with a strong action verb" in prompt
+    assert "Quantify only when the source provides the number" in prompt
 
 
 def test_role_chat_prompt_includes_role_material_contexts() -> None:
@@ -531,7 +536,7 @@ def test_cover_letter_agent_queries_example_tool_and_passes_documents() -> None:
     assert "Built Kubernetes-backed internal scheduling tools." in prompts[0]
     assert "primary writing-style reference" in prompts[0]
     assert "never use em dashes" in prompts[0]
-    assert "fits on one page" in prompts[0]
+    assert "at most one page" in prompts[0]
     assert "Cut one paragraph and make the intro more direct." in prompts[0]
     assert "previous_cover_letter_context" in prompts[0]
     assert "Previous draft body" in prompts[0]
