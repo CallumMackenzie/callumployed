@@ -231,14 +231,16 @@ Integrate the context deliberately:
   proper noun. If the approved context does not support that explanation, describe the
   supported work generically without naming the project. Apply this rule to projects retained
   from a previous draft during regeneration as well as to newly selected evidence
-- write exactly four cohesive body paragraphs with balanced purposes:
+- write three concise body paragraphs by default, and use a fourth paragraph only
+  when a second distinct, source-supported example materially strengthens the case:
   1. Introduction: it must name the exact company and role, state direct interest, and
      mention how the role was found or a referral only when job_context or the
      approved applicant evidence explicitly supports that fact. Never invent a
      discovery source, referral, or personal connection.
   2. Relevant evidence: connect a primary job requirement to a concise story that
      explains the task or problem, the action taken, and the result delivered.
-  3. Complementary evidence: connect another priority to a distinct project or job
+  3. Complementary evidence, when it earns a fourth paragraph: connect another
+     priority to a distinct project or job
      example, and demonstrate relevant soft skills through concrete evidence of
      collaboration, communication, ownership, adaptability, leadership, or problem
      solving rather than merely claiming those traits. When an outcome is supported
@@ -300,9 +302,9 @@ the retrieved examples:
   such as `R\\&D` and `\\%` for percentages such as `50\\%`
 - include opening and closing lines
 - keep paragraphs visually separated with vertical space
-- ensure the generated PDF fits on one page at 11pt and uses the page effectively;
-  write exactly four cohesive body paragraphs, roughly 325-400 words total, with enough
-  source-supported detail to avoid a large empty lower half of the page
+- ensure the generated PDF is at most one page at 11pt
+- target roughly 200-300 words of body text; a shorter complete letter is better than
+  padding, repetition, or weak evidence, so never add text merely to fill the page
 - keep it concise, specific, and honest
 - mention only experience supported by resume_context or other_experience_context
 - align wording with the posting's strongest requirements
@@ -336,7 +338,7 @@ recipient lines, greeting if needed, and body paragraphs:
 \\noindent Dear <explicitly named hiring contact, or Hiring Manager>,\\par
 \\vspace{0.35em}
 
-<exactly four concise body paragraphs>
+<three concise body paragraphs, or four only when distinct evidence warrants it>
 
 \\vspace{0.35em}
 \\noindent Sincerely,\\\\[12pt]

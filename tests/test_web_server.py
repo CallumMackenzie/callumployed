@@ -14,7 +14,7 @@ from urllib.request import Request, urlopen
 from zipfile import ZipFile
 
 import pytest
-from pypdf import PdfWriter
+from pypdf import PdfReader, PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 from typer.testing import CliRunner
 
@@ -1218,9 +1218,7 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         compile_attempts += 1
         cwd = Path(kwargs["cwd"])
         (cwd / "cover-letter.pdf").write_bytes(
-            _positioned_text_pdf_bytes(
-                (740, 670, 600, 530) if compile_attempts <= 5 else (740, 600, 450, 300, 150, 60)
-            )
+            _positioned_text_pdf_bytes((740, 670, 600, 530))
         )
 
         class Completed:
@@ -1249,7 +1247,7 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         return Draft()
 
     monkeypatch.setattr(web_server, "generate_cover_letter", fake_generate_cover_letter)
-    monkeypatch.setattr(web_server, "_cover_letter_body_word_count", lambda _latex: 350)
+    monkeypatch.setattr(web_server, "_cover_letter_body_word_count", lambda _latex: 250)
     env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
     runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
     runner.invoke(
@@ -1324,19 +1322,16 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         assert cover_letter["pdf_path"] == str(resume_root / "role-1" / "cover-letter.pdf")
         assert cover_letter["pdf_base64"]
         assert base64.b64decode(cover_letter["pdf_base64"]) == _positioned_text_pdf_bytes(
-            (740, 600, 450, 300, 150, 60)
+            (740, 670, 600, 530)
         )
-        assert compile_attempts == 6
-        assert len(captured_calls) == 2
+        assert compile_attempts == 1
+        assert len(captured_calls) == 1
         assert cover_letter["tweaks"] == "Make it warmer and shorten the Amazon paragraph."
         assert captured_calls[0]["tweaks"] == "Make it warmer and shorten the Amazon paragraph."
         assert captured_calls[0]["previous_cover_letter_latex"] == (
             "\\documentclass{letter}\\begin{document}Previous Acme draft\\end{document}"
         )
-        assert "materially underfilled" in str(captured_calls[1]["tweaks"])
-        assert "smooth, natural prose" in str(captured_calls[1]["tweaks"])
-        assert "source-supported detail" in str(captured_calls[1]["tweaks"])
-        assert "Dear Hiring Manager" in str(captured_calls[1]["previous_cover_letter_latex"])
+
         indexed_context = captured_calls[0]["other_experience_context"]
         assert isinstance(indexed_context, list)
         assert len(indexed_context) == 1
@@ -1543,9 +1538,10 @@ def test_cover_letter_endpoint_recompiles_stale_saved_pdf(
     os.utime(pdf_path, (1, 1))
 
     def fake_generate_pdf(path: Path) -> tuple[Path, str]:
-        assert path == cover_letter_path
-        pdf_path.write_bytes(b"fresh pdf")
-        return pdf_path, base64.b64encode(b"fresh pdf").decode()
+        assert path.name == "selected.tex"
+        generated_pdf = path.with_suffix(".pdf")
+        generated_pdf.write_bytes(b"fresh pdf")
+        return generated_pdf, base64.b64encode(b"fresh pdf").decode()
 
     monkeypatch.setattr(web_server, "_generate_cover_letter_pdf_preview", fake_generate_pdf)
 
@@ -2247,17 +2243,10 @@ Master resume
         assert "Python distributed systems" in resume["latex"]
         assert base64.b64decode(resume["pdf_base64"]) == _valid_pdf_bytes()
         assert compile_attempts == 4
-        assert len(captured_calls) == 2
+        assert len(captured_calls) == 1
         assert captured_calls[0]["resume_content"] == "Current editor latex"
         assert captured_calls[0]["tweaks"] == "Emphasize distributed systems."
-        assert "failed one-page layout validation" in str(captured_calls[1]["tweaks"])
-        assert "rewriting bullets naturally" in str(captured_calls[1]["tweaks"])
-        assert "Never invent facts or combine unrelated experiences" in str(
-            captured_calls[1]["tweaks"]
-        )
-        assert captured_calls[1]["resume_content"] == (
-            "\\documentclass{article}\n\\begin{document}\nMaster resume\n\\end{document}"
-        )
+
         indexed_context = captured_calls[0]["other_experience_context"]
         assert isinstance(indexed_context, list)
         assert len(indexed_context) == 1
@@ -2392,10 +2381,10 @@ def test_cover_letter_body_word_count_handles_letter_class_commands() -> None:
     assert web_server._cover_letter_body_word_count(latex) == 6
 
 
-@pytest.mark.parametrize("body_words", [324, 401])
-def test_write_role_cover_letter_rejects_body_outside_professional_range(
-    body_words: int,
+def test_write_role_cover_letter_rejects_only_excessive_body_length(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    body_words = 301
     latex = (
         "\\documentclass{article}\n\\begin{document}\n"
         "Jake Yeo\\\\\njake@example.com\n\n"
@@ -2414,10 +2403,45 @@ def test_write_role_cover_letter_rejects_body_outside_professional_range(
             example_ids=[],
             tweaks=None,
             required_page_count=1,
-            minimum_page_fill_ratio=0.65,
-            minimum_body_word_count=325,
-            maximum_body_word_count=400,
+            minimum_page_fill_ratio=None,
+            minimum_body_word_count=None,
+            maximum_body_word_count=300,
         )
+
+
+def test_write_role_cover_letter_accepts_concise_one_page_body(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: tmp_path)
+    body_words = 145
+    latex = (
+        "\\documentclass{article}\n\\begin{document}\n"
+        "\\noindent Dear Hiring Manager,\\par\n\n"
+        + " ".join(["grounded"] * body_words)
+        + "\n\n\\noindent Sincerely,\\\\\nCallum Mackenzie\n\\end{document}\n"
+    )
+    assert web_server._cover_letter_body_word_count(latex) == body_words
+    def create_pdf(path: Path) -> tuple[Path, str]:
+        pdf_path = path.with_suffix(".pdf")
+        pdf_path.write_bytes(_valid_pdf_bytes())
+        return pdf_path, base64.b64encode(_valid_pdf_bytes()).decode()
+
+    monkeypatch.setattr(web_server, "_generate_cover_letter_pdf_preview", create_pdf)
+    result = web_server._write_role_cover_letter(
+        {"id": 1, "company_name": "Acme", "title": "Product Intern"},
+        latex,
+        source="ai_cover_letter",
+        example_ids=[],
+        tweaks=None,
+        required_page_count=1,
+        minimum_page_fill_ratio=None,
+        minimum_body_word_count=None,
+        maximum_body_word_count=300,
+    )
+
+    assert result["source"] == "ai_cover_letter"
+    assert result["pdf_path"].endswith("cover-letter.pdf")
 
 
 def test_save_role_resume_rejects_unmeasurable_fill_and_rolls_back_pair(
@@ -2608,6 +2632,478 @@ def test_role_resume_generation_falls_back_when_ai_latex_does_not_compile(
     assert compile_attempts == 4
     assert result["latex"] == source_latex
     assert (resume_root / "role-1" / "resume.tex").read_text() == source_latex
+
+
+def test_save_role_resume_emergency_profile_fits_bounded_overflow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resume_root = tmp_path / "prepared-resumes"
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    monkeypatch.setattr(web_server, "_resume_resources_root", lambda: tmp_path / "resources")
+    monkeypatch.setattr(web_server.shutil, "which", lambda _name: "/usr/bin/pdflatex")
+    compile_attempts = 0
+
+    def fake_run(command: object, **kwargs: object) -> object:
+        nonlocal compile_attempts
+        compile_attempts += 1
+        cwd_arg = kwargs["cwd"]
+        assert isinstance(cwd_arg, (str, Path))
+        cwd = Path(cwd_arg)
+        candidate = (cwd / "resume.tex").read_text()
+        page_count = 1 if "% callumployed emergency one-page fit" in candidate else 2
+        (cwd / "resume.pdf").write_bytes(_valid_pdf_bytes(page_count))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(web_server.subprocess, "run", fake_run)
+    source_latex = (
+        "\\documentclass[letterpaper,11pt]{article}\n"
+        "\\begin{document}\n"
+        "\\section{Work}\n"
+        "\\resumeProjectHeading{\\textbf{Complete Employer}}{2026}\n"
+        "\\resumeItem{Complete source experience.}\n"
+        "\\end{document}\n"
+    )
+    resume = web_server.MasterResume(
+        id=1,
+        filename="resume.tex",
+        content=source_latex,
+        content_sha256="source",
+        created_at=None,
+        updated_at=None,
+    )
+
+    result = web_server.save_role_resume(
+        {"id": 1, "company_name": "Acme", "title": "Product Intern"},
+        resume,
+        source_latex,
+        required_page_count=1,
+    )
+
+    assert compile_attempts <= 6
+    assert "% callumployed emergency one-page fit" in result["latex"]
+    assert "Complete Employer" in result["latex"]
+    assert len(PdfReader(result["pdf_path"]).pages) == 1
+
+
+def test_role_resume_generation_returns_source_artifact_when_provider_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-role-resume-provider-fallback.sqlite3"
+    resume_root = tmp_path / "prepared-resumes"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    monkeypatch.setattr(web_server, "_resume_resources_root", lambda: tmp_path / "resources")
+    monkeypatch.setattr(web_server.shutil, "which", lambda _name: "/usr/bin/pdflatex")
+
+    async def unavailable_provider(**_kwargs: object) -> object:
+        raise RuntimeError("provider unavailable")
+
+    def fake_run(command: object, **kwargs: object) -> object:
+        cwd_arg = kwargs["cwd"]
+        assert isinstance(cwd_arg, (str, Path))
+        cwd = Path(cwd_arg)
+        (cwd / "resume.pdf").write_bytes(_valid_pdf_bytes())
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(web_server, "generate_resume_tweak", unavailable_provider)
+    monkeypatch.setattr(web_server.subprocess, "run", fake_run)
+    db.ensure_initialized()
+    source_latex = (
+        "\\documentclass{article}\n\\begin{document}\n"
+        "\\section{Work}\nComplete source experience.\n\\end{document}\n"
+    )
+    resume = web_server.MasterResume(
+        id=1,
+        filename="resume.tex",
+        content=source_latex,
+        content_sha256="source",
+        created_at=None,
+        updated_at=None,
+    )
+
+    result = web_server.build_role_resume(
+        {"id": 1, "company_name": "Acme", "title": "Product Intern"},
+        resume,
+        tweaks="Tailor this resume.",
+    )
+
+    assert result["latex"] == source_latex
+    assert result["source"] == "source_resume_fallback"
+    assert len(PdfReader(result["pdf_path"]).pages) == 1
+
+
+def test_cover_letter_generation_returns_concise_local_artifact_when_provider_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-cover-letter-provider-fallback.sqlite3"
+    resume_root = tmp_path / "prepared-resumes"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+
+    async def unavailable_provider(**_kwargs: object) -> object:
+        raise RuntimeError("provider unavailable")
+
+    def create_pdf(path: Path) -> tuple[Path, str]:
+        pdf_path = path.with_suffix(".pdf")
+        pdf = _valid_pdf_bytes()
+        pdf_path.write_bytes(pdf)
+        return pdf_path, base64.b64encode(pdf).decode()
+
+    monkeypatch.setattr(web_server, "generate_cover_letter", unavailable_provider)
+    monkeypatch.setattr(web_server, "_generate_cover_letter_pdf_preview", create_pdf)
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Backend Intern", "https://example.com/jobs/backend"],
+        env=env,
+    )
+    with db.connect() as connection:
+        connection.execute(
+            "UPDATE roles SET description = 'Python backend internship' WHERE id = 1"
+        )
+        connection.commit()
+    resume = web_server.MasterResume(
+        id=1,
+        filename="resume.tex",
+        content="Python backend and distributed systems experience.",
+        content_sha256="source",
+        created_at=None,
+        updated_at=None,
+    )
+
+    result = web_server.build_role_cover_letter(
+        {"id": 1, "company_name": "Acme", "title": "Backend Intern"},
+        resume,
+        allow_local_fallback=True,
+        required_page_count=1,
+    )
+
+    assert result["source"] == "local_cover_letter_fallback"
+    assert web_server._cover_letter_body_word_count(result["latex"]) <= 300
+    assert len(PdfReader(result["pdf_path"]).pages) == 1
+
+
+def test_cover_letter_overflow_uses_bounded_attempts_then_local_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-cover-letter-overflow-fallback.sqlite3"
+    resume_root = tmp_path / "prepared-resumes"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    generation_calls = 0
+
+    async def overflowing_provider(**_kwargs: object) -> object:
+        nonlocal generation_calls
+        generation_calls += 1
+        return SimpleNamespace(
+            latex=(
+                "\\documentclass{article}\n\\begin{document}\n"
+                "\\noindent Dear Hiring Manager,\\par\n\n"
+                + " ".join(["grounded"] * 301)
+                + "\n\n\\noindent Sincerely,\\\\\nCallum Mackenzie\n"
+                "\\end{document}\n"
+            ),
+            summary="too long",
+            example_ids=[],
+        )
+
+    def create_pdf(path: Path) -> tuple[Path, str]:
+        pdf_path = path.with_suffix(".pdf")
+        pdf = _valid_pdf_bytes()
+        pdf_path.write_bytes(pdf)
+        return pdf_path, base64.b64encode(pdf).decode()
+
+    monkeypatch.setattr(web_server, "generate_cover_letter", overflowing_provider)
+    monkeypatch.setattr(web_server, "_generate_cover_letter_pdf_preview", create_pdf)
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Backend Intern", "https://example.com/jobs/backend"],
+        env=env,
+    )
+    resume = web_server.MasterResume(
+        id=1,
+        filename="resume.tex",
+        content="Python backend and distributed systems experience.",
+        content_sha256="source",
+        created_at=None,
+        updated_at=None,
+    )
+
+    result = web_server.build_role_cover_letter(
+        {"id": 1, "company_name": "Acme", "title": "Backend Intern"},
+        resume,
+        required_page_count=1,
+    )
+
+    assert generation_calls == 3
+    assert result["source"] == "local_cover_letter_fallback"
+    assert web_server._cover_letter_body_word_count(result["latex"]) <= 300
+    assert len(PdfReader(result["pdf_path"]).pages) == 1
+
+
+@pytest.mark.parametrize(
+    ("failure_mode", "expected_generation_calls"),
+    [("compile", 3), ("repair_provider", 2)],
+)
+def test_cover_letter_repair_failures_publish_local_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_mode: str,
+    expected_generation_calls: int,
+) -> None:
+    database = tmp_path / f"tracker-cover-letter-{failure_mode}.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    generation_calls = 0
+
+    async def provider(**_kwargs: object) -> object:
+        nonlocal generation_calls
+        generation_calls += 1
+        if failure_mode == "repair_provider" and generation_calls == 2:
+            raise RuntimeError("provider failed during repair")
+        return SimpleNamespace(
+            latex="\\documentclass{article}\\begin{document}Draft\\end{document}",
+            summary="draft",
+            example_ids=[],
+        )
+
+    def write_document(
+        role: dict[str, object],
+        latex: str,
+        *,
+        source: str,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        if source == "local_cover_letter_fallback":
+            return {
+                "role_id": role["id"],
+                "source": source,
+                "latex": latex,
+                "pdf_path": str(tmp_path / "fallback.pdf"),
+            }
+        if failure_mode == "compile":
+            raise RuntimeError("LaTeX failed to compile the cover letter")
+        raise web_server.GeneratedDocumentLengthError(301, 0, 300)
+
+    monkeypatch.setattr(web_server, "generate_cover_letter", provider)
+    monkeypatch.setattr(web_server, "_write_role_cover_letter", write_document)
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Backend Intern", "https://example.com/jobs/backend"],
+        env=env,
+    )
+    resume = web_server.MasterResume(
+        id=1,
+        filename="resume.tex",
+        content="Python backend experience.",
+        content_sha256="source",
+        created_at=None,
+        updated_at=None,
+    )
+
+    result = web_server.build_role_cover_letter(
+        {"id": 1, "company_name": "Acme", "title": "Backend Intern"},
+        resume,
+    )
+
+    assert generation_calls == expected_generation_calls
+    assert result["source"] == "local_cover_letter_fallback"
+
+
+
+def test_cover_letter_publication_rolls_back_tex_and_pdf_together(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resume_root = tmp_path / "prepared-resumes"
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    role = {"id": 1, "company_name": "Acme", "title": "Backend Intern"}
+    role_dir = resume_root / "role-1"
+    role_dir.mkdir(parents=True)
+    target_tex = role_dir / "cover-letter.tex"
+    target_pdf = role_dir / "cover-letter.pdf"
+    target_tex.write_text("old cover letter")
+    target_pdf.write_bytes(b"old cover pdf")
+
+    def create_pdf(path: Path) -> tuple[Path, str]:
+        pdf_path = path.with_suffix(".pdf")
+        pdf = _valid_pdf_bytes()
+        pdf_path.write_bytes(pdf)
+        return pdf_path, base64.b64encode(pdf).decode()
+
+    monkeypatch.setattr(web_server, "_generate_cover_letter_pdf_preview", create_pdf)
+    real_replace = os.replace
+    failed_install = False
+
+    def fail_pdf_install(source: object, destination: object) -> None:
+        nonlocal failed_install
+        source_path = Path(str(source))
+        destination_path = Path(str(destination))
+        if not failed_install and destination_path == target_pdf:
+            failed_install = True
+            raise OSError("injected cover PDF commit failure")
+        real_replace(source_path, destination_path)
+
+    monkeypatch.setattr(web_server.os, "replace", fail_pdf_install)
+    latex = (
+        "\\documentclass{article}\\begin{document}"
+        "Dear Hiring Manager, new letter. Sincerely, Callum"
+        "\\end{document}"
+    )
+
+    with pytest.raises(OSError, match="injected cover PDF commit failure"):
+        web_server._write_role_cover_letter(
+            role,
+            latex,
+            source="ai_cover_letter",
+            example_ids=[],
+            tweaks=None,
+            required_page_count=1,
+            maximum_body_word_count=300,
+        )
+
+    assert target_tex.read_text() == "old cover letter"
+    assert target_pdf.read_bytes() == b"old cover pdf"
+
+
+@pytest.mark.parametrize("backend", ["hermes", "openclaw"])
+def test_agent_cover_letter_failure_publishes_local_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    backend: str,
+) -> None:
+    database = tmp_path / f"tracker-{backend}-cover-letter.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+
+    def unavailable_agent(**_kwargs: object) -> tuple[dict[str, object], str]:
+        raise RuntimeError("agent unavailable")
+
+    def write_document(
+        role: dict[str, object],
+        latex: str,
+        *,
+        source: str,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        assert source == "local_cover_letter_fallback"
+        return {"role_id": role["id"], "source": source, "latex": latex}
+
+    monkeypatch.setattr(web_server, "_generate_agent_application_document", unavailable_agent)
+    monkeypatch.setattr(web_server, "_write_role_cover_letter", write_document)
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Backend Intern", "https://example.com/jobs/backend"],
+        env=env,
+    )
+    with db.connect() as connection:
+        web_server.set_config_value(connection, "application_generation_backend", backend)
+    resume = web_server.MasterResume(
+        id=1,
+        filename="resume.tex",
+        content="Python backend experience.",
+        content_sha256="source",
+        created_at=None,
+        updated_at=None,
+    )
+
+    result = web_server.build_role_cover_letter(
+        {"id": 1, "company_name": "Acme", "title": "Backend Intern"},
+        resume,
+    )
+
+    assert result["source"] == "local_cover_letter_fallback"
+
+
+def test_cover_letter_fallback_retains_prior_verified_pair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resume_root = tmp_path / "prepared-resumes"
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    role_dir = resume_root / "role-1"
+    role_dir.mkdir(parents=True)
+    (role_dir / "cover-letter.tex").write_text("prior verified letter")
+    (role_dir / "cover-letter.pdf").write_bytes(_valid_pdf_bytes())
+
+    def failed_publish(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(web_server, "_write_role_cover_letter", failed_publish)
+    result = web_server._publish_reliable_cover_letter_fallback(
+        {"id": 1, "company_name": "Acme", "title": "Backend Intern"},
+        web_server.MasterResume(
+            filename="resume.tex",
+            content="Python backend experience.",
+            content_sha256="source",
+        ),
+        applicant_profile=ApplicantProfile(first_name="Callum", last_name="Mackenzie"),
+        experience_context=[],
+        tweaks="Keep it concise.",
+        required_page_count=1,
+    )
+
+    assert result["source"] == "existing_cover_letter_fallback"
+    assert result["latex"] == "prior verified letter"
+    assert base64.b64decode(result["pdf_base64"]) == _valid_pdf_bytes()
+
+    os.utime(role_dir / "cover-letter.pdf", (1, 1))
+    with pytest.raises(OSError, match="disk unavailable"):
+        web_server._publish_reliable_cover_letter_fallback(
+            {"id": 1, "company_name": "Acme", "title": "Backend Intern"},
+            web_server.MasterResume(
+                filename="resume.tex",
+                content="Python backend experience.",
+                content_sha256="source",
+            ),
+            applicant_profile=ApplicantProfile(first_name="Callum", last_name="Mackenzie"),
+            experience_context=[],
+            tweaks="Keep it concise.",
+            required_page_count=1,
+        )
+
+
+def test_resume_fallback_rejects_stale_prior_pdf(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resume_root = tmp_path / "prepared-resumes"
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    role_dir = resume_root / "role-1"
+    role_dir.mkdir(parents=True)
+    resume_path = role_dir / "resume.tex"
+    pdf_path = role_dir / "resume.pdf"
+    pdf_path.write_bytes(_valid_pdf_bytes())
+    os.utime(pdf_path, (1, 1))
+    resume_path.write_text("newer resume source")
+
+    def failed_source_publish(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise RuntimeError("source publication failed")
+
+    monkeypatch.setattr(web_server, "save_role_resume", failed_source_publish)
+    resume = web_server.MasterResume(
+        filename="resume.tex",
+        content="complete source resume",
+        content_sha256="source",
+    )
+
+    with pytest.raises(RuntimeError, match="source publication failed"):
+        web_server._source_resume_fallback(
+            {"id": 1, "company_name": "Acme", "title": "Backend Intern"},
+            resume,
+            required_page_count=1,
+            tweaks="Tailor truthfully.",
+            summary="fallback",
+        )
 
 
 def test_role_chat_endpoint_uses_role_material_contexts(

@@ -69,17 +69,20 @@ DEFAULT_COVER_LETTER_MODEL = "gpt-4.1-mini"
 DEFAULT_AUTOPREP_RESUME_PROMPT = (
     "Tailor this resume truthfully for the saved role context. Preserve every employer, "
     "project, education entry, date, and link while actively improving the wording. "
-    "Do not invent claims or awkwardly combine unrelated experiences."
+    "Budget the content for one page before drafting. Lead bullets with strong action verbs, "
+    "emphasize source-supported accomplishments, and quantify only when the source provides "
+    "the number. Do not invent claims or awkwardly combine unrelated experiences."
 )
 DEFAULT_AUTOPREP_COVER_LETTER_PROMPT = (
     "Review the indexed application materials as well as the resume and job description. "
-    "Write a balanced, company-specific cover letter using the strongest 2-3 source-supported "
+    "Write a concise, company-specific cover letter using the strongest 2-3 source-supported "
     "examples. Explain the task or problem, action taken, and result delivered; demonstrate "
     "relevant soft skills through evidence rather than generic claims. For AI-related roles, "
     "use a source-supported, independently directed AI application and its outcome when "
     "available, naming Hermes when the source supports it. Close by thanking the reader and "
-    "inviting an interview. Do not invent experience, referrals, company research, outcomes, "
-    "or metrics."
+    "inviting an interview. Use three short body paragraphs by default, target roughly 200-300 "
+    "words, and never pad the letter to fill the page. The letter must be at most one page. Do "
+    "not invent experience, referrals, company research, outcomes, or metrics."
 )
 SUPPORTED_LLM_PROVIDERS = {"openai", "codex"}
 DEFAULT_LLM_PROVIDER = "openai"
