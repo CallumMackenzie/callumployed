@@ -333,9 +333,7 @@ def list_resume_feedback_knowledge(
 
 
 def count_resume_feedback_history(connection: turso.Connection) -> int:
-    row = connection.execute(
-        "SELECT COUNT(*) AS count FROM resume_feedback_history"
-    ).fetchone()
+    row = connection.execute("SELECT COUNT(*) AS count FROM resume_feedback_history").fetchone()
     return int(row["count"]) if row is not None else 0
 
 
@@ -435,8 +433,7 @@ def sync_role_context_vectors(
         raise ValueError("role context requires a persisted role id")
     chunks = _role_context_chunks(role, company_name=company_name)
     desired = [
-        (label, content, hashlib.sha256(content.encode()).hexdigest())
-        for label, content in chunks
+        (label, content, hashlib.sha256(content.encode()).hexdigest()) for label, content in chunks
     ]
     existing_rows = connection.execute(
         """
@@ -447,9 +444,7 @@ def sync_role_context_vectors(
         """,
         (role.id,),
     ).fetchall()
-    existing = [
-        (str(row["label"]), str(row["content_sha256"])) for row in existing_rows
-    ]
+    existing = [(str(row["label"]), str(row["content_sha256"])) for row in existing_rows]
     if existing == [(label, digest) for label, _content, digest in desired]:
         return False
     connection.execute("DELETE FROM role_context_vectors WHERE role_id = ?", (role.id,))
@@ -1237,6 +1232,23 @@ def list_company_career_pages(
     return [_career_page_from_row(row) for row in rows]
 
 
+def list_company_career_pages_by_company(
+    connection: turso.Connection,
+) -> dict[int, list[CompanyCareerPage]]:
+    rows = connection.execute(
+        """
+        SELECT id, company_id, url, label, created_at, updated_at
+        FROM company_career_pages
+        ORDER BY company_id, id
+        """
+    ).fetchall()
+    pages_by_company: dict[int, list[CompanyCareerPage]] = {}
+    for row in rows:
+        page = _career_page_from_row(row)
+        pages_by_company.setdefault(page.company_id, []).append(page)
+    return pages_by_company
+
+
 def _career_page_from_row(row: turso.Row) -> CompanyCareerPage:
     return CompanyCareerPage.model_validate(dict(row))
 
@@ -1270,9 +1282,7 @@ def add_role(connection: turso.Connection, role: Role) -> Role:
             role.posting_id,
             role.central_role_id,
             role.central_source,
-            role.central_synced_at.isoformat()
-            if role.central_synced_at is not None
-            else None,
+            role.central_synced_at.isoformat() if role.central_synced_at is not None else None,
         ),
     )
     connection.commit()
@@ -1525,7 +1535,7 @@ def update_role(
     connection.execute(
         f"""
         UPDATE roles
-        SET {', '.join(assignments)}
+        SET {", ".join(assignments)}
         WHERE id = ?
         """,
         values,
@@ -1898,6 +1908,70 @@ def list_scan_runs(
         values,
     ).fetchall()
     return [ScanRunListItem.model_validate(dict(row)) for row in rows]
+
+
+def get_latest_scan_role_presence(
+    connection: turso.Connection,
+    company_ids: set[int],
+) -> dict[int, tuple[int, set[int], set[str]]]:
+    if not company_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in company_ids)
+    latest_rows = connection.execute(
+        f"""
+        WITH ranked_scan_runs AS (
+            SELECT
+                id,
+                company_id,
+                ROW_NUMBER() OVER (
+                    PARTITION BY company_id
+                    ORDER BY started_at DESC, id DESC
+                ) AS position
+            FROM scan_runs
+            WHERE company_id IN ({placeholders})
+        )
+        SELECT id, company_id
+        FROM ranked_scan_runs
+        WHERE position = 1
+        """,
+        sorted(company_ids),
+    ).fetchall()
+    scan_id_to_company = {int(row["id"]): int(row["company_id"]) for row in latest_rows}
+    presence: dict[int, tuple[int, set[int], set[str]]] = {
+        company_id: (scan_id, set(), set())
+        for scan_id, company_id in scan_id_to_company.items()
+    }
+    if not scan_id_to_company:
+        return presence
+
+    scan_placeholders = ", ".join("?" for _ in scan_id_to_company)
+    scan_ids = sorted(scan_id_to_company)
+    attempt_rows = connection.execute(
+        f"""
+        SELECT scan_run_id, role_id
+        FROM role_discovery_attempts
+        WHERE scan_run_id IN ({scan_placeholders})
+          AND role_id IS NOT NULL
+        """,
+        scan_ids,
+    ).fetchall()
+    for row in attempt_rows:
+        company_id = scan_id_to_company[int(row["scan_run_id"])]
+        presence[company_id][1].add(int(row["role_id"]))
+
+    candidate_rows = connection.execute(
+        f"""
+        SELECT scan_pages.scan_run_id, scan_candidates.url
+        FROM scan_pages
+        JOIN scan_candidates ON scan_candidates.scan_page_id = scan_pages.id
+        WHERE scan_pages.scan_run_id IN ({scan_placeholders})
+        """,
+        scan_ids,
+    ).fetchall()
+    for row in candidate_rows:
+        company_id = scan_id_to_company[int(row["scan_run_id"])]
+        presence[company_id][2].add(str(row["url"]))
+    return presence
 
 
 def get_company_scan_discovery_counts(

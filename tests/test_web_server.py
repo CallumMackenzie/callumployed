@@ -488,8 +488,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=react-ts-20260830-33" in index_markup
-        assert "/assets/build/app.js?v=react-ts-20260830-33" in index_markup
+        assert "/assets/app.css?v=react-ts-20260830-34" in index_markup
+        assert "/assets/build/app.js?v=react-ts-20260830-34" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles

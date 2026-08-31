@@ -565,9 +565,16 @@ function renderApplicationMaterials(payload, options = {}) {
   renderMaterialIndex(payload?.material_index ?? null);
   updateMaterialsSummary(payload?.ui);
   if (!materialsInitialized || options.applyDefaultCollapsed) {
-    setMaterialsCollapsed(Boolean(payload?.ui?.default_collapsed));
+    setMaterialsCollapsed(!hasMissingRequiredMaterials(payload?.ui));
     materialsInitialized = true;
   }
+}
+
+function hasMissingRequiredMaterials(ui = null) {
+  if (typeof ui?.has_missing_required_materials === "boolean") {
+    return ui.has_missing_required_materials;
+  }
+  return !masterResume || coverLetterExamples.length === 0 || experienceNotes.length === 0;
 }
 
 function updateMaterialsSummary(ui = null) {
@@ -586,11 +593,7 @@ function updateMaterialsSummary(ui = null) {
     noteCount === 0
       ? "no notes"
       : `${noteCount} experience ${noteCount === 1 ? "note" : "notes"}`;
-  const hasMissingRequiredMaterials =
-    typeof ui?.has_missing_required_materials === "boolean"
-      ? ui.has_missing_required_materials
-      : !masterResume || exampleCount === 0 || noteCount === 0;
-  materialsRequiredWarning.hidden = !hasMissingRequiredMaterials;
+  materialsRequiredWarning.hidden = !hasMissingRequiredMaterials(ui);
   materialsSummary.textContent = `${resumeText} | ${resourceText} | ${coverText} | ${noteText}`;
 }
 
@@ -1681,14 +1684,12 @@ async function syncCompaniesOnPageLoad() {
 }
 
 async function loadInitialTrackerData() {
-  await Promise.all([
-    loadTracker().catch(() => {
-      statusListEl.innerHTML = '<p class="empty-copy">could not load jobs.</p>';
-    }),
-    loadRoleCompanyOptions().catch(() => {
-      roleAddStatus.textContent = "could not load companies.";
-    }),
-  ]);
+  await loadTracker().catch(() => {
+    statusListEl.innerHTML = '<p class="empty-copy">could not load jobs.</p>';
+  });
+  loadRoleCompanyOptions().catch(() => {
+    roleAddStatus.textContent = "could not load companies.";
+  });
 }
 
 function scheduleCentralCompanySync() {
@@ -5202,6 +5203,8 @@ loadInitialTrackerData().finally(scheduleCentralCompanySync);
 if (window.location.hash === "#prepped-roles") {
   syncWorkspaceRoute();
 }
+
+setMaterialsCollapsed(true);
 
 loadApplicationMaterials({ applyDefaultCollapsed: true }).catch(() => {
   renderMasterResume(null, "could not load resume.");

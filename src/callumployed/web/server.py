@@ -89,22 +89,21 @@ from callumployed.data.repositories import (
     get_config_value,
     get_cover_letter_example,
     get_experience_note,
+    get_latest_scan_role_presence,
     get_location_filter,
     get_master_resume,
     get_role,
     get_tracking_stats,
     list_companies,
     list_company_career_pages,
+    list_company_career_pages_by_company,
     list_config_values,
     list_cover_letter_example_knowledge,
     list_cover_letter_examples,
     list_experience_notes,
     list_resume_feedback_knowledge,
-    list_role_discovery_attempts,
     list_role_items,
     list_roles,
-    list_scan_candidates,
-    list_scan_pages,
     list_scan_runs,
     record_resume_feedback_history,
     record_role_review_later,
@@ -614,29 +613,20 @@ def build_tracker_payload(query: str | None = None) -> dict[str, Any]:
             ).fetchall()
         }
         active_roles = [role for role in roles if role.role_status is not RoleStatus.ARCHIVED]
-        latest_scan_ids_by_company: dict[int, int] = {}
-        latest_scan_role_ids_by_company: dict[int, set[int]] = {}
-        latest_scan_role_urls_by_company: dict[int, set[str]] = {}
-        for company_id in {role.company_id for role in active_roles}:
-            latest_scan_runs = list_scan_runs(connection, company_id=company_id, limit=1)
-            if not latest_scan_runs or latest_scan_runs[0].id is None:
-                continue
-            latest_scan_run = latest_scan_runs[0]
-            latest_scan_ids_by_company[company_id] = latest_scan_run.id
-            latest_scan_role_ids_by_company[company_id] = {
-                attempt.role_id
-                for attempt in list_role_discovery_attempts(
-                    connection,
-                    scan_run_id=latest_scan_run.id,
-                )
-                if attempt.role_id is not None
-            }
-            latest_scan_role_urls_by_company[company_id] = {
-                candidate.url
-                for page in list_scan_pages(connection, latest_scan_run.id)
-                if page.id is not None
-                for candidate in list_scan_candidates(connection, page.id)
-            }
+        latest_scan_presence = get_latest_scan_role_presence(
+            connection,
+            {role.company_id for role in active_roles},
+        )
+
+    latest_scan_ids_by_company = {
+        company_id: presence[0] for company_id, presence in latest_scan_presence.items()
+    }
+    latest_scan_role_ids_by_company = {
+        company_id: presence[1] for company_id, presence in latest_scan_presence.items()
+    }
+    latest_scan_role_urls_by_company = {
+        company_id: presence[2] for company_id, presence in latest_scan_presence.items()
+    }
 
     grouped_roles: dict[str, list[dict[str, Any]]] = {status.value: [] for status in RoleStatus}
     for role in active_roles:
@@ -707,11 +697,7 @@ def build_companies_payload() -> dict[str, Any]:
     with db.connect() as connection:
         companies = list_companies(connection)
         scan_discovery_counts = get_company_scan_discovery_counts(connection)
-        career_pages_by_company_id = {
-            company.id: list_company_career_pages(connection, company.id)
-            for company in companies
-            if company.id is not None
-        }
+        career_pages_by_company_id = list_company_career_pages_by_company(connection)
     return {
         "companies": [
             _company_payload(
