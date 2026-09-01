@@ -2354,10 +2354,12 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
 
             updated_count = _replace_role_resumes(interested_roles, resume)
             _refresh_application_material_index()
+            populated_profile = _populate_missing_applicant_profile_from_resume()
             self._send_json(
                 {
                     "master_resume": _master_resume_summary(resume),
                     "interested_resumes_updated": updated_count,
+                    "profile_fields_populated": sorted(populated_profile),
                 }
             )
 

@@ -391,7 +391,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "dangerouslySetInnerHTML" not in markup
         assert "dangerouslySetInnerHTML" not in app_javascript
         assert '<div id="root"></div>' not in index_markup
-        assert '<script type="module" src="/assets/app.js?v=vanilla-20260831-2"></script>' in (
+        assert '<script type="module" src="/assets/app.js?v=vanilla-20260901-1"></script>' in (
             index_markup
         )
 
@@ -452,12 +452,11 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="settings-view"' in markup
         assert 'aria-label="applicant profile"' in markup
         assert 'id="settings-profile-options"' in markup
-        assert 'id="settings-profile-extract"' in markup
-        assert "selected AI provider only when you click this button" in markup
-        assert "saved profile changes refresh prepared cover letters after 30 seconds" in markup
-        assert "never submits an application or marks a role Applied" in markup
-        assert 'fetch("/api/config/extract-profile", {method: "POST"})' in app_javascript
-        assert '<button type="submit">save settings</button>' in markup
+        assert 'id="settings-profile-extract"' not in markup
+        assert "Changes save automatically." in markup
+        assert "Prepared cover letters refresh after 30 seconds" in markup
+        assert "never submits an application or marks a role applied" in markup
+        assert '<button type="submit">save settings</button>' not in markup
         assert "input[data-setting-text][name]" in app_javascript
         assert 'const response = await fetch("/api/config", {' in app_javascript
         assert "body: JSON.stringify(payload)" in app_javascript
@@ -501,8 +500,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=vanilla-20260831-2" in index_markup
-        assert "/assets/app.js?v=vanilla-20260831-2" in index_markup
+        assert "/assets/app.css?v=vanilla-20260901-1" in index_markup
+        assert "/assets/app.js?v=vanilla-20260901-1" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -523,6 +522,9 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="regenerate-all-cover-letters"' in markup
         assert 'id="prepped-bulk-status"' in markup
         assert "data-autoprep-disinterested" in app_javascript
+        assert 'class="review-action danger prepped-disinterested"' in app_javascript
+        assert "grid-template-columns: repeat(5, minmax(0, 1fr));" in app_styles
+        assert ".prepped-detail-actions > button:last-child" in app_styles
         assert 'updateRoleStatusById(roleId, "disinterested")' in app_javascript
         assert 'fetch("/api/autoprep/cover-letters/regenerate", {' in app_javascript
         assert 'idempotency_key: autoprepActionKey("regenerate-all-cover-letters")' in (
@@ -5099,10 +5101,11 @@ def test_master_resume_endpoint_uploads_and_replaces_tex_resume(
 ) -> None:
     database = tmp_path / "tracker-master-resume.sqlite3"
     monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    extraction_calls: list[bool] = []
     monkeypatch.setattr(
         web_server,
         "_populate_missing_applicant_profile_from_resume",
-        lambda: (_ for _ in ()).throw(AssertionError("profile extraction must be explicit")),
+        lambda: extraction_calls.append(True) or {"applicant_email": "callum@example.com"},
     )
     db.ensure_initialized()
 
@@ -5133,6 +5136,7 @@ def test_master_resume_endpoint_uploads_and_replaces_tex_resume(
 
         assert created_payload["master_resume"]["filename"] == "master.tex"
         assert created_payload["master_resume"]["content_bytes"] == len(b"\\documentclass{article}")
+        assert created_payload["profile_fields_populated"] == ["applicant_email"]
 
         replacement_request = Request(
             base_url,
@@ -5148,6 +5152,7 @@ def test_master_resume_endpoint_uploads_and_replaces_tex_resume(
         with urlopen(replacement_request, timeout=5) as response:
             replaced_payload = json.loads(response.read().decode())
         assert replaced_payload["master_resume"]["filename"] == "replacement.tex"
+        assert extraction_calls == [True, True]
     finally:
         server.shutdown()
         thread.join(timeout=5)

@@ -72,7 +72,6 @@ const settingsCloseButton = document.querySelector("#settings-close");
 const settingsStatus = document.querySelector("#settings-status");
 const settingsForm = document.querySelector("#settings-form");
 const settingsProfileOptions = document.querySelector("#settings-profile-options");
-const settingsProfileExtractButton = document.querySelector("#settings-profile-extract");
 const settingsAutoprepOptions = document.querySelector("#settings-autoprep-options");
 const settingsOptions = document.querySelector("#settings-options");
 const centralStoreSummary = document.querySelector("#central-store-summary");
@@ -1093,7 +1092,6 @@ function setSettingsDisabled(disabled) {
   });
   centralSaveButton.disabled = disabled;
   centralSyncButton.disabled = disabled || !centralApiUrlInput.value.trim();
-  settingsProfileExtractButton.disabled = disabled;
   appUpdateButton.disabled = disabled;
 }
 
@@ -1125,30 +1123,6 @@ async function loadSettings() {
   const response = await fetch("/api/config");
   if (!response.ok) throw new Error("Config request failed");
   renderSettings(await response.json());
-}
-
-async function extractApplicantProfileFromResume() {
-  settingsProfileExtractButton.disabled = true;
-  settingsProfileExtractButton.textContent = "filling blank fields...";
-  settingsStatus.textContent = "sending the master resume to the selected AI provider...";
-  settingsStatus.classList.remove("is-empty");
-  try {
-    const response = await fetch("/api/config/extract-profile", {method: "POST"});
-    if (!response.ok) throw new Error("Profile extraction request failed");
-    const payload = await response.json();
-    const populated = Array.isArray(payload.populated) ? payload.populated : [];
-    renderSettings(
-      payload.config,
-      populated.length
-        ? `filled ${populated.length} blank profile ${populated.length === 1 ? "field" : "fields"}.`
-        : "no blank profile fields could be filled.",
-    );
-  } catch {
-    settingsStatus.textContent = "could not fill profile fields from the resume.";
-  } finally {
-    settingsProfileExtractButton.disabled = false;
-    settingsProfileExtractButton.textContent = "fill blank fields";
-  }
 }
 
 function formatMetricValue(metric) {
@@ -4038,11 +4012,11 @@ function renderPreppedDetail() {
     </div>
     ${renderApplicationQuestionsWorkspace(job)}
     <div class="prepped-detail-actions">
-      <button class="prepped-nav-action" type="button" data-prepped-nav="previous" ${currentIndex <= 0 ? "disabled" : ""}>Previous</button>
-      <button class="prepped-nav-action" type="button" data-prepped-nav="next" ${currentIndex >= preppedJobs.length - 1 ? "disabled" : ""}>Next</button>
-      <button class="prepped-folder-action" type="button" data-autoprep-open-folder ${job.artifact_directory ? "" : "disabled"}>Open Documents Folder</button>
-      <button class="prepped-disinterested" type="button" data-autoprep-disinterested aria-busy="${movingToDisinterested ? "true" : "false"}" ${disinterestedUnavailable ? "disabled" : ""} title="${autoprepJobIsActive(job) ? "Wait for preparation to finish before moving this role" : "Move this role out of Prepped"}">${movingToDisinterested ? "Moving to Disinterested..." : "Move to Disinterested"}</button>
-      <button class="success" type="button" data-autoprep-applied ${job.overall_status === "ready" ? "" : "disabled"}>Applied</button>
+      <button class="review-action prepped-nav-action" type="button" data-prepped-nav="previous" ${currentIndex <= 0 ? "disabled" : ""}>Previous</button>
+      <button class="review-action prepped-nav-action" type="button" data-prepped-nav="next" ${currentIndex >= preppedJobs.length - 1 ? "disabled" : ""}>Next</button>
+      <button class="review-action prepped-folder-action" type="button" data-autoprep-open-folder ${job.artifact_directory ? "" : "disabled"}>Open Documents Folder</button>
+      <button class="review-action danger prepped-disinterested" type="button" data-autoprep-disinterested aria-busy="${movingToDisinterested ? "true" : "false"}" ${disinterestedUnavailable ? "disabled" : ""} title="${autoprepJobIsActive(job) ? "Wait for preparation to finish before moving this role" : "Move this role out of Prepped"}">${movingToDisinterested ? "Moving to Disinterested..." : "Move to Disinterested"}</button>
+      <button class="review-action success" type="button" data-autoprep-applied ${job.overall_status === "ready" ? "" : "disabled"}>Applied</button>
     </div>
     <p class="prepped-safety-note">Autoprep prepares files only. It never submits an application.</p>`;
   if (!loadedApplicationAnswerRoleIds.has(Number(job.role_id))) loadApplicationAnswers(job.role_id);
@@ -4972,8 +4946,6 @@ collapseEmptyButton.addEventListener("click", () => {
 
 settingsOpenButton.addEventListener("click", openSettingsView);
 
-settingsProfileExtractButton.addEventListener("click", extractApplicantProfileFromResume);
-
 settingsCloseButton.addEventListener("click", closeSettingsView);
 
 metricsOpenButton.addEventListener("click", openMetricsView);
@@ -5065,37 +5037,8 @@ settingsForm.addEventListener("change", (event) => {
   saveSetting(control);
 });
 
-settingsForm.addEventListener("submit", async (event) => {
+settingsForm.addEventListener("submit", (event) => {
   event.preventDefault();
-  const submitButton = settingsForm.querySelector('button[type="submit"]');
-  const controls = settingsForm.querySelectorAll(
-    'input[type="checkbox"][name], select[name], input[data-setting-text][name], textarea[data-setting-textarea][name]',
-  );
-  const payload = {};
-  controls.forEach((control) => {
-    const key = control.name;
-    if (!key) return;
-    payload[key] = control.type === "checkbox" ? control.checked : control.value;
-  });
-
-  submitButton.disabled = true;
-  submitButton.textContent = "saving...";
-  try {
-    settingsStatus.textContent = "saving settings...";
-    const response = await fetch("/api/config", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    if (!response.ok) throw new Error("Config update failed");
-    renderSettings(await response.json(), "settings saved.");
-  } catch (error) {
-    settingsStatus.textContent = "could not save settings.";
-    settingsStatus.classList.remove("is-empty");
-  } finally {
-    submitButton.disabled = false;
-    submitButton.textContent = "save settings";
-  }
 });
 
 centralApiUrlInput.addEventListener("input", () => {

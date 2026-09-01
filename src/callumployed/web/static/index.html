@@ -10,7 +10,7 @@
     <link rel="icon" href="/assets/camackenzie-logo.svg?v=20260827-2" type="image/svg+xml" />
     <link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png?v=20260827-2" />
     <link rel="manifest" href="/assets/manifest.webmanifest" />
-    <link rel="stylesheet" href="/assets/app.css?v=vanilla-20260831-2" />
+    <link rel="stylesheet" href="/assets/app.css?v=vanilla-20260901-1" />
   </head>
   <body>
 <div class="page-background" aria-hidden="true"></div>
@@ -298,27 +298,23 @@
         <form class="settings-form" id="settings-form">
           <section class="settings-group" aria-label="applicant profile">
             <div class="settings-group-heading">
-              <h3>applicant profile</h3>
-              <p>used to personalize generated application documents</p>
-              <p>
-                saved profile changes refresh prepared cover letters after 30 seconds;
-                preparation never submits an application or marks a role Applied
+              <div class="settings-group-title">
+                <h3>applicant profile</h3>
+                <p>Used to personalize generated application documents.</p>
+              </div>
+              <p class="settings-group-note">
+                Changes save automatically. Prepared cover letters refresh after 30 seconds;
+                preparation never submits an application or marks a role applied.
               </p>
             </div>
             <div class="settings-options" id="settings-profile-options"></div>
-            <section class="settings-maintenance" aria-label="fill applicant profile from resume">
-              <div class="setting-copy">
-                <span class="setting-label">fill blank fields from resume</span>
-                <span class="setting-description">sends your master resume to the selected AI provider only when you click this button</span>
-                <span class="setting-default">existing profile values are never overwritten</span>
-              </div>
-              <button type="button" id="settings-profile-extract">fill blank fields</button>
-            </section>
           </section>
           <section class="settings-group" aria-label="autoprep">
             <div class="settings-group-heading">
-              <h3>autoprep</h3>
-              <p>controls automatic resume and cover letter preparation</p>
+              <div class="settings-group-title">
+                <h3>autoprep</h3>
+                <p>Controls automatic resume and cover letter preparation.</p>
+              </div>
             </div>
             <div class="settings-options" id="settings-autoprep-options"></div>
           </section>
@@ -327,7 +323,6 @@
               <h3>filters</h3>
             </div>
             <div class="settings-options" id="settings-options"></div>
-            <button type="submit">save settings</button>
           </section>
           <section class="settings-group" aria-label="config">
             <div class="settings-group-heading">
@@ -483,6 +478,6 @@
         <div class="companies-list" id="companies-list"></div>
       </div>
     </section>
-    <script type="module" src="/assets/app.js?v=vanilla-20260831-2"></script>
+    <script type="module" src="/assets/app.js?v=vanilla-20260901-1"></script>
   </body>
 </html>

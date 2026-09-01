@@ -222,6 +222,7 @@ def test_cover_letter_prompt_includes_resume_job_and_tool_results() -> None:
             "\\documentclass{letter}\\begin{document}Old draft\\end{document}"
         ),
     )
+    normalized_prompt = " ".join(prompt.split())
 
     assert "resume_context" in prompt
     assert "job_context" in prompt
@@ -230,9 +231,16 @@ def test_cover_letter_prompt_includes_resume_job_and_tool_results() -> None:
     assert "may or may not already" in prompt
     assert "Built a BLE sensor network for motion analysis." in prompt
     assert "cover_letter_example_tool_results" in prompt
+    assert '"current_date"' in prompt
+    assert datetime.now().astimezone().date().isoformat() in prompt
+    assert "Treat current_date as the authoritative present date" in prompt
+    assert "never reuse or infer a date from an example" in prompt
     assert '"description": "Python distributed systems internship"' in prompt
     assert "Python distributed systems internship" in prompt
     assert "Dear Stripe" in prompt
+    assert "matching their writing style is required, not optional" in normalized_prompt
+    assert "sound like the same author" in normalized_prompt
+    assert "Do not fall back to a generic professional cover" in normalized_prompt
     assert "at most one page" in prompt
     assert "roughly 200-300 words" in prompt
     assert "never add text merely to fill the page" in prompt
@@ -263,7 +271,6 @@ def test_cover_letter_prompt_includes_resume_job_and_tool_results() -> None:
     assert "only when the posting asks for AI" in prompt
     assert "one evidence paragraph must discuss source-supported AI work" in prompt
     assert "Hermes or a relevant AI-enabled application by name" in prompt
-    normalized_prompt = " ".join(prompt.split())
     assert "independently directed AI-enabled application" in normalized_prompt
     assert "merely listing coding assistants used in an unrelated job" in normalized_prompt
     assert "company values, mission, product, domain, or recent work" in prompt

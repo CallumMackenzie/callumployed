@@ -18,6 +18,7 @@ from callumployed.webscraping.browser import (
     _browserbase_session_connect_url,
     _looks_like_blocked_page,
     _render_with_context,
+    _render_with_managed_browser_fallback,
     _render_with_playwright,
     browser_backend,
     managed_browser_profile_path,
@@ -186,6 +187,149 @@ def test_browserbase_backend_falls_back_to_local_when_remote_fails(
 
     assert result.title == "Local fallback"
     assert calls == ["https://example.com"]
+
+
+def test_headless_managed_browser_failure_retries_headed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headless_calls: list[bool] = []
+
+    async def fake_render_with_managed_browser(
+        playwright: object,
+        url: str,
+        *,
+        headless: bool,
+        **_options: object,
+    ) -> RenderedPageState:
+        headless_calls.append(headless)
+        if headless:
+            raise NavigationError("headless browser was blocked")
+        return RenderedPageState(
+            url=url,
+            final_url=url,
+            title="Headed fallback",
+            html="<html><body>Headed fallback</body></html>",
+        )
+
+    monkeypatch.setattr(
+        "callumployed.webscraping.browser._render_with_managed_browser",
+        fake_render_with_managed_browser,
+    )
+
+    result = asyncio.run(
+        _render_with_managed_browser_fallback(
+            object(),  # type: ignore[arg-type]
+            "https://example.com",
+            headless=True,
+            timeout_ms=1_000,
+            blocked_types=set(),
+            content_settle_min_wait_ms=1,
+            content_settle_timeout_ms=1,
+            content_settle_poll_ms=1,
+            lazy_scroll_step_delay_ms=1,
+        )
+    )
+
+    assert result.title == "Headed fallback"
+    assert headless_calls == [True, False]
+
+
+def test_headed_managed_browser_failure_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headless_calls: list[bool] = []
+
+    async def fake_render_with_managed_browser(
+        playwright: object,
+        url: str,
+        *,
+        headless: bool,
+        **_options: object,
+    ) -> RenderedPageState:
+        _ = playwright, url
+        headless_calls.append(headless)
+        raise NavigationError("headed browser failed")
+
+    monkeypatch.setattr(
+        "callumployed.webscraping.browser._render_with_managed_browser",
+        fake_render_with_managed_browser,
+    )
+
+    with pytest.raises(NavigationError, match="headed browser failed"):
+        asyncio.run(
+            _render_with_managed_browser_fallback(
+                object(),  # type: ignore[arg-type]
+                "https://example.com",
+                headless=False,
+                timeout_ms=1_000,
+                blocked_types=set(),
+                content_settle_min_wait_ms=1,
+                content_settle_timeout_ms=1,
+                content_settle_poll_ms=1,
+                lazy_scroll_step_delay_ms=1,
+            )
+        )
+
+    assert headless_calls == [False]
+
+
+def test_headless_external_browser_failure_retries_with_headed_managed_browser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    managed_headless_calls: list[bool] = []
+
+    class FakeChromium:
+        async def connect_over_cdp(self, url: str) -> object:
+            assert url == "http://127.0.0.1:9440"
+            return SimpleNamespace(contexts=[object()])
+
+    async def fake_render_with_context(*_args: object, **_options: object) -> RenderedPageState:
+        raise NavigationError("headless browser was blocked")
+
+    async def fake_render_with_managed_browser(
+        playwright: object,
+        url: str,
+        *,
+        headless: bool,
+        **_options: object,
+    ) -> RenderedPageState:
+        _ = playwright
+        managed_headless_calls.append(headless)
+        return RenderedPageState(url=url, final_url=url, title="Headed fallback", html="")
+
+    monkeypatch.setattr(
+        "callumployed.webscraping.browser._render_with_context",
+        fake_render_with_context,
+    )
+    monkeypatch.setattr(
+        "callumployed.webscraping.browser._render_with_managed_browser",
+        fake_render_with_managed_browser,
+    )
+
+    result = asyncio.run(
+        _render_with_playwright(
+            SimpleNamespace(chromium=FakeChromium()),  # type: ignore[arg-type]
+            "https://example.com",
+            settings=BrowserSettings.model_construct(
+                backend="local",
+                headless=True,
+                timeout_ms=30_000,
+                browserbase_api_key=None,
+            ),
+            selected_backend="local",
+            external_browser_port=9440,
+            fallback_to_managed_browser=False,
+            timeout_ms=1_000,
+            blocked_types=set(),
+            content_settle_min_wait_ms=1,
+            content_settle_timeout_ms=1,
+            content_settle_poll_ms=1,
+            lazy_scroll_step_delay_ms=1,
+        )
+    )
+
+    assert result.title == "Headed fallback"
+    assert managed_headless_calls == [False]
 
 
 def test_access_denied_body_is_treated_as_blocked_page() -> None:

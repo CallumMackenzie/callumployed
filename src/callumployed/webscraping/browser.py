@@ -109,7 +109,7 @@ async def _render_with_playwright(
                 lazy_scroll_step_delay_ms=lazy_scroll_step_delay_ms,
             )
         except NavigationError:
-            return await _render_with_managed_browser(
+            return await _render_with_managed_browser_fallback(
                 playwright,
                 url,
                 headless=settings.headless,
@@ -132,7 +132,7 @@ async def _render_with_playwright(
                     "Could not connect to external browser CDP port "
                     f"{external_browser_port}"
                 ) from exc
-            return await _render_with_managed_browser(
+            return await _render_with_managed_browser_fallback(
                 playwright,
                 url,
                 headless=settings.headless,
@@ -144,18 +144,33 @@ async def _render_with_playwright(
                 lazy_scroll_step_delay_ms=lazy_scroll_step_delay_ms,
             )
         context = browser.contexts[0] if browser.contexts else await browser.new_context()
-        return await _render_with_context(
-            context,
-            url,
-            timeout_ms=timeout_ms,
-            blocked_types=blocked_types,
-            content_settle_min_wait_ms=content_settle_min_wait_ms,
-            content_settle_timeout_ms=content_settle_timeout_ms,
-            content_settle_poll_ms=content_settle_poll_ms,
-            lazy_scroll_step_delay_ms=lazy_scroll_step_delay_ms,
-        )
+        try:
+            return await _render_with_context(
+                context,
+                url,
+                timeout_ms=timeout_ms,
+                blocked_types=blocked_types,
+                content_settle_min_wait_ms=content_settle_min_wait_ms,
+                content_settle_timeout_ms=content_settle_timeout_ms,
+                content_settle_poll_ms=content_settle_poll_ms,
+                lazy_scroll_step_delay_ms=lazy_scroll_step_delay_ms,
+            )
+        except NavigationError:
+            if not settings.headless:
+                raise
+            return await _render_with_managed_browser(
+                playwright,
+                url,
+                headless=False,
+                timeout_ms=timeout_ms,
+                blocked_types=blocked_types,
+                content_settle_min_wait_ms=content_settle_min_wait_ms,
+                content_settle_timeout_ms=content_settle_timeout_ms,
+                content_settle_poll_ms=content_settle_poll_ms,
+                lazy_scroll_step_delay_ms=lazy_scroll_step_delay_ms,
+            )
 
-    return await _render_with_managed_browser(
+    return await _render_with_managed_browser_fallback(
         playwright,
         url,
         headless=settings.headless,
@@ -166,6 +181,46 @@ async def _render_with_playwright(
         content_settle_poll_ms=content_settle_poll_ms,
         lazy_scroll_step_delay_ms=lazy_scroll_step_delay_ms,
     )
+
+
+async def _render_with_managed_browser_fallback(
+    playwright: Playwright,
+    url: str,
+    *,
+    headless: bool,
+    timeout_ms: int,
+    blocked_types: set[str],
+    content_settle_min_wait_ms: int,
+    content_settle_timeout_ms: int,
+    content_settle_poll_ms: int,
+    lazy_scroll_step_delay_ms: int,
+) -> RenderedPageState:
+    try:
+        return await _render_with_managed_browser(
+            playwright,
+            url,
+            headless=headless,
+            timeout_ms=timeout_ms,
+            blocked_types=blocked_types,
+            content_settle_min_wait_ms=content_settle_min_wait_ms,
+            content_settle_timeout_ms=content_settle_timeout_ms,
+            content_settle_poll_ms=content_settle_poll_ms,
+            lazy_scroll_step_delay_ms=lazy_scroll_step_delay_ms,
+        )
+    except (NavigationError, PlaywrightError):
+        if not headless:
+            raise
+        return await _render_with_managed_browser(
+            playwright,
+            url,
+            headless=False,
+            timeout_ms=timeout_ms,
+            blocked_types=blocked_types,
+            content_settle_min_wait_ms=content_settle_min_wait_ms,
+            content_settle_timeout_ms=content_settle_timeout_ms,
+            content_settle_poll_ms=content_settle_poll_ms,
+            lazy_scroll_step_delay_ms=lazy_scroll_step_delay_ms,
+        )
 
 
 async def _render_with_browserbase(

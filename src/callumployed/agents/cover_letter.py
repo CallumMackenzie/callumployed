@@ -1,5 +1,6 @@
 import json
 import re
+from datetime import datetime
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict
@@ -188,6 +189,14 @@ letters as the primary writing-style reference. Match the user's voice from
 those examples: sentence length, directness, level of technical specificity,
 paragraph rhythm, and closing style. Do not copy company-specific claims that do
 not apply to the current job.
+When cover_letter_example_tool_results are present, matching their writing style
+is required, not optional. Before drafting, infer their recurring voice and
+structure, then make the new letter sound like the same author while tailoring
+its facts to the current role. Do not fall back to a generic professional cover
+letter voice when the examples support a more specific style.
+Treat current_date as the authoritative present date. Use it for the recipient
+header's date line; never reuse or infer a date from an example, resume, prior
+draft, or job posting.
 When provided, other_experience_context contains role-relevant projects / employment history
 pages retrieved from the indexed application materials; those details may or may not already
 be on the resume. Review every retrieved page before drafting.
@@ -481,6 +490,7 @@ def build_cover_letter_prompt(
     previous_cover_letter_latex: str | None = None,
 ) -> str:
     payload = {
+        "current_date": datetime.now().astimezone().date().isoformat(),
         "applicant_profile": {
             **applicant_profile.model_dump(),
             "full_name": applicant_profile.full_name,
