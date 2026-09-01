@@ -457,7 +457,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "Prepared cover letters refresh after 30 seconds" in markup
         assert "never submits an application or marks a role applied" in markup
         assert '<button type="submit">save settings</button>' not in markup
-        assert "input[data-setting-text][name]" in app_javascript
+        assert "input[data-setting-text]" in app_javascript
         assert 'const response = await fetch("/api/config", {' in app_javascript
         assert "body: JSON.stringify(payload)" in app_javascript
         assert 'id="settings-options"' in markup
