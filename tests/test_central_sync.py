@@ -1,8 +1,9 @@
 from datetime import UTC, datetime
 
 import httpx
+import pytest
 
-from callumployed.central.client import CentralStoreClient
+from callumployed.central.client import CentralStoreClient, CentralStoreError
 from callumployed.central.config import (
     DEFAULT_CENTRAL_API_URL,
     get_central_api_url,
@@ -92,6 +93,12 @@ class FakeCentralClient:
         )
 
 
+class UnavailableCentralClient:
+    def resolve_company(self, request: object) -> ResolveCompanyResponse:
+        _ = request
+        raise CentralStoreError("central store request failed: connection refused")
+
+
 def test_resolve_unlinked_companies_stores_global_company_id() -> None:
     connection = db.connect(":memory:")
     db.run_migrations(connection)
@@ -110,6 +117,48 @@ def test_resolve_unlinked_companies_stores_global_company_id() -> None:
     assert linked.central_company_id == "co_acme"
     assert linked.central_sync_status == "linked"
     assert linked.canonical_domain == "example.com"
+
+
+def test_resolve_unlinked_companies_keeps_local_data_when_central_is_down() -> None:
+    connection = db.connect(":memory:")
+    db.run_migrations(connection)
+    company = add_company(connection, Company(name="Acme"))
+    assert company.id is not None
+    add_company_career_page(
+        connection,
+        CompanyCareerPage(company_id=company.id, url="https://example.com/careers"),
+    )
+
+    result = resolve_unlinked_companies(
+        connection,
+        UnavailableCentralClient(),  # type: ignore[arg-type]
+    )
+
+    preserved = get_company(connection, company.id)
+    assert result.failed == 1
+    assert preserved.name == "Acme"
+    assert preserved.central_company_id is None
+    assert preserved.central_sync_status == "failed"
+    assert "connection refused" in (preserved.central_sync_error or "")
+    assert [page.url for page in list_company_career_pages(connection, company.id)] == [
+        "https://example.com/careers"
+    ]
+
+
+@pytest.mark.parametrize("error_type", [httpx.ConnectError, httpx.ReadTimeout])
+def test_central_client_normalizes_network_outages(
+    error_type: type[httpx.HTTPError],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise error_type("central unavailable", request=request)
+
+    client = CentralStoreClient(
+        api_url="https://central.example",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(CentralStoreError, match="central store request failed"):
+        client.list_companies()
 
 
 def test_pull_roles_imports_central_roles_without_overwriting_local_status() -> None:

@@ -4,6 +4,7 @@ from typing import cast
 
 import pytest
 
+from callumployed.central.client import CentralStoreError
 from callumployed.data import db
 from callumployed.data.models import (
     Company,
@@ -13,6 +14,7 @@ from callumployed.data.models import (
     RoleDiscoveryStatus,
     RoleStatus,
     ScanCandidate,
+    ScanRun,
     ScanStatus,
 )
 from callumployed.data.repositories import (
@@ -451,6 +453,29 @@ def test_scan_company_records_ai_classification_errors_on_scan_run(
     assert scan_runs[0].scan_status is ScanStatus.FAILED
     assert scan_runs[0].error == "AI classification failed: OpenAI API key is invalid"
     assert published_scan_statuses == [ScanStatus.FAILED]
+
+
+def test_central_metrics_outage_does_not_fail_a_completed_scan(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def unavailable_metrics_service(company: Company, scan_run: ScanRun) -> None:
+        _ = company, scan_run
+        raise CentralStoreError("central store request failed: timed out")
+
+    monkeypatch.setattr(
+        scan_workflow,
+        "publish_scan_metrics",
+        unavailable_metrics_service,
+    )
+
+    scan_workflow._publish_scan_metrics_safely(
+        Company(id=1, name="Acme"),
+        ScanRun(id=1, company_id=1, scan_status=ScanStatus.SUCCEEDED),
+    )
+
+    assert "Could not publish scan metrics" in caplog.text
+    assert "timed out" in caplog.text
 
 
 def test_scan_company_uses_bytedance_api_scanner(

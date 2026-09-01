@@ -20,6 +20,7 @@ from typer.testing import CliRunner
 
 import callumployed.web.server as web_server
 from callumployed.agents.cover_letter import ApplicantProfile
+from callumployed.central.client import CentralStoreError
 from callumployed.central.config import DEFAULT_CENTRAL_API_URL
 from callumployed.cli import app
 from callumployed.data import db
@@ -4071,6 +4072,75 @@ def test_central_settings_and_company_sync_endpoints(
             "existing": 3,
         }
         assert sync_payload["config"]["central"]["api_url"] == "https://central.example"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_central_outage_does_not_break_local_company_or_tracker_endpoints(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "web-central-outage.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "get_central_passkey", lambda: "configured-passkey")
+
+    class UnavailableCentralClient:
+        def __init__(self, **_options: object) -> None:
+            pass
+
+        def resolve_company(self, request: object) -> object:
+            _ = request
+            raise CentralStoreError("central store request failed: connection refused")
+
+        def list_companies(self) -> object:
+            raise CentralStoreError("central store request failed: connection refused")
+
+    monkeypatch.setattr(web_server, "CentralStoreClient", UnavailableCentralClient)
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        company_request = Request(
+            f"{base_url}/api/companies",
+            data=json.dumps(
+                {
+                    "name": "Acme",
+                    "career_url": "https://example.com/careers",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(company_request, timeout=5) as response:
+            company_payload = json.loads(response.read().decode())
+
+        [company] = company_payload["companies"]
+        assert response.status == 200
+        assert company["name"] == "Acme"
+        assert company["central_sync_status"] == "failed"
+        assert "connection refused" in company["central_sync_error"]
+
+        sync_request = Request(
+            f"{base_url}/api/central/resolve-companies",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(HTTPError) as sync_error:
+            urlopen(sync_request, timeout=5)
+
+        assert sync_error.value.code == 503
+
+        with urlopen(f"{base_url}/api/tracker", timeout=5) as response:
+            tracker_payload = json.loads(response.read().decode())
+
+        assert response.status == 200
+        assert tracker_payload["stats"]["companies_total"] == 1
     finally:
         server.shutdown()
         thread.join(timeout=5)
