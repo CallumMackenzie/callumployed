@@ -2,6 +2,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 
 import pytest
+from click import unstyle
 from typer.testing import CliRunner
 
 from callumployed import cli as cli_module
@@ -27,6 +28,10 @@ from callumployed.webscraping.models import (
 from callumployed.webscraping.profile_manager import BrowserProfileManager
 
 runner = CliRunner()
+
+
+def _plain_output(output: str) -> str:
+    return " ".join(unstyle(output).split())
 
 
 def _scan_payload(
@@ -337,9 +342,10 @@ def test_companies_update_requires_at_least_one_flag(tmp_path: Path) -> None:
     )
 
     assert result.exit_code != 0
-    assert "provide at least one of --career-page or --add-career-page" in result.output
-    assert "--career-page" in result.output
-    assert "--add-career-page" in result.output
+    output = _plain_output(result.output)
+    assert "provide at least one of --career-page or --add-career-page" in output
+    assert "--career-page" in output
+    assert "--add-career-page" in output
 
 
 def test_companies_update_label_requires_add_career_page(tmp_path: Path) -> None:
@@ -354,7 +360,7 @@ def test_companies_update_label_requires_add_career_page(tmp_path: Path) -> None
     )
 
     assert result.exit_code != 0
-    assert "use --label only when adding a careers page" in result.output
+    assert "use --label only when adding a careers page" in _plain_output(result.output)
 
 
 def test_companies_show_command_prints_saved_company_info(tmp_path: Path) -> None:
@@ -1072,7 +1078,7 @@ def test_scan_company_rejects_removed_agent_flag(
     result = runner.invoke(app, ["scan", "company", "1", "--agent"], env=env)
 
     assert result.exit_code != 0
-    assert "No such option: --agent" in result.output
+    assert "No such option: --agent" in _plain_output(result.output)
 
 
 def test_scan_company_calls_service_with_company_context(
