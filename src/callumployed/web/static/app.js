@@ -100,6 +100,7 @@ const companiesView = document.querySelector("#companies-view");
 const companiesCloseButton = document.querySelector("#companies-close");
 const companiesStatus = document.querySelector("#companies-status");
 const companyCreateForm = document.querySelector("#company-create-form");
+const companyTierGuideList = document.querySelector("#company-tier-guide-list");
 const companiesList = document.querySelector("#companies-list");
 const roleAddForm = document.querySelector("#role-add-form");
 const roleUrlInput = document.querySelector("#role-url-input");
@@ -122,6 +123,57 @@ const STATUS_COLORS = new Map([
   ["closed", "#53606b"],
   ["archived", "#765b4a"],
 ]);
+const COMPANY_TIER_DEFINITIONS = [
+  {
+    value: "0",
+    label: "tier 0",
+    shortLabel: "elite",
+    description: "Absolute-priority, highest-paying, most selective firms and world-leading AI or chip employers.",
+    examples: ["Jane Street", "Citadel", "Hudson River Trading", "OpenAI", "Nvidia"],
+  },
+  {
+    value: "1",
+    label: "tier 1",
+    shortLabel: "premier",
+    description: "Highly reputable, high-paying technology companies just below the exceptional top band.",
+    examples: ["Google", "Meta", "Apple", "Stripe", "Databricks"],
+  },
+  {
+    value: "2",
+    label: "tier 2",
+    shortLabel: "strong target",
+    description: "Strong, reputable technology employers with valuable roles, compensation, and career signal.",
+    examples: ["Microsoft", "Amazon", "Netflix", "Tesla", "Uber"],
+  },
+  {
+    value: "3",
+    label: "tier 3",
+    shortLabel: "good target",
+    description: "Credible engineering employers that are meaningfully less selective, prestigious, or lucrative.",
+    examples: ["Verkada", "Garmin", "Motorola Solutions", "Autodesk"],
+  },
+  {
+    value: "4",
+    label: "tier 4",
+    shortLabel: "lower priority",
+    description: "Recognizable but lower-signal, lower-paying, tech-adjacent, or non-tech internship targets.",
+    examples: ["TikTok", "Rivian", "Disney", "Industrial Light & Magic", "CIBC"],
+  },
+  {
+    value: "5",
+    label: "tier 5",
+    shortLabel: "experience first",
+    description: "Smaller, local, or non-tech employers where getting relevant internship experience is the main value.",
+    examples: ["Lululemon", "TELUS", "Rogers", "Canadian Tire", "local firms"],
+  },
+  {
+    value: "",
+    label: "not set",
+    shortLabel: "needs review",
+    description: "Use while the company still needs a decision. Not set means unranked, not rejected.",
+    examples: [],
+  },
+];
 const DESCRIPTION_SECTION_HEADING_PATTERN = /^(?:about (?:the )?(?:role|team|job)|about this role|job description|job responsibilities|minimum qualifications|preferred qualifications|qualifications|requirements|responsibilities|what to expect|what (?:you'll|you’ll|you will) (?:bring|do)|what'?s in it for you|who you are|your objectives|your skills & talents):?$/i;
 let hideEmpty = true;
 let trackerData = null;
@@ -1645,6 +1697,7 @@ function renderCompanies(payload, message = "") {
   companiesData = payload;
   const companies = Array.isArray(payload?.companies) ? payload.companies : [];
   renderRoleCompanyOptions(companies);
+  renderCompanyTierGuide(companies);
   companiesStatus.textContent = message || `${companies.length} ${companies.length === 1 ? "company" : "companies"} stored`;
   companiesStatus.classList.toggle("is-empty", companies.length === 0 && !message);
   if (companies.length === 0) {
@@ -1652,6 +1705,34 @@ function renderCompanies(payload, message = "") {
     return;
   }
   companiesList.innerHTML = companies.map((company) => renderCompanyAccordion(company)).join("");
+}
+
+function renderCompanyTierGuide(companies) {
+  companyTierGuideList.innerHTML = COMPANY_TIER_DEFINITIONS
+    .map((definition) => {
+      const matches = companies.filter(
+        (company) => String(company.prestige_tier ?? "") === definition.value,
+      );
+      const tierClass = renderCompanyTierClass(definition.value);
+      const countLabel = `${matches.length} ${matches.length === 1 ? "company" : "companies"}`;
+      const examplesCopy = definition.examples.length > 0
+        ? `Examples: ${definition.examples.map((name) => escapeUiText(name)).join(", ")}.`
+        : definition.value
+          ? "No companies currently assigned."
+          : `${matches.length} companies currently await review.`;
+      return `
+        <article class="company-tier-guide-item ${tierClass}">
+          <div class="company-tier-guide-label-row">
+            <span class="company-tier-guide-label">${escapeUiText(definition.label)}</span>
+            <span class="company-tier-guide-count">${escapeUiText(countLabel)}</span>
+          </div>
+          <strong>${escapeUiText(definition.shortLabel)}</strong>
+          <p>${escapeUiText(definition.description)}</p>
+          <small>${examplesCopy}</small>
+        </article>
+      `;
+    })
+    .join("");
 }
 
 function renderRoleCompanyOptions(companies) {
@@ -1665,6 +1746,7 @@ function renderCompanyAccordion(company) {
   const careerPages = Array.isArray(company.career_pages) ? company.career_pages : [];
   const updated = formatCompactDate(company.updated_at);
   const tierClass = renderCompanyTierClass(company.prestige_tier);
+  const tierLabel = renderCompanyTierLabel(company.prestige_tier);
   const scanCount = Number(company.scan_count ?? 0);
   const discoveredRoleCount = Number(company.discovered_role_count ?? 0);
   const discoveryStatus = scanCount > 0 && discoveredRoleCount === 0
@@ -1679,6 +1761,7 @@ function renderCompanyAccordion(company) {
           <span class="company-summary-meta">${careerPages.length} ${careerPages.length === 1 ? "link" : "links"}${updated ? ` | updated ${escapeUiText(updated)}` : ""}</span>
           ${discoveryStatus}
         </span>
+        <span class="company-tier-badge">${escapeUiText(tierLabel)}</span>
       </summary>
       <div class="company-body">
         <div class="company-info">
@@ -1686,11 +1769,14 @@ function renderCompanyAccordion(company) {
             <span>notes</span>
             <textarea data-company-notes="${company.id}" rows="3">${escapeHtml(company.notes ?? "")}</textarea>
           </label>
-          <label>
-            <span>tier</span>
-            <select data-company-tier="${company.id}">
-              ${renderCompanyTierOptions(company.prestige_tier)}
-            </select>
+          <label class="company-tier-field">
+            <span>priority tier</span>
+            <span class="company-tier-select-shell">
+              <select class="company-tier-select" data-company-tier="${company.id}" aria-label="priority tier for ${escapeHtml(company.name)}">
+                ${renderCompanyTierOptions(company.prestige_tier)}
+              </select>
+            </span>
+            <small class="company-tier-help">0 highest · 5 experience first</small>
           </label>
           <div>
             <span>browser wait</span>
@@ -1722,18 +1808,23 @@ function renderCompanyAccordion(company) {
 
 function renderCompanyTierClass(currentTier) {
   const normalizedTier = String(currentTier ?? "");
-  return ["0", "1", "2", "3", "4"].includes(normalizedTier)
+  return ["0", "1", "2", "3", "4", "5"].includes(normalizedTier)
     ? `company-tier-${normalizedTier}`
     : "company-tier-unset";
 }
 
+function renderCompanyTierLabel(currentTier) {
+  const normalizedTier = String(currentTier ?? "");
+  return COMPANY_TIER_DEFINITIONS.find((definition) => definition.value === normalizedTier)?.label ?? "not set";
+}
+
 function renderCompanyTierOptions(currentTier) {
   const normalizedCurrent = String(currentTier ?? "");
-  return ["", "0", "1", "2", "3", "4"]
-    .map((value) => {
-      const label = value ? `tier ${value}` : "not set";
-      const selected = value === normalizedCurrent ? " selected" : "";
-      return `<option value="${escapeHtml(value)}"${selected}>${escapeUiText(label)}</option>`;
+  return COMPANY_TIER_DEFINITIONS
+    .map((definition) => {
+      const label = `${definition.label} — ${definition.shortLabel}`;
+      const selected = definition.value === normalizedCurrent ? " selected" : "";
+      return `<option value="${escapeHtml(definition.value)}"${selected}>${escapeUiText(label)}</option>`;
     })
     .join("");
 }
@@ -1931,6 +2022,7 @@ async function saveCompanyEdits(companyId) {
   companiesData = await response.json();
   setCompanySaveStatus("company saved.");
   renderToolbarCompanyMeta(companyId);
+  renderCompanyTierGuide(companiesData.companies ?? []);
 }
 
 function applyCompanyTierClass(panel, tier) {
@@ -1941,8 +2033,11 @@ function applyCompanyTierClass(panel, tier) {
     "company-tier-2",
     "company-tier-3",
     "company-tier-4",
+    "company-tier-5",
   );
   panel.classList.add(renderCompanyTierClass(tier));
+  const badge = panel.querySelector(".company-tier-badge");
+  if (badge) badge.textContent = renderCompanyTierLabel(tier);
 }
 
 function renderToolbarCompanyMeta(companyId) {

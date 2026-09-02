@@ -3022,6 +3022,133 @@ a:hover .role-link-icon {
   visibility: hidden;
 }
 
+.company-tier-guide {
+  margin-bottom: 14px;
+  border: 1px solid rgb(255 255 255 / 0.8);
+  border-radius: calc(var(--radius) + 4px);
+  padding: 18px;
+  background:
+    linear-gradient(135deg, rgb(255 255 255 / 0.94), rgb(244 240 255 / 0.76)),
+    var(--surface-solid);
+  box-shadow: var(--shadow-tight);
+}
+
+.company-tier-guide-header {
+  display: flex;
+  gap: 16px;
+  align-items: end;
+  justify-content: space-between;
+}
+
+.company-tier-guide-kicker {
+  margin: 0 0 3px;
+  color: var(--green);
+  font-size: 0.7rem;
+  font-weight: 950;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.company-tier-guide h3 {
+  margin: 0;
+  font-size: clamp(1.12rem, 2vw, 1.4rem);
+  line-height: 1.15;
+}
+
+.company-tier-guide-scale {
+  max-width: 350px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.4;
+  text-align: right;
+}
+
+.company-tier-guide-intro,
+.company-tier-guide-calibration {
+  margin: 10px 0 0;
+  color: var(--text);
+  font-size: 0.82rem;
+  font-weight: 720;
+  line-height: 1.5;
+}
+
+.company-tier-guide-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.company-tier-guide-item {
+  --company-tier-color: var(--line);
+  --company-tier-soft: rgb(248 250 252 / 0.9);
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--company-tier-color) 30%, white);
+  border-radius: var(--radius);
+  padding: 11px 12px;
+  background: linear-gradient(145deg, rgb(255 255 255 / 0.94), var(--company-tier-soft));
+  box-shadow: inset 3px 0 0 var(--company-tier-color);
+}
+
+.company-tier-guide-label-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.company-tier-guide-label,
+.company-tier-guide-count,
+.company-tier-badge {
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 950;
+  line-height: 1;
+}
+
+.company-tier-guide-label,
+.company-tier-badge {
+  border: 1px solid color-mix(in srgb, var(--company-tier-color) 44%, white);
+  padding: 5px 8px;
+  background: color-mix(in srgb, var(--company-tier-color) 12%, white);
+  color: color-mix(in srgb, var(--company-tier-color) 74%, var(--ink));
+}
+
+.company-tier-guide-count {
+  color: var(--muted);
+}
+
+.company-tier-guide-item > strong {
+  color: var(--text);
+  font-size: 0.82rem;
+}
+
+.company-tier-guide-item p,
+.company-tier-guide-item small {
+  margin: 0;
+  line-height: 1.4;
+}
+
+.company-tier-guide-item p {
+  color: var(--text);
+  font-size: 0.76rem;
+}
+
+.company-tier-guide-item small {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 750;
+}
+
+.company-tier-guide-calibration {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+  color: var(--muted);
+}
+
 .company-form-panel,
 .company-link-panel {
   margin-bottom: 14px;
@@ -3085,6 +3212,73 @@ a:hover .role-link-icon {
   font-weight: 900;
 }
 
+.company-info .company-tier-field {
+  align-content: start;
+  gap: 8px;
+  border-color: color-mix(in srgb, var(--company-tier-color) 34%, var(--line));
+  background:
+    linear-gradient(145deg, rgb(255 255 255 / 0.92), var(--company-tier-soft)),
+    var(--surface-solid);
+}
+
+.company-tier-select-shell {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
+.company-tier-select-shell::after {
+  position: absolute;
+  top: 50%;
+  right: 15px;
+  content: "⌄";
+  color: var(--company-tier-color);
+  font-size: 1.15rem;
+  font-weight: 950;
+  line-height: 1;
+  pointer-events: none;
+  transform: translateY(-58%);
+}
+
+.company-info .company-tier-select {
+  min-height: 50px;
+  appearance: none;
+  border: 1px solid color-mix(in srgb, var(--company-tier-color) 48%, var(--line));
+  border-radius: 12px;
+  padding: 10px 42px 10px 14px;
+  background:
+    linear-gradient(135deg, rgb(255 255 255 / 0.98), var(--company-tier-soft));
+  box-shadow:
+    inset 4px 0 0 var(--company-tier-color),
+    0 5px 14px var(--company-tier-glow);
+  color: color-mix(in srgb, var(--company-tier-color) 52%, var(--ink));
+  font-size: 0.78rem;
+  font-weight: 950;
+  cursor: pointer;
+  transition: border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+
+.company-info .company-tier-select:hover {
+  border-color: var(--company-tier-color);
+  transform: translateY(-1px);
+}
+
+.company-info .company-tier-select:focus-visible {
+  border-color: var(--company-tier-color);
+  outline: 3px solid color-mix(in srgb, var(--company-tier-color) 30%, transparent);
+  outline-offset: 2px;
+  box-shadow:
+    inset 4px 0 0 var(--company-tier-color),
+    0 7px 18px var(--company-tier-glow);
+}
+
+.company-tier-help {
+  color: var(--muted);
+  font-size: 0.62rem;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
 .company-create-form button {
   min-height: 39px;
   border-color: transparent;
@@ -3146,9 +3340,15 @@ a:hover .role-link-icon {
   --company-tier-glow: rgb(100 116 139 / 0.1);
 }
 
+.company-tier-5 {
+  --company-tier-color: #8b5e34;
+  --company-tier-soft: rgb(250 243 235 / 0.86);
+  --company-tier-glow: rgb(139 94 52 / 0.1);
+}
+
 .company-summary {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
   min-height: 58px;
@@ -3159,6 +3359,11 @@ a:hover .role-link-icon {
 
 .company-summary::-webkit-details-marker {
   display: none;
+}
+
+.company-tier-badge {
+  justify-self: end;
+  white-space: nowrap;
 }
 
 .company-chevron {
@@ -3218,7 +3423,7 @@ a:hover .role-link-icon {
 
 .company-info {
   display: grid;
-  grid-template-columns: minmax(0, 1.5fr) minmax(120px, 0.5fr) minmax(120px, 0.5fr);
+  grid-template-columns: minmax(0, 1.5fr) minmax(230px, 0.65fr) minmax(120px, 0.42fr);
   gap: 8px;
 }
 
@@ -3359,6 +3564,38 @@ a:hover .role-link-icon {
   font-size: 0.78rem;
   font-weight: 950;
   white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .company-tier-guide-header {
+    display: grid;
+  }
+
+  .company-tier-guide-scale {
+    max-width: none;
+    text-align: left;
+  }
+
+  .company-tier-guide-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 520px) {
+  .company-tier-guide-list,
+  .company-create-form,
+  .company-info {
+    grid-template-columns: 1fr;
+  }
+
+  .company-summary {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .company-tier-badge {
+    grid-column: 2;
+    justify-self: start;
+  }
 }
 
 @keyframes gradient-drift {

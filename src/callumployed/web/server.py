@@ -1717,7 +1717,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             notes = _optional_text(payload.get("notes"))
             prestige_tier = _optional_text(payload.get("prestige_tier"))
             if not _is_valid_company_tier(prestige_tier):
-                self.send_error(HTTPStatus.BAD_REQUEST, "Company tier must be 0-4")
+                self.send_error(HTTPStatus.BAD_REQUEST, "Company tier must be 0-5")
                 return
             career_url = _optional_text(payload.get("career_url"))
             career_label = _optional_text(payload.get("career_label")) or "Main"
@@ -1756,7 +1756,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             notes = _optional_text(payload.get("notes"))
             prestige_tier = _optional_text(payload.get("prestige_tier"))
             if not _is_valid_company_tier(prestige_tier):
-                self.send_error(HTTPStatus.BAD_REQUEST, "Company tier must be 0-4")
+                self.send_error(HTTPStatus.BAD_REQUEST, "Company tier must be 0-5")
                 return
             try:
                 with db.connect() as connection:
@@ -6080,7 +6080,7 @@ def _clean_applicant_profile_text(key: str, value: object) -> str:
 
 
 def _is_valid_company_tier(value: str | None) -> bool:
-    return value is None or value in {"0", "1", "2", "3", "4"}
+    return value is None or value in {"0", "1", "2", "3", "4", "5"}
 
 
 def _optional_cover_letter_tweaks(value: object) -> str | None:

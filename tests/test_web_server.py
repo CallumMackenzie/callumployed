@@ -392,7 +392,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "dangerouslySetInnerHTML" not in markup
         assert "dangerouslySetInnerHTML" not in app_javascript
         assert '<div id="root"></div>' not in index_markup
-        assert '<script type="module" src="/assets/app.js?v=vanilla-20260901-1"></script>' in (
+        assert '<script type="module" src="/assets/app.js?v=vanilla-20260902-3"></script>' in (
             index_markup
         )
 
@@ -416,6 +416,16 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="companies-view"' in markup
         assert 'class="company-form-panel"' in markup
         assert 'id="company-create-form"' in markup
+        assert 'id="company-tier-guide-heading"' in markup
+        assert 'id="company-tier-guide-list"' in markup
+        assert "0 is highest priority." in markup
+        assert "tier 5 means the internship experience itself matters more" in markup
+        assert "COMPANY_TIER_DEFINITIONS" in app_javascript
+        assert 'value: "5"' in app_javascript
+        assert 'examples: ["TikTok", "Rivian", "Disney"' in app_javascript
+        assert 'class="company-tier-badge"' in app_javascript
+        assert 'class="company-tier-select"' in app_javascript
+        assert 'class="company-tier-select-shell"' in app_javascript
         assert 'id="companies-list"' in markup
         assert 'id="prep-interested"' not in markup
         assert 'class="quick-action" type="button" id="prepped-roles"' in markup
@@ -501,8 +511,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=vanilla-20260901-1" in index_markup
-        assert "/assets/app.js?v=vanilla-20260901-1" in index_markup
+        assert "/assets/app.css?v=vanilla-20260902-3" in index_markup
+        assert "/assets/app.js?v=vanilla-20260902-3" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -4307,7 +4317,7 @@ def test_company_management_endpoints_create_link_and_delete_link(
             data=json.dumps(
                 {
                     "notes": "autosaved note",
-                    "prestige_tier": "1",
+                    "prestige_tier": "5",
                 }
             ).encode(),
             headers={"Content-Type": "application/json"},
@@ -4320,7 +4330,7 @@ def test_company_management_endpoints_create_link_and_delete_link(
         assert response.status == 200
         [company] = updated_payload["companies"]
         assert company["notes"] == "autosaved note"
-        assert company["prestige_tier"] == "1"
+        assert company["prestige_tier"] == "5"
 
         invalid_tier_request = Request(
             f"http://127.0.0.1:{port}/api/companies/{company_id}",
