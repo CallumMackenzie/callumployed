@@ -8,6 +8,10 @@ from callumployed.agents.posting_link_classifier import (
     ChatModelFactory,
     build_posting_link_agent_classifier,
 )
+from callumployed.agents.role_page_assessor import (
+    assess_role_page_with_llm,
+    should_use_role_page_llm_fallback,
+)
 from callumployed.central.metrics import publish_scan_metrics
 from callumployed.config import LlmSettings
 from callumployed.data import db
@@ -352,6 +356,22 @@ async def visit_discovered_links_node(state: ScanWorkflowState) -> dict[str, obj
                     candidate.surrounding_text,
                 ),
             )
+            if should_use_role_page_llm_fallback(assessment):
+                try:
+                    assessment = await assess_role_page_with_llm(
+                        page,
+                        assessment,
+                        title_hints=(
+                            candidate.text,
+                            candidate.title,
+                            candidate.aria_label,
+                            candidate.surrounding_text,
+                        ),
+                        settings=state.get("llm_settings"),
+                        chat_model_factory=state.get("chat_model_factory"),
+                    )
+                except Exception as error:
+                    LOGGER.warning("LLM role-page assessment fallback failed: %s", error)
             if (
                 assessment.is_role
                 and not state.get("include_graduate_degree_roles", False)

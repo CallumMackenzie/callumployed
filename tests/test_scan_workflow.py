@@ -1044,6 +1044,78 @@ def test_graph_calls_llm_only_with_ambiguous_candidates(
     assert {link.discovery_method for link in result.links} == {"heuristic", "agent"}
 
 
+def test_scan_company_uses_and_persists_llm_role_page_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _use_database(monkeypatch, tmp_path)
+    prompts: list[str] = []
+
+    async def fake_render_careers_page(
+        url: str,
+        *,
+        external_browser_port: int | None = None,
+        **_render_options: object,
+    ) -> RenderedPageState:
+        if url.endswith("/careers"):
+            return _page(url)
+        return RenderedPageState(
+            url=url,
+            final_url=url,
+            title="Opportunity",
+            html="<main>Build useful products with our team.</main>",
+            visible_text="Build useful products with our team.",
+        )
+
+    class FakeStructuredModel:
+        async def ainvoke(self, prompt: object) -> object:
+            assert isinstance(prompt, str)
+            prompts.append(prompt)
+            if "You classify scraped links" in prompt:
+                return {"decisions": []}
+            assert "You assess whether a rendered web page is a specific job posting" in prompt
+            return {
+                "is_role": True,
+                "is_closed": False,
+                "confidence": 0.94,
+                "title": "Software Engineering Intern",
+                "location": "Vancouver, BC, Canada",
+                "description": "Build useful products with our team.",
+                "posting_id": "ROLE-123",
+                "reasons": ["specific role URL and supplied title"],
+            }
+
+    monkeypatch.setattr(scan_workflow, "render_careers_page", fake_render_careers_page)
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Acme"))
+        assert company.id is not None
+        add_company_career_page(
+            connection,
+            CompanyCareerPage(company_id=company.id, url="https://example.com/careers"),
+        )
+
+    scan = asyncio.run(
+        scan_workflow.scan_company(
+            company,
+            chat_model_factory=lambda _settings: FakeStructuredModel(),
+        )
+    )
+
+    assert scan is not None
+    assert any("You assess whether" in prompt for prompt in prompts)
+    [attempt] = scan["role_discovery_attempts"]
+    assert attempt.status is RoleDiscoveryStatus.SUCCEEDED
+    assert attempt.assessment_is_role is True
+    assert attempt.assessment_extraction_method == "llm"
+    assert attempt.assessment_posting_id == "ROLE-123"
+    with db.connect() as connection:
+        [persisted_attempt] = list_role_discovery_attempts(
+            connection,
+            scan_run_id=scan["scan_run"].id,
+        )
+    assert persisted_attempt.assessment_extraction_method == "llm"
+
+
 def test_scan_company_persists_page_and_candidates(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

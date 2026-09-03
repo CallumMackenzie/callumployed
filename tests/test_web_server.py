@@ -1013,7 +1013,24 @@ def test_metrics_payload_reports_scan_candidate_and_ai_counts(
             """,
             (scan_page_id, scan_page_id),
         )
-        finish_scan_run(connection, scan_run.id, ScanStatus.SUCCEEDED, agent_trace="agent")
+        candidate_id = int(
+            connection.execute(
+                "SELECT id FROM scan_candidates WHERE discovery_method = 'heuristic+agent'"
+            ).fetchone()["id"]
+        )
+        add_role_discovery_attempt(
+            connection,
+            RoleDiscoveryAttempt(
+                scan_run_id=scan_run.id,
+                scan_candidate_id=candidate_id,
+                company_id=company.id,
+                url="https://example.com/jobs/accepted",
+                assessment_is_role=True,
+                assessment_confidence=0.92,
+                assessment_extraction_method="llm",
+            ),
+        )
+        finish_scan_run(connection, scan_run.id, ScanStatus.SUCCEEDED)
         connection.commit()
 
     payload = build_metrics_payload()
@@ -1026,12 +1043,13 @@ def test_metrics_payload_reports_scan_candidate_and_ai_counts(
     assert overview["scan runs"] == 1
     assert overview["accepted links"] == 1
     assert overview["rejected links"] == 1
-    assert overview["ai-assisted items"] == 2
+    assert overview["agent-assisted scan runs"] == 1
     assert sections["scan runs"]["succeeded"] == 1
     assert sections["scan runs"]["candidate observations"] == 2
     assert sections["candidate links"]["stored candidates"] == 2
     assert sections["ai usage"]["agent-selected links"] == 1
-    assert sections["ai usage"]["scan runs with agent trace"] == 1
+    assert sections["ai usage"]["llm role assessments"] == 1
+    assert sections["ai usage"]["agent-assisted scan runs"] == 1
     assert payload["recent_scans"][0]["company_name"] == "Acme"
 
 

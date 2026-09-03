@@ -3428,12 +3428,24 @@ def build_metrics_payload() -> dict[str, Any]:
             WHERE assessment_extraction_method = 'llm'
             """,
         )
-        scan_runs_with_agent_trace = _query_count(
+        agent_assisted_scan_runs = _query_count(
             connection,
             """
             SELECT COUNT(*) AS count
-            FROM scan_runs
-            WHERE agent_trace IS NOT NULL AND TRIM(agent_trace) != ''
+            FROM (
+                SELECT scan_pages.scan_run_id
+                FROM scan_candidates
+                JOIN scan_pages ON scan_pages.id = scan_candidates.scan_page_id
+                WHERE scan_candidates.discovery_method IN ('agent', 'heuristic+agent')
+                UNION
+                SELECT scan_run_id
+                FROM role_discovery_attempts
+                WHERE assessment_extraction_method = 'llm'
+                UNION
+                SELECT id AS scan_run_id
+                FROM scan_runs
+                WHERE agent_trace IS NOT NULL AND TRIM(agent_trace) != ''
+            ) AS assisted_scan_runs
             """,
         )
         resume_feedback_decisions = count_resume_feedback_history(connection)
@@ -3452,8 +3464,6 @@ def build_metrics_payload() -> dict[str, Any]:
     failed_scan_runs = scan_status_counts.get(ScanStatus.FAILED.value, 0)
     succeeded_scan_runs = scan_status_counts.get(ScanStatus.SUCCEEDED.value, 0)
     running_scan_runs = scan_status_counts.get(ScanStatus.RUNNING.value, 0)
-    ai_total = llm_link_classifications + llm_role_assessments + scan_runs_with_agent_trace
-
     return {
         "updated_at": _datetime_or_none(datetime.now(UTC)),
         "overview": [
@@ -3464,7 +3474,7 @@ def build_metrics_payload() -> dict[str, Any]:
             _metric("scan runs", total_scan_runs),
             _metric("accepted links", accepted_links),
             _metric("rejected links", rejected_links),
-            _metric("ai-assisted items", ai_total),
+            _metric("agent-assisted scan runs", agent_assisted_scan_runs),
         ],
         "sections": [
             {
@@ -3506,7 +3516,7 @@ def build_metrics_payload() -> dict[str, Any]:
                 "metrics": [
                     _metric("agent-selected links", llm_link_classifications),
                     _metric("llm role assessments", llm_role_assessments),
-                    _metric("scan runs with agent trace", scan_runs_with_agent_trace),
+                    _metric("agent-assisted scan runs", agent_assisted_scan_runs),
                     _metric("feedback decisions saved", resume_feedback_decisions),
                 ],
             },

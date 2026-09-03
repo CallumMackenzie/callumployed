@@ -41,11 +41,17 @@ from callumployed.agents.role_chat import (
     RoleChatResponse,
     build_role_chat_prompt,
 )
+from callumployed.agents.role_page_assessor import (
+    RolePageAssessmentDecision,
+    assess_role_page_with_llm,
+    build_role_page_assessment_prompt,
+)
 from callumployed.config import LlmSettings
 from callumployed.data.models import Company, CompanyCareerPage, ScanCandidate, ScanPage
 from callumployed.webscraping.models import (
     DiscoveredJobLink,
     RenderedPageState,
+    RolePageAssessment,
     ScoredLinkCandidate,
 )
 
@@ -883,6 +889,61 @@ def test_posting_link_classifier_agent_uses_settings_and_validates_response() ->
     assert calls
     assert response.decisions[0].is_job_posting is True
     assert response.decisions[0].candidate_id == 50
+
+
+def test_role_page_llm_assessor_uses_context_and_returns_llm_assessment() -> None:
+    page = RenderedPageState(
+        url="https://example.com/jobs/123",
+        final_url="https://example.com/jobs/123",
+        title="Opportunity",
+        html="<main>Build useful products with our team.</main>",
+        visible_text="Build useful products with our team.",
+    )
+    deterministic = RolePageAssessment(
+        is_role=False,
+        confidence=0.35,
+        title="Software Engineering Intern",
+        extraction_method="html_heuristic",
+        rejection_reason="deterministic evidence is weak; LLM fallback recommended",
+        reasons=["weak page signals"],
+    )
+    prompts: list[str] = []
+
+    class FakeStructuredModel:
+        async def ainvoke(self, prompt: object) -> RolePageAssessmentDecision:
+            assert isinstance(prompt, str)
+            prompts.append(prompt)
+            return RolePageAssessmentDecision(
+                is_role=True,
+                confidence=0.93,
+                title="Software Engineering Intern",
+                location="Vancouver, BC, Canada",
+                description="Build useful products with our team.",
+                posting_id="123",
+                reasons=["specific role URL and supplied title"],
+            )
+
+    prompt = build_role_page_assessment_prompt(
+        page,
+        deterministic,
+        title_hints=("Software Engineering Intern",),
+    )
+    assessment = asyncio.run(
+        assess_role_page_with_llm(
+            page,
+            deterministic,
+            title_hints=("Software Engineering Intern",),
+            chat_model_factory=lambda _settings: FakeStructuredModel(),
+        )
+    )
+
+    assert "deterministic_assessment" in prompt
+    assert "Build useful products with our team." in prompt
+    assert prompts == [prompt]
+    assert assessment.is_role is True
+    assert assessment.extraction_method == "llm"
+    assert assessment.posting_id == "123"
+    assert assessment.reasons[0] == "LLM fallback assessment"
 
 
 def test_classify_posting_links_convenience_wrapper_uses_agent_system() -> None:
