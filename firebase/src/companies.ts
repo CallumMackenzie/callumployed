@@ -2,6 +2,7 @@ import {FieldValue, type Firestore} from "firebase-admin/firestore";
 
 import type {
   CentralCompany,
+  CompanyTier,
   PublicResolveCompanyResponse,
   ResolveCompanyRequest,
   ResolveCompanyResponse,
@@ -144,7 +145,7 @@ export async function listCompanies(db: Firestore): Promise<CentralCompany[]> {
       domains: stringArray(data.domains),
       ats_slugs: stringArray(data.ats_slugs),
       aliases: stringArray(data.aliases),
-      default_tier: nullableString(data.default_tier),
+      default_tier: storedCompanyTier(data.default_tier),
       career_page_urls: stringArray(data.career_page_urls),
     };
   });
@@ -235,16 +236,26 @@ function stringValue(value: unknown, fallback: string): string {
   return typeof value === "string" && value.trim() ? value : fallback;
 }
 
-function nullableString(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value : null;
-}
-
-function companyTier(value: unknown): string | null {
-  if (typeof value !== "string") {
+export function companyTier(value: unknown): CompanyTier | null {
+  if (value === null || value === undefined || value === "") {
     return null;
   }
+  if (typeof value !== "string") {
+    throw new Error("prestige_tier must be a string from 0 to 7");
+  }
   const cleaned = value.trim();
-  return /^[0-4]$/.test(cleaned) ? cleaned : null;
+  if (!/^[0-7]$/.test(cleaned)) {
+    throw new Error("prestige_tier must be from 0 to 7");
+  }
+  return cleaned as CompanyTier;
+}
+
+function storedCompanyTier(value: unknown): CompanyTier | null {
+  try {
+    return companyTier(value);
+  } catch {
+    return null;
+  }
 }
 
 function sourceId(value: unknown): string | null {
@@ -269,21 +280,21 @@ function unique(values: string[]): string[] {
 async function recordCompanyTier(
   db: Firestore,
   globalCompanyId: string,
-  tier: string | null,
+  tier: CompanyTier | null,
   tierSourceId: string | null,
-): Promise<string | null> {
+): Promise<CompanyTier | null> {
   if (tier === null || tierSourceId === null) {
     const company = await db.collection("companies").doc(globalCompanyId).get();
-    return nullableString(company.get("default_tier"));
+    return storedCompanyTier(company.get("default_tier"));
   }
 
   const companyRef = db.collection("companies").doc(globalCompanyId);
   const voteRef = companyRef.collection("tierVotes").doc(tierSourceId);
   return db.runTransaction(async (transaction) => {
     const votes = await transaction.get(companyRef.collection("tierVotes"));
-    const tierBySource = new Map<string, string>();
+    const tierBySource = new Map<string, CompanyTier>();
     for (const doc of votes.docs) {
-      const savedTier = companyTier(doc.get("tier"));
+      const savedTier = storedCompanyTier(doc.get("tier"));
       if (savedTier !== null) {
         tierBySource.set(doc.id, savedTier);
       }
@@ -313,15 +324,15 @@ async function recordCompanyTier(
   });
 }
 
-function medianTier(tiers: number[]): string | null {
+function medianTier(tiers: number[]): CompanyTier | null {
   if (tiers.length === 0) {
     return null;
   }
   const middle = Math.floor(tiers.length / 2);
   if (tiers.length % 2 === 1) {
-    return String(tiers[middle]);
+    return String(tiers[middle]) as CompanyTier;
   }
-  return String(Math.round((tiers[middle - 1] + tiers[middle]) / 2));
+  return String(Math.round((tiers[middle - 1] + tiers[middle]) / 2)) as CompanyTier;
 }
 
 async function mergeCompanyCareerPageUrls(

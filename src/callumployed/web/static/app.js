@@ -168,6 +168,20 @@ const COMPANY_TIER_DEFINITIONS = [
     examples: ["Lululemon", "TELUS", "Rogers", "Canadian Tire", "local firms"],
   },
   {
+    value: "6",
+    label: "tier 6",
+    shortLabel: "broad fallback",
+    description: "Lower-priority employers that still offer credible, relevant work when stronger targets are unavailable.",
+    examples: ["small consultancies", "regional employers", "early-stage startups"],
+  },
+  {
+    value: "7",
+    label: "tier 7",
+    shortLabel: "last resort",
+    description: "Acceptable last-resort opportunities where gaining any relevant professional experience is the goal.",
+    examples: ["short-term placements", "generalist local roles", "adjacent technical work"],
+  },
+  {
     value: "",
     label: "not set",
     shortLabel: "needs review",
@@ -1777,7 +1791,7 @@ function renderCompanyAccordion(company) {
                 ${renderCompanyTierOptions(company.prestige_tier)}
               </select>
             </span>
-            <small class="company-tier-help">0 highest · 5 experience first</small>
+            <small class="company-tier-help">0 highest · 7 last resort</small>
           </label>
           <div>
             <span>browser wait</span>
@@ -1809,7 +1823,9 @@ function renderCompanyAccordion(company) {
 
 function renderCompanyTierClass(currentTier) {
   const normalizedTier = String(currentTier ?? "");
-  return ["0", "1", "2", "3", "4", "5"].includes(normalizedTier)
+  return COMPANY_TIER_DEFINITIONS.some(
+    (definition) => definition.value !== "" && definition.value === normalizedTier,
+  )
     ? `company-tier-${normalizedTier}`
     : "company-tier-unset";
 }
@@ -2061,12 +2077,9 @@ async function saveCompanyEdits(companyId) {
 function applyCompanyTierClass(panel, tier) {
   panel.classList.remove(
     "company-tier-unset",
-    "company-tier-0",
-    "company-tier-1",
-    "company-tier-2",
-    "company-tier-3",
-    "company-tier-4",
-    "company-tier-5",
+    ...COMPANY_TIER_DEFINITIONS
+      .filter((definition) => definition.value !== "")
+      .map((definition) => `company-tier-${definition.value}`),
   );
   panel.classList.add(renderCompanyTierClass(tier));
   const badge = panel.querySelector(".company-tier-badge");

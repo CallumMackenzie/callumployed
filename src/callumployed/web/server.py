@@ -243,6 +243,7 @@ COVER_LETTER_MODEL_OPTIONS = (
     ("gpt-4.1-mini", "GPT-4.1 mini"),
 )
 SUPPORTED_COVER_LETTER_MODELS = frozenset(value for value, _label in COVER_LETTER_MODEL_OPTIONS)
+SUPPORTED_COMPANY_TIERS = frozenset(str(tier) for tier in range(8))
 AUTOPREP_COORDINATOR: AutoprepCoordinator | None = None
 APPLICANT_PROFILE_TEXT_CONFIG_KEYS = {
     APPLICANT_EMAIL_CONFIG_KEY,
@@ -1717,7 +1718,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             notes = _optional_text(payload.get("notes"))
             prestige_tier = _optional_text(payload.get("prestige_tier"))
             if not _is_valid_company_tier(prestige_tier):
-                self.send_error(HTTPStatus.BAD_REQUEST, "Company tier must be 0-5")
+                self.send_error(HTTPStatus.BAD_REQUEST, "Company tier must be 0-7")
                 return
             career_url = _optional_text(payload.get("career_url"))
             career_label = _optional_text(payload.get("career_label")) or "Main"
@@ -1756,16 +1757,26 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             notes = _optional_text(payload.get("notes"))
             prestige_tier = _optional_text(payload.get("prestige_tier"))
             if not _is_valid_company_tier(prestige_tier):
-                self.send_error(HTTPStatus.BAD_REQUEST, "Company tier must be 0-5")
+                self.send_error(HTTPStatus.BAD_REQUEST, "Company tier must be 0-7")
                 return
             try:
                 with db.connect() as connection:
-                    update_company(
+                    existing_company = get_company(connection, company_id)
+                    company = update_company(
                         connection,
                         company_id,
                         notes=notes,
                         prestige_tier=prestige_tier,
                     )
+                    if prestige_tier != existing_company.prestige_tier:
+                        _try_resolve_company_with_central_store(
+                            connection,
+                            company,
+                            career_page_urls=[
+                                page.url
+                                for page in list_company_career_pages(connection, company_id)
+                            ],
+                        )
             except LookupError:
                 self.send_error(HTTPStatus.NOT_FOUND, "Company not found")
                 return
@@ -6208,7 +6219,7 @@ def _clean_applicant_profile_text(key: str, value: object) -> str:
 
 
 def _is_valid_company_tier(value: str | None) -> bool:
-    return value is None or value in {"0", "1", "2", "3", "4", "5"}
+    return value is None or value in SUPPORTED_COMPANY_TIERS
 
 
 def _optional_cover_letter_tweaks(value: object) -> str | None:

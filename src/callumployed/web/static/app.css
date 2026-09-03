@@ -3367,6 +3367,18 @@ a:hover .role-link-icon {
   --company-tier-glow: rgb(139 94 52 / 0.1);
 }
 
+.company-tier-6 {
+  --company-tier-color: #a8556a;
+  --company-tier-soft: rgb(253 240 244 / 0.84);
+  --company-tier-glow: rgb(168 85 106 / 0.1);
+}
+
+.company-tier-7 {
+  --company-tier-color: #475569;
+  --company-tier-soft: rgb(241 245 249 / 0.9);
+  --company-tier-glow: rgb(71 85 105 / 0.11);
+}
+
 .company-summary {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
