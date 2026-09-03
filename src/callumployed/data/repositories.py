@@ -2,9 +2,9 @@ import hashlib
 import json
 import math
 import re
+import sqlite3
 from pathlib import PurePath
-
-import turso
+from typing import TypedDict
 
 from callumployed.data.models import (
     Company,
@@ -28,6 +28,14 @@ from callumployed.data.models import (
 from callumployed.webscraping.models import CareersPageScanResult, ScoredLinkCandidate
 
 INCLUDE_GRADUATE_DEGREE_ROLES_CONFIG_KEY = "include_graduate_degree_roles"
+
+
+class TrackingStats(TypedDict):
+    companies_total: int
+    jobs_total: int
+    applications_total: int
+    jobs_by_status: dict[str, int]
+    applications_by_status: dict[str, int]
 INCLUDE_HARDWARE_ROLES_CONFIG_KEY = "include_hardware_roles"
 REQUIRE_SOFTWARE_KEYWORDS_CONFIG_KEY = "require_software_keywords"
 INTERNSHIP_MODE_CONFIG_KEY = "internship_mode"
@@ -61,13 +69,13 @@ _VECTOR_STOP_WORDS = {
 }
 
 
-def _lastrowid(cursor: turso.Cursor) -> int:
+def _lastrowid(cursor: sqlite3.Cursor) -> int:
     if cursor.lastrowid is None:
         raise RuntimeError("database did not return a row id")
     return cursor.lastrowid
 
 
-def add_company(connection: turso.Connection, company: Company) -> Company:
+def add_company(connection: sqlite3.Connection, company: Company) -> Company:
     if _companies_has_legacy_careers_url(connection):
         cursor = connection.execute(
             """
@@ -144,12 +152,12 @@ def add_company(connection: turso.Connection, company: Company) -> Company:
     return get_company(connection, _lastrowid(cursor))
 
 
-def _companies_has_legacy_careers_url(connection: turso.Connection) -> bool:
+def _companies_has_legacy_careers_url(connection: sqlite3.Connection) -> bool:
     rows = connection.execute("PRAGMA table_info(companies)").fetchall()
     return any(row["name"] == "careers_url" for row in rows)
 
 
-def set_config_value(connection: turso.Connection, key: str, value: str) -> None:
+def set_config_value(connection: sqlite3.Connection, key: str, value: str) -> None:
     connection.execute(
         """
         INSERT INTO app_config (key, value, updated_at)
@@ -163,7 +171,7 @@ def set_config_value(connection: turso.Connection, key: str, value: str) -> None
     connection.commit()
 
 
-def get_config_value(connection: turso.Connection, key: str) -> str | None:
+def get_config_value(connection: sqlite3.Connection, key: str) -> str | None:
     row = connection.execute(
         """
         SELECT value
@@ -177,7 +185,7 @@ def get_config_value(connection: turso.Connection, key: str) -> str | None:
     return str(row["value"])
 
 
-def list_config_values(connection: turso.Connection) -> dict[str, str]:
+def list_config_values(connection: sqlite3.Connection) -> dict[str, str]:
     rows = connection.execute(
         """
         SELECT key, value
@@ -188,7 +196,7 @@ def list_config_values(connection: turso.Connection) -> dict[str, str]:
     return {str(row["key"]): str(row["value"]) for row in rows}
 
 
-def delete_config_value(connection: turso.Connection, key: str) -> None:
+def delete_config_value(connection: sqlite3.Connection, key: str) -> None:
     connection.execute(
         """
         DELETE FROM app_config
@@ -200,7 +208,7 @@ def delete_config_value(connection: turso.Connection, key: str) -> None:
 
 
 def record_resume_feedback_history(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     *,
     role: Role,
     feedback_index: int,
@@ -269,7 +277,7 @@ def record_resume_feedback_history(
 
 
 def list_resume_feedback_knowledge(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     *,
     role: Role | dict[str, object],
     resume_content: str,
@@ -332,12 +340,12 @@ def list_resume_feedback_knowledge(
     return matches[:limit]
 
 
-def count_resume_feedback_history(connection: turso.Connection) -> int:
+def count_resume_feedback_history(connection: sqlite3.Connection) -> int:
     row = connection.execute("SELECT COUNT(*) AS count FROM resume_feedback_history").fetchone()
     return int(row["count"]) if row is not None else 0
 
 
-def clear_resume_feedback_history(connection: turso.Connection) -> int:
+def clear_resume_feedback_history(connection: sqlite3.Connection) -> int:
     deleted_count = count_resume_feedback_history(connection)
     connection.execute("DELETE FROM resume_feedback_history")
     connection.commit()
@@ -423,7 +431,7 @@ def _load_vector(value: object) -> dict[str, int]:
 
 
 def sync_role_context_vectors(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     *,
     role: Role,
     company_name: str,
@@ -469,7 +477,7 @@ def sync_role_context_vectors(
 
 
 def retrieve_role_context(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     *,
     role_id: int,
     query: str,
@@ -570,7 +578,7 @@ def _cosine_similarity(left: dict[str, int], right: dict[str, int]) -> float:
     return dot / (left_norm * right_norm)
 
 
-def get_master_resume(connection: turso.Connection) -> MasterResume | None:
+def get_master_resume(connection: sqlite3.Connection) -> MasterResume | None:
     row = connection.execute(
         """
         SELECT id, filename, content, content_sha256, created_at, updated_at
@@ -585,7 +593,7 @@ def get_master_resume(connection: turso.Connection) -> MasterResume | None:
 
 
 def upsert_master_resume(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     *,
     filename: str,
     content: str,
@@ -621,7 +629,7 @@ def upsert_master_resume(
     return resume
 
 
-def list_cover_letter_examples(connection: turso.Connection) -> list[CoverLetterExample]:
+def list_cover_letter_examples(connection: sqlite3.Connection) -> list[CoverLetterExample]:
     rows = connection.execute(
         """
         SELECT id, filename, content, content_sha256, created_at, updated_at
@@ -633,7 +641,7 @@ def list_cover_letter_examples(connection: turso.Connection) -> list[CoverLetter
 
 
 def get_cover_letter_example(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     example_id: int,
 ) -> CoverLetterExample | None:
     row = connection.execute(
@@ -647,7 +655,7 @@ def get_cover_letter_example(
     return CoverLetterExample.model_validate(dict(row)) if row is not None else None
 
 
-def delete_cover_letter_example(connection: turso.Connection, example_id: int) -> bool:
+def delete_cover_letter_example(connection: sqlite3.Connection, example_id: int) -> bool:
     connection.execute(
         "DELETE FROM cover_letter_example_vectors WHERE cover_letter_example_id = ?",
         (example_id,),
@@ -658,7 +666,7 @@ def delete_cover_letter_example(connection: turso.Connection, example_id: int) -
 
 
 def add_cover_letter_example(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     *,
     filename: str,
     content: str,
@@ -698,7 +706,7 @@ def add_cover_letter_example(
     return example
 
 
-def list_experience_notes(connection: turso.Connection) -> list[ExperienceNote]:
+def list_experience_notes(connection: sqlite3.Connection) -> list[ExperienceNote]:
     rows = connection.execute(
         """
         SELECT id, filename, content, content_sha256, created_at, updated_at
@@ -709,7 +717,7 @@ def list_experience_notes(connection: turso.Connection) -> list[ExperienceNote]:
     return [ExperienceNote.model_validate(dict(row)) for row in rows]
 
 
-def get_experience_note(connection: turso.Connection, note_id: int) -> ExperienceNote | None:
+def get_experience_note(connection: sqlite3.Connection, note_id: int) -> ExperienceNote | None:
     row = connection.execute(
         """
         SELECT id, filename, content, content_sha256, created_at, updated_at
@@ -721,14 +729,14 @@ def get_experience_note(connection: turso.Connection, note_id: int) -> Experienc
     return ExperienceNote.model_validate(dict(row)) if row is not None else None
 
 
-def delete_experience_note(connection: turso.Connection, note_id: int) -> bool:
+def delete_experience_note(connection: sqlite3.Connection, note_id: int) -> bool:
     cursor = connection.execute("DELETE FROM experience_notes WHERE id = ?", (note_id,))
     connection.commit()
     return cursor.rowcount > 0
 
 
 def add_experience_note(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     *,
     filename: str,
     content: str,
@@ -766,7 +774,7 @@ def add_experience_note(
 
 
 def list_cover_letter_example_knowledge(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     *,
     query: str,
     limit: int = 5,
@@ -806,7 +814,7 @@ def list_cover_letter_example_knowledge(
     return matches[:limit]
 
 
-def _backfill_cover_letter_example_vectors(connection: turso.Connection) -> None:
+def _backfill_cover_letter_example_vectors(connection: sqlite3.Connection) -> None:
     rows = connection.execute(
         """
         SELECT id, filename, content, content_sha256, created_at, updated_at
@@ -827,7 +835,7 @@ def _backfill_cover_letter_example_vectors(connection: turso.Connection) -> None
 
 
 def _upsert_cover_letter_example_vector(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     example: CoverLetterExample,
 ) -> None:
     if example.id is None:
@@ -860,7 +868,7 @@ def _upsert_cover_letter_example_vector(
     )
 
 
-def set_include_graduate_degree_roles(connection: turso.Connection, enabled: bool) -> None:
+def set_include_graduate_degree_roles(connection: sqlite3.Connection, enabled: bool) -> None:
     set_config_value(
         connection,
         INCLUDE_GRADUATE_DEGREE_ROLES_CONFIG_KEY,
@@ -868,14 +876,14 @@ def set_include_graduate_degree_roles(connection: turso.Connection, enabled: boo
     )
 
 
-def should_include_graduate_degree_roles(connection: turso.Connection) -> bool:
+def should_include_graduate_degree_roles(connection: sqlite3.Connection) -> bool:
     value = get_config_value(connection, INCLUDE_GRADUATE_DEGREE_ROLES_CONFIG_KEY)
     if value is None:
         return False
     return value.lower() in {"1", "true", "yes", "on"}
 
 
-def set_include_hardware_roles(connection: turso.Connection, enabled: bool) -> None:
+def set_include_hardware_roles(connection: sqlite3.Connection, enabled: bool) -> None:
     set_config_value(
         connection,
         INCLUDE_HARDWARE_ROLES_CONFIG_KEY,
@@ -883,14 +891,14 @@ def set_include_hardware_roles(connection: turso.Connection, enabled: bool) -> N
     )
 
 
-def should_include_hardware_roles(connection: turso.Connection) -> bool:
+def should_include_hardware_roles(connection: sqlite3.Connection) -> bool:
     value = get_config_value(connection, INCLUDE_HARDWARE_ROLES_CONFIG_KEY)
     if value is None:
         return False
     return value.lower() in {"1", "true", "yes", "on"}
 
 
-def set_require_software_keywords(connection: turso.Connection, enabled: bool) -> None:
+def set_require_software_keywords(connection: sqlite3.Connection, enabled: bool) -> None:
     set_config_value(
         connection,
         REQUIRE_SOFTWARE_KEYWORDS_CONFIG_KEY,
@@ -898,14 +906,14 @@ def set_require_software_keywords(connection: turso.Connection, enabled: bool) -
     )
 
 
-def should_require_software_keywords(connection: turso.Connection) -> bool:
+def should_require_software_keywords(connection: sqlite3.Connection) -> bool:
     value = get_config_value(connection, REQUIRE_SOFTWARE_KEYWORDS_CONFIG_KEY)
     if value is None:
         return True
     return value.lower() in {"1", "true", "yes", "on"}
 
 
-def set_internship_mode(connection: turso.Connection, enabled: bool) -> None:
+def set_internship_mode(connection: sqlite3.Connection, enabled: bool) -> None:
     set_config_value(
         connection,
         INTERNSHIP_MODE_CONFIG_KEY,
@@ -913,14 +921,14 @@ def set_internship_mode(connection: turso.Connection, enabled: bool) -> None:
     )
 
 
-def should_use_internship_mode(connection: turso.Connection) -> bool:
+def should_use_internship_mode(connection: sqlite3.Connection) -> bool:
     value = get_config_value(connection, INTERNSHIP_MODE_CONFIG_KEY)
     if value is None:
         return True
     return value.lower() in {"1", "true", "yes", "on"}
 
 
-def set_location_filter(connection: turso.Connection, value: str) -> None:
+def set_location_filter(connection: sqlite3.Connection, value: str) -> None:
     cleaned_value = value.strip().lower().replace("-", "_")
     if cleaned_value not in LOCATION_FILTER_VALUES:
         expected_values = ", ".join(sorted(LOCATION_FILTER_VALUES))
@@ -928,7 +936,7 @@ def set_location_filter(connection: turso.Connection, value: str) -> None:
     set_config_value(connection, LOCATION_FILTER_CONFIG_KEY, cleaned_value)
 
 
-def get_location_filter(connection: turso.Connection) -> str:
+def get_location_filter(connection: sqlite3.Connection) -> str:
     value = get_config_value(connection, LOCATION_FILTER_CONFIG_KEY)
     if value is None:
         return "all"
@@ -938,7 +946,7 @@ def get_location_filter(connection: turso.Connection) -> str:
     return cleaned_value
 
 
-def get_company(connection: turso.Connection, company_id: int) -> Company:
+def get_company(connection: sqlite3.Connection, company_id: int) -> Company:
     row = connection.execute(
         """
         SELECT
@@ -967,7 +975,7 @@ def get_company(connection: turso.Connection, company_id: int) -> Company:
 
 
 def list_companies(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     *,
     include_inactive: bool = False,
 ) -> list[Company]:
@@ -997,7 +1005,7 @@ def list_companies(
     return [Company.model_validate(dict(row)) for row in rows]
 
 
-def list_companies_without_central_id(connection: turso.Connection) -> list[Company]:
+def list_companies_without_central_id(connection: sqlite3.Connection) -> list[Company]:
     rows = connection.execute(
         """
         SELECT
@@ -1024,7 +1032,7 @@ def list_companies_without_central_id(connection: turso.Connection) -> list[Comp
 
 
 def set_company_central_link(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     company_id: int,
     *,
     central_company_id: str,
@@ -1053,7 +1061,7 @@ def set_company_central_link(
 
 
 def set_company_central_sync_status(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     company_id: int,
     *,
     status: str,
@@ -1077,7 +1085,7 @@ def set_company_central_sync_status(
 
 
 def update_company(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     company_id: int,
     *,
     notes: str | None = None,
@@ -1098,7 +1106,7 @@ def update_company(
     return get_company(connection, company_id)
 
 
-def deactivate_company(connection: turso.Connection, company_id: int) -> Company:
+def deactivate_company(connection: sqlite3.Connection, company_id: int) -> Company:
     get_company(connection, company_id)
     connection.execute(
         """
@@ -1115,7 +1123,7 @@ def deactivate_company(connection: turso.Connection, company_id: int) -> Company
 
 
 def increase_company_browser_wait(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     company_id: int,
     *,
     increment_ms: int = 1_000,
@@ -1135,7 +1143,7 @@ def increase_company_browser_wait(
 
 
 def add_company_career_page(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     career_page: CompanyCareerPage,
 ) -> CompanyCareerPage:
     cursor = connection.execute(
@@ -1154,7 +1162,7 @@ def add_company_career_page(
 
 
 def delete_company_career_page(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     career_page_id: int,
 ) -> CompanyCareerPage:
     career_page = get_company_career_page(connection, career_page_id)
@@ -1170,7 +1178,7 @@ def delete_company_career_page(
 
 
 def set_primary_company_career_page_url(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     company_id: int,
     url: str,
 ) -> CompanyCareerPage:
@@ -1200,7 +1208,7 @@ def set_primary_company_career_page_url(
 
 
 def get_company_career_page(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     career_page_id: int,
 ) -> CompanyCareerPage:
     row = connection.execute(
@@ -1217,7 +1225,7 @@ def get_company_career_page(
 
 
 def list_company_career_pages(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     company_id: int,
 ) -> list[CompanyCareerPage]:
     rows = connection.execute(
@@ -1233,7 +1241,7 @@ def list_company_career_pages(
 
 
 def list_company_career_pages_by_company(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
 ) -> dict[int, list[CompanyCareerPage]]:
     rows = connection.execute(
         """
@@ -1249,11 +1257,11 @@ def list_company_career_pages_by_company(
     return pages_by_company
 
 
-def _career_page_from_row(row: turso.Row) -> CompanyCareerPage:
+def _career_page_from_row(row: sqlite3.Row) -> CompanyCareerPage:
     return CompanyCareerPage.model_validate(dict(row))
 
 
-def add_role(connection: turso.Connection, role: Role, *, commit: bool = True) -> Role:
+def add_role(connection: sqlite3.Connection, role: Role, *, commit: bool = True) -> Role:
     cursor = connection.execute(
         """
         INSERT INTO roles (
@@ -1290,7 +1298,7 @@ def add_role(connection: turso.Connection, role: Role, *, commit: bool = True) -
     return get_role(connection, _lastrowid(cursor))
 
 
-def get_role(connection: turso.Connection, role_id: int) -> Role:
+def get_role(connection: sqlite3.Connection, role_id: int) -> Role:
     row = connection.execute(
         """
         SELECT
@@ -1321,7 +1329,7 @@ def get_role(connection: turso.Connection, role_id: int) -> Role:
 
 
 def get_role_by_company_url(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     company_id: int,
     role_url: str,
 ) -> Role | None:
@@ -1355,7 +1363,7 @@ def get_role_by_company_url(
     return Role.model_validate(dict(row))
 
 
-def get_role_by_central_id(connection: turso.Connection, central_role_id: str) -> Role | None:
+def get_role_by_central_id(connection: sqlite3.Connection, central_role_id: str) -> Role | None:
     row = connection.execute(
         """
         SELECT
@@ -1386,7 +1394,7 @@ def get_role_by_central_id(connection: turso.Connection, central_role_id: str) -
 
 
 def upsert_central_role(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     role: Role,
 ) -> tuple[Role, bool]:
     if role.central_role_id is None:
@@ -1435,7 +1443,7 @@ def upsert_central_role(
     return get_role(connection, created.id or 0), True
 
 
-def clear_roles(connection: turso.Connection) -> int:
+def clear_roles(connection: sqlite3.Connection) -> int:
     row = connection.execute("SELECT COUNT(*) AS count FROM roles").fetchone()
     role_count = int(row["count"]) if row is not None else 0
     connection.execute("DELETE FROM events WHERE role_id IS NOT NULL")
@@ -1446,7 +1454,7 @@ def clear_roles(connection: turso.Connection) -> int:
 
 
 def update_central_role_fields(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     role_id: int,
     *,
     title: str,
@@ -1488,7 +1496,7 @@ def update_central_role_fields(
 
 
 def update_role(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     role_id: int,
     *,
     title: str | None = None,
@@ -1546,7 +1554,7 @@ def update_role(
 
 
 def list_roles(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     *,
     company_id: int | None = None,
     role_status: RoleStatus | None = None,
@@ -1590,7 +1598,7 @@ def list_roles(
 
 
 def list_role_items(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     *,
     company_id: int | None = None,
     company: str | None = None,
@@ -1688,7 +1696,7 @@ def list_role_items(
     return [RoleListItem.model_validate(dict(row)) for row in rows]
 
 
-def get_tracking_stats(connection: turso.Connection) -> dict[str, object]:
+def get_tracking_stats(connection: sqlite3.Connection) -> TrackingStats:
     company_row = connection.execute(
         "SELECT COUNT(*) AS count FROM companies WHERE is_active = 1"
     ).fetchone()
@@ -1722,7 +1730,7 @@ def get_tracking_stats(connection: turso.Connection) -> dict[str, object]:
 
 
 def set_role_status(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     role_id: int,
     new_status: RoleStatus,
     *,
@@ -1755,7 +1763,7 @@ def set_role_status(
 
 
 def set_role_status_if_changed(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     role_id: int,
     new_status: RoleStatus,
     *,
@@ -1797,7 +1805,7 @@ def set_role_status_if_changed(
 
 
 def record_role_review_later(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     role_id: int,
     *,
     summary: str = "Review postponed from tracker.",
@@ -1817,7 +1825,7 @@ def record_role_review_later(
     return role
 
 
-def create_scan_run(connection: turso.Connection, company_id: int) -> ScanRun:
+def create_scan_run(connection: sqlite3.Connection, company_id: int) -> ScanRun:
     cursor = connection.execute(
         """
         INSERT INTO scan_runs (company_id)
@@ -1830,7 +1838,7 @@ def create_scan_run(connection: turso.Connection, company_id: int) -> ScanRun:
 
 
 def finish_scan_run(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     scan_run_id: int,
     scan_status: ScanStatus,
     *,
@@ -1853,7 +1861,7 @@ def finish_scan_run(
     return get_scan_run(connection, scan_run_id)
 
 
-def get_scan_run(connection: turso.Connection, scan_run_id: int) -> ScanRun:
+def get_scan_run(connection: sqlite3.Connection, scan_run_id: int) -> ScanRun:
     row = connection.execute(
         """
         SELECT
@@ -1876,7 +1884,7 @@ def get_scan_run(connection: turso.Connection, scan_run_id: int) -> ScanRun:
 
 
 def list_scan_runs(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     *,
     company_id: int | None = None,
     limit: int = 10,
@@ -1912,7 +1920,7 @@ def list_scan_runs(
 
 
 def get_latest_scan_role_presence(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     company_ids: set[int],
 ) -> dict[int, tuple[int, set[int], set[str]]]:
     if not company_ids:
@@ -1976,7 +1984,7 @@ def get_latest_scan_role_presence(
 
 
 def get_company_scan_discovery_counts(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
 ) -> dict[int, tuple[int, int]]:
     rows = connection.execute(
         """
@@ -1998,7 +2006,7 @@ def get_company_scan_discovery_counts(
 
 
 def add_scan_page(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     scan_run_id: int,
     result: CareersPageScanResult,
     *,
@@ -2031,7 +2039,7 @@ def add_scan_page(
     return get_scan_page(connection, _lastrowid(cursor))
 
 
-def get_scan_page(connection: turso.Connection, scan_page_id: int) -> ScanPage:
+def get_scan_page(connection: sqlite3.Connection, scan_page_id: int) -> ScanPage:
     row = connection.execute(
         """
         SELECT
@@ -2054,7 +2062,7 @@ def get_scan_page(connection: turso.Connection, scan_page_id: int) -> ScanPage:
     return ScanPage.model_validate(dict(row))
 
 
-def list_scan_pages(connection: turso.Connection, scan_run_id: int) -> list[ScanPage]:
+def list_scan_pages(connection: sqlite3.Connection, scan_run_id: int) -> list[ScanPage]:
     rows = connection.execute(
         """
         SELECT
@@ -2077,7 +2085,7 @@ def list_scan_pages(connection: turso.Connection, scan_run_id: int) -> list[Scan
 
 
 def add_scan_candidates(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     scan_page_id: int,
     candidates: list[ScoredLinkCandidate],
     result: CareersPageScanResult,
@@ -2128,7 +2136,7 @@ def add_scan_candidates(
     return created_candidates
 
 
-def get_scan_candidate(connection: turso.Connection, scan_candidate_id: int) -> ScanCandidate:
+def get_scan_candidate(connection: sqlite3.Connection, scan_candidate_id: int) -> ScanCandidate:
     row = connection.execute(
         """
         SELECT
@@ -2158,7 +2166,7 @@ def get_scan_candidate(connection: turso.Connection, scan_candidate_id: int) -> 
     return _scan_candidate_from_row(row)
 
 
-def list_scan_candidates(connection: turso.Connection, scan_page_id: int) -> list[ScanCandidate]:
+def list_scan_candidates(connection: sqlite3.Connection, scan_page_id: int) -> list[ScanCandidate]:
     rows = connection.execute(
         """
         SELECT
@@ -2187,7 +2195,7 @@ def list_scan_candidates(connection: turso.Connection, scan_page_id: int) -> lis
     return [_scan_candidate_from_row(row) for row in rows]
 
 
-def _scan_candidate_from_row(row: turso.Row) -> ScanCandidate:
+def _scan_candidate_from_row(row: sqlite3.Row) -> ScanCandidate:
     candidate = dict(row)
     candidate["css_classes"] = tuple(json.loads(candidate.pop("css_classes_json")))
     candidate["reasons"] = json.loads(candidate.pop("reasons_json"))
@@ -2196,7 +2204,7 @@ def _scan_candidate_from_row(row: turso.Row) -> ScanCandidate:
 
 
 def add_role_discovery_attempt(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     attempt: RoleDiscoveryAttempt,
 ) -> RoleDiscoveryAttempt:
     cursor = connection.execute(
@@ -2251,7 +2259,7 @@ def add_role_discovery_attempt(
 
 
 def get_role_discovery_attempt(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     attempt_id: int,
 ) -> RoleDiscoveryAttempt:
     row = connection.execute(
@@ -2289,7 +2297,7 @@ def get_role_discovery_attempt(
 
 
 def list_role_discovery_attempts(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     *,
     scan_run_id: int | None = None,
     scan_candidate_id: int | None = None,
@@ -2338,7 +2346,7 @@ def list_role_discovery_attempts(
 
 
 def update_role_discovery_attempt_assessment(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     attempt_id: int,
     *,
     role_id: int | None,
@@ -2377,7 +2385,7 @@ def update_role_discovery_attempt_assessment(
     return get_role_discovery_attempt(connection, attempt_id)
 
 
-def list_rejected_role_urls(connection: turso.Connection, company_id: int) -> set[str]:
+def list_rejected_role_urls(connection: sqlite3.Connection, company_id: int) -> set[str]:
     rows = connection.execute(
         """
         SELECT url, final_url
@@ -2401,7 +2409,7 @@ def list_rejected_role_urls(connection: turso.Connection, company_id: int) -> se
     return urls
 
 
-def _role_discovery_attempt_from_row(row: turso.Row) -> RoleDiscoveryAttempt:
+def _role_discovery_attempt_from_row(row: sqlite3.Row) -> RoleDiscoveryAttempt:
     attempt = dict(row)
     attempt["assessment_is_role"] = _optional_int_to_bool(attempt["assessment_is_role"])
     attempt["assessment_is_closed"] = _optional_int_to_bool(attempt["assessment_is_closed"])
@@ -2421,7 +2429,7 @@ def _optional_int_to_bool(value: object) -> bool | None:
     return bool(value)
 
 
-def add_event(connection: turso.Connection, event: Event) -> Event:
+def add_event(connection: sqlite3.Connection, event: Event) -> Event:
     cursor = connection.execute(
         """
         INSERT INTO events (
@@ -2449,7 +2457,7 @@ def add_event(connection: turso.Connection, event: Event) -> Event:
     return get_event(connection, _lastrowid(cursor))
 
 
-def get_event(connection: turso.Connection, event_id: int) -> Event:
+def get_event(connection: sqlite3.Connection, event_id: int) -> Event:
     row = connection.execute(
         """
         SELECT
@@ -2472,7 +2480,9 @@ def get_event(connection: turso.Connection, event_id: int) -> Event:
     return Event.model_validate(dict(row))
 
 
-def list_role_events(connection: turso.Connection, role_id: int, *, limit: int = 5) -> list[Event]:
+def list_role_events(
+    connection: sqlite3.Connection, role_id: int, *, limit: int = 5
+) -> list[Event]:
     rows = connection.execute(
         """
         SELECT

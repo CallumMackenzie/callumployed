@@ -1,7 +1,9 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+SUPPORTED_COMPANY_TIERS = frozenset(str(tier) for tier in range(8))
 
 
 class CentralModel(BaseModel):
@@ -14,6 +16,13 @@ class ResolveCompanyRequest(CentralModel):
     role_urls: list[str] = Field(default_factory=list)
     prestige_tier: str | None = None
     tier_source_id: str | None = None
+
+    @field_validator("prestige_tier")
+    @classmethod
+    def validate_prestige_tier(cls, value: str | None) -> str | None:
+        if value is not None and value not in SUPPORTED_COMPANY_TIERS:
+            raise ValueError("prestige_tier must be from 0 to 7")
+        return value
 
 
 class ResolveCompanyResponse(CentralModel):

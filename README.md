@@ -28,7 +28,7 @@ The web UI is served directly from the vanilla HTML, CSS, and JavaScript files i
 ### Stack
 
 - Python 3.12+
-- SQLite/Turso-compatible local database
+- SQLite local database with concurrent frontend and CLI access
 - Typer CLI
 - FastMCP server for agent/tool access
 - Playwright browser scanning

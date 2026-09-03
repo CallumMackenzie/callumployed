@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 from datetime import datetime
-
-import turso
 
 from callumployed.data.repositories import get_config_value, set_config_value
 
@@ -15,7 +14,7 @@ DEFAULT_SCAN_SCHEDULE_TIME = "04:30"
 _TIME_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
-def get_scan_schedule(connection: turso.Connection) -> tuple[bool, str, str | None]:
+def get_scan_schedule(connection: sqlite3.Connection) -> tuple[bool, str, str | None]:
     configured_enabled = get_config_value(connection, SCAN_SCHEDULE_ENABLED_CONFIG_KEY)
     enabled = (
         DEFAULT_SCAN_SCHEDULE_ENABLED
@@ -30,7 +29,7 @@ def get_scan_schedule(connection: turso.Connection) -> tuple[bool, str, str | No
     return enabled, time_value, last_run_date
 
 
-def set_scan_schedule_enabled(connection: turso.Connection, enabled: bool) -> None:
+def set_scan_schedule_enabled(connection: sqlite3.Connection, enabled: bool) -> None:
     set_config_value(
         connection,
         SCAN_SCHEDULE_ENABLED_CONFIG_KEY,
@@ -38,7 +37,7 @@ def set_scan_schedule_enabled(connection: turso.Connection, enabled: bool) -> No
     )
 
 
-def set_scan_schedule_time(connection: turso.Connection, value: str) -> str:
+def set_scan_schedule_time(connection: sqlite3.Connection, value: str) -> str:
     cleaned = clean_scan_schedule_time(value)
     set_config_value(connection, SCAN_SCHEDULE_TIME_CONFIG_KEY, cleaned)
     return cleaned

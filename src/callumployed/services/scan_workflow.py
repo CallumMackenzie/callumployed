@@ -88,6 +88,7 @@ from callumployed.webscraping.models import (
     LinkCandidate,
     RenderedPageState,
     RolePageAssessment,
+    RolePageExtractionMethod,
     ScoredLinkCandidate,
 )
 from callumployed.webscraping.profile_manager import BrowserProfileManager
@@ -784,6 +785,19 @@ def _assessment_from_stored_attempt(attempt: RoleDiscoveryAttempt) -> RolePageAs
             if part
         ),
     )
+    raw_extraction_method = attempt.assessment_extraction_method or "html_heuristic"
+    allowed_extraction_methods = {
+        "jobposting_structured_data",
+        "ats_heuristic",
+        "html_heuristic",
+        "llm",
+    }
+    extraction_method = cast(
+        RolePageExtractionMethod,
+        raw_extraction_method
+        if raw_extraction_method in allowed_extraction_methods
+        else "html_heuristic",
+    )
     return RolePageAssessment(
         is_role=base_is_role,
         is_closed=attempt.assessment_is_closed is True,
@@ -792,7 +806,7 @@ def _assessment_from_stored_attempt(attempt: RoleDiscoveryAttempt) -> RolePageAs
         location=location,
         description=description,
         posting_id=attempt.assessment_posting_id,
-        extraction_method=attempt.assessment_extraction_method or "html_heuristic",
+        extraction_method=extraction_method,
         rejection_reason=None if base_is_role else attempt.assessment_rejection_reason,
         reasons=_base_assessment_reasons(attempt.assessment_reasons),
     )
@@ -1221,6 +1235,7 @@ async def scan_company(
         scan_run = create_scan_run(connection, company.id)
     if scan_run.id is None:
         raise RuntimeError("created scan run did not include an id")
+    scan_run_id = scan_run.id
 
     current_company = company
     timeout_retries_remaining = MAX_COMPANY_TIMEOUT_RETRIES_PER_SCAN
@@ -1236,7 +1251,7 @@ async def scan_company(
             ) = await _scan_career_page_with_timeout_retry(
                 current_company,
                 career_page,
-                scan_run_id=scan_run.id,
+                scan_run_id=scan_run_id,
                 timeout_retries_remaining=timeout_retries_remaining,
                 browser_profile_manager=browser_profile_manager,
                 include_graduate_degree_roles=include_graduate_degree_roles,
@@ -1259,7 +1274,7 @@ async def scan_company(
         with db.connect() as connection:
             failed_scan_run = finish_scan_run(
                 connection,
-                scan_run.id,
+                scan_run_id,
                 ScanStatus.FAILED,
                 error=str(error),
             )
@@ -1267,15 +1282,15 @@ async def scan_company(
         raise
 
     with db.connect() as connection:
-        scan_run = finish_scan_run(connection, scan_run.id, ScanStatus.SUCCEEDED)
+        scan_run = finish_scan_run(connection, scan_run_id, ScanStatus.SUCCEEDED)
         role_discovery_attempts = list_role_discovery_attempts(
             connection,
-            scan_run_id=scan_run.id,
+            scan_run_id=scan_run_id,
         )
         _close_missing_disinterested_roles(
             connection,
             company_id=company.id,
-            scan_run_id=scan_run.id,
+            scan_run_id=scan_run_id,
             role_discovery_attempts=role_discovery_attempts,
         )
 

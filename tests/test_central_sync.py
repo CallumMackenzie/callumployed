@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 
 import httpx
@@ -97,6 +98,19 @@ class UnavailableCentralClient:
     def resolve_company(self, request: object) -> ResolveCompanyResponse:
         _ = request
         raise CentralStoreError("central store request failed: connection refused")
+
+
+@pytest.mark.parametrize("tier", [str(value) for value in range(8)])
+def test_resolve_company_request_accepts_company_tiers_zero_through_seven(tier: str) -> None:
+    request = ResolveCompanyRequest(name="Acme", prestige_tier=tier)
+
+    assert request.prestige_tier == tier
+
+
+@pytest.mark.parametrize("tier", ["-1", "8", "A", "tier 7"])
+def test_resolve_company_request_rejects_unsupported_company_tiers(tier: str) -> None:
+    with pytest.raises(ValueError):
+        ResolveCompanyRequest(name="Acme", prestige_tier=tier)
 
 
 def test_resolve_unlinked_companies_stores_global_company_id() -> None:
@@ -228,9 +242,11 @@ def test_pull_companies_imports_remote_companies_and_links_existing() -> None:
 
 def test_central_client_resolves_company_without_passkey() -> None:
     seen_headers: dict[str, str] = {}
+    seen_payload: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen_headers.update(request.headers)
+        seen_payload.update(json.loads(request.content))
         return httpx.Response(200, json={"global_company_id": "co_public"})
 
     client = CentralStoreClient(
@@ -239,13 +255,20 @@ def test_central_client_resolves_company_without_passkey() -> None:
     )
 
     response = client.resolve_company(
-        ResolveCompanyRequest(name="Acme", career_page_urls=["https://example.com/careers"])
+        ResolveCompanyRequest(
+            name="Acme",
+            career_page_urls=["https://example.com/careers"],
+            prestige_tier="7",
+            tier_source_id="client-1",
+        )
     )
 
     assert response.global_company_id == "co_public"
     assert response.action == "matched"
     assert "authorization" not in seen_headers
     assert "x-callumployed-passkey" not in seen_headers
+    assert seen_payload["prestige_tier"] == "7"
+    assert seen_payload["tier_source_id"] == "client-1"
 
 
 def test_central_api_url_defaults_to_deployed_store(monkeypatch) -> None:

@@ -3,14 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import sqlite3
 import threading
 import time
 from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager, suppress
 from typing import Any, Literal
-
-import turso
 
 from callumployed.data import db
 from callumployed.data.repositories import get_config_value, set_config_value
@@ -150,7 +149,7 @@ class AutoprepCoordinator:
             self._wake.set()
 
 
-def ensure_autoprep_schema(connection: turso.Connection) -> None:
+def ensure_autoprep_schema(connection: sqlite3.Connection) -> None:
     connection.executescript(
         """
         CREATE TABLE IF NOT EXISTS autoprep_requests (
@@ -267,7 +266,7 @@ def ensure_autoprep_schema(connection: turso.Connection) -> None:
 
 
 def create_application_answer(
-    connection: turso.Connection, role_id: int, *, question: str, backend: str
+    connection: sqlite3.Connection, role_id: int, *, question: str, backend: str
 ) -> dict[str, Any]:
     clean_question = question.strip()
     if not clean_question:
@@ -290,7 +289,7 @@ def create_application_answer(
     return get_application_answer(connection, int(answer_id))
 
 
-def list_application_answers(connection: turso.Connection, role_id: int) -> list[dict[str, Any]]:
+def list_application_answers(connection: sqlite3.Connection, role_id: int) -> list[dict[str, Any]]:
     rows = connection.execute(
         "SELECT * FROM application_answers WHERE role_id = ? ORDER BY created_at DESC, id DESC",
         (role_id,),
@@ -298,7 +297,7 @@ def list_application_answers(connection: turso.Connection, role_id: int) -> list
     return [_application_answer_payload(row) for row in rows]
 
 
-def get_application_answer(connection: turso.Connection, answer_id: int) -> dict[str, Any]:
+def get_application_answer(connection: sqlite3.Connection, answer_id: int) -> dict[str, Any]:
     row = connection.execute(
         "SELECT * FROM application_answers WHERE id = ?", (answer_id,)
     ).fetchone()
@@ -308,7 +307,7 @@ def get_application_answer(connection: turso.Connection, answer_id: int) -> dict
 
 
 def queue_application_answer_regeneration(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     role_id: int,
     answer_id: int,
     *,
@@ -363,7 +362,7 @@ def queue_application_answer_regeneration(
 
 
 def delete_application_answer(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     role_id: int,
     answer_id: int,
 ) -> dict[str, Any]:
@@ -392,7 +391,7 @@ def delete_application_answer(
 
 
 def complete_application_answer(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     answer_id: int,
     *,
     answer: str,
@@ -419,7 +418,7 @@ def complete_application_answer(
 
 
 def fail_application_answer(
-    connection: turso.Connection, answer_id: int, *, error: str
+    connection: sqlite3.Connection, answer_id: int, *, error: str
 ) -> dict[str, Any]:
     connection.execute(
         """
@@ -434,7 +433,7 @@ def fail_application_answer(
     return get_application_answer(connection, answer_id)
 
 
-def recover_interrupted_application_answers(connection: turso.Connection) -> int:
+def recover_interrupted_application_answers(connection: sqlite3.Connection) -> int:
     """Make abandoned answer generations explicit after a server restart."""
     cursor = connection.execute(
         """
@@ -462,7 +461,7 @@ def _application_answer_payload(row: Any) -> dict[str, Any]:
 
 
 def enqueue_autoprep_jobs(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     role_ids: list[int],
     *,
     idempotency_key: str,
@@ -529,7 +528,7 @@ def enqueue_autoprep_jobs(
 
 
 def list_autoprep_jobs(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     *,
     include_applied: bool = False,
 ) -> list[dict[str, Any]]:
@@ -560,7 +559,7 @@ def list_autoprep_jobs(
     return [_job_payload(row) for row in rows]
 
 
-def list_interested_autoprep_roles(connection: turso.Connection) -> list[dict[str, Any]]:
+def list_interested_autoprep_roles(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = connection.execute(
         """
         SELECT
@@ -583,7 +582,7 @@ def list_interested_autoprep_roles(connection: turso.Connection) -> list[dict[st
     return [dict(row) for row in rows]
 
 
-def get_autoprep_job(connection: turso.Connection, job_id: int) -> dict[str, Any]:
+def get_autoprep_job(connection: sqlite3.Connection, job_id: int) -> dict[str, Any]:
     row = connection.execute(
         """
         SELECT
@@ -612,7 +611,7 @@ def get_autoprep_job(connection: turso.Connection, job_id: int) -> dict[str, Any
     return _job_payload(row)
 
 
-def get_role_autoprep_job(connection: turso.Connection, role_id: int) -> dict[str, Any] | None:
+def get_role_autoprep_job(connection: sqlite3.Connection, role_id: int) -> dict[str, Any] | None:
     row = connection.execute(
         "SELECT id FROM autoprep_jobs WHERE role_id = ?",
         (role_id,),
@@ -620,7 +619,7 @@ def get_role_autoprep_job(connection: turso.Connection, role_id: int) -> dict[st
     return get_autoprep_job(connection, int(row["id"])) if row is not None else None
 
 
-def get_autoprep_resume_latex(connection: turso.Connection, job_id: int) -> str | None:
+def get_autoprep_resume_latex(connection: sqlite3.Connection, job_id: int) -> str | None:
     row = connection.execute(
         "SELECT resume_latex FROM autoprep_jobs WHERE id = ?",
         (job_id,),
@@ -631,7 +630,7 @@ def get_autoprep_resume_latex(connection: turso.Connection, job_id: int) -> str 
 
 
 
-def claim_next_autoprep_job(connection: turso.Connection) -> dict[str, Any] | None:
+def claim_next_autoprep_job(connection: sqlite3.Connection) -> dict[str, Any] | None:
     try:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
@@ -664,7 +663,7 @@ def claim_next_autoprep_job(connection: turso.Connection) -> dict[str, Any] | No
     return get_autoprep_job(connection, job_id)
 
 
-def release_autoprep_claim(connection: turso.Connection, job_id: int) -> None:
+def release_autoprep_claim(connection: sqlite3.Connection, job_id: int) -> None:
     """Return a claim to the durable queue when shutdown wins before submission."""
     connection.execute(
         """
@@ -678,7 +677,7 @@ def release_autoprep_claim(connection: turso.Connection, job_id: int) -> None:
 
 
 def mark_autoprep_document(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     job_id: int,
     document_kind: DocumentKind,
     status: str,
@@ -713,7 +712,7 @@ def mark_autoprep_document(
     return get_autoprep_job(connection, job_id)
 
 
-def finish_autoprep_worker(connection: turso.Connection, job_id: int) -> dict[str, Any]:
+def finish_autoprep_worker(connection: sqlite3.Connection, job_id: int) -> dict[str, Any]:
     _refresh_overall_status(connection, job_id)
     connection.execute(
         """
@@ -734,7 +733,7 @@ def finish_autoprep_worker(connection: turso.Connection, job_id: int) -> dict[st
 
 
 def fail_running_autoprep_documents(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     job_id: int,
     *,
     error: str,
@@ -755,7 +754,7 @@ def fail_running_autoprep_documents(
 
 
 def retry_autoprep_document(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     role_id: int,
     document_kind: DocumentKind,
     *,
@@ -825,7 +824,7 @@ def retry_autoprep_document(
 
 
 def _queue_autoprep_regeneration_in_transaction(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     job: dict[str, Any],
     document_kind: DocumentKind,
     *,
@@ -884,7 +883,7 @@ def _queue_autoprep_regeneration_in_transaction(
 
 
 def queue_autoprep_regeneration(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     role_id: int,
     document_kind: DocumentKind,
     *,
@@ -922,7 +921,7 @@ def queue_autoprep_regeneration(
 
 
 def _bulk_cover_letter_result(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     saved: dict[str, Any],
 ) -> dict[str, Any]:
     queued_role_ids = [int(role_id) for role_id in saved["queued_role_ids"]]
@@ -937,7 +936,7 @@ def _bulk_cover_letter_result(
 
 
 def get_latest_bulk_cover_letter_regeneration(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
 ) -> dict[str, Any] | None:
     row = connection.execute(
         """
@@ -956,7 +955,7 @@ def get_latest_bulk_cover_letter_regeneration(
 
 
 def queue_all_prepped_cover_letter_regenerations(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     *,
     idempotency_key: str,
 ) -> dict[str, Any]:
@@ -1019,7 +1018,7 @@ def queue_all_prepped_cover_letter_regenerations(
     return _bulk_cover_letter_result(connection, saved)
 
 
-def _queue_due_applicant_profile_reprep(connection: turso.Connection) -> bool:
+def _queue_due_applicant_profile_reprep(connection: sqlite3.Connection) -> bool:
     raw_due_at = get_config_value(connection, APPLICANT_PROFILE_REPREP_DUE_CONFIG_KEY)
     if not raw_due_at:
         return False
@@ -1041,7 +1040,7 @@ def _queue_due_applicant_profile_reprep(connection: turso.Connection) -> bool:
 
 
 def clear_autoprep_instruction(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     job_id: int,
     document_kind: DocumentKind,
 ) -> None:
@@ -1053,7 +1052,7 @@ def clear_autoprep_instruction(
     connection.commit()
 
 
-def recover_interrupted_autoprep_jobs(connection: turso.Connection) -> int:
+def recover_interrupted_autoprep_jobs(connection: sqlite3.Connection) -> int:
     rows = connection.execute(
         """
         SELECT id, resume_status, cover_letter_status
@@ -1088,7 +1087,7 @@ def recover_interrupted_autoprep_jobs(connection: turso.Connection) -> int:
     return len(rows)
 
 
-def _jobs_for_role_ids(connection: turso.Connection, role_ids: list[int]) -> list[dict[str, Any]]:
+def _jobs_for_role_ids(connection: sqlite3.Connection, role_ids: list[int]) -> list[dict[str, Any]]:
     jobs_by_role: dict[int, dict[str, Any]] = {}
     for role_id in role_ids:
         job = get_role_autoprep_job(connection, role_id)
@@ -1112,7 +1111,7 @@ def _validate_document_status(document_kind: DocumentKind, status: str) -> None:
         raise ValueError(f"Unsupported {document_kind} status: {status}")
 
 
-def _refresh_overall_status(connection: turso.Connection, job_id: int) -> None:
+def _refresh_overall_status(connection: sqlite3.Connection, job_id: int) -> None:
     row = connection.execute(
         "SELECT resume_status, cover_letter_status FROM autoprep_jobs WHERE id = ?",
         (job_id,),

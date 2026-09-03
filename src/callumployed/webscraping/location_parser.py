@@ -357,12 +357,12 @@ def _normalize_location_fragment(text: str) -> str:
 
 
 def _normalize_place_segments(text: str, places: list[str]) -> list[str]:
-    segments = [
+    normalized_segments = [
         _normalize_place_segment(segment, places)
         for segment in SEPARATOR_PATTERN.split(text)
         if _clean_location_text(segment)
     ]
-    segments = [segment for segment in segments if segment]
+    segments = [segment for segment in normalized_segments if segment is not None]
     if segments:
         return segments
     return [_normalize_place_name(place) for place in places]
@@ -488,7 +488,7 @@ def _country_is_explicit(text: str, country: str) -> bool:
 @lru_cache(maxsize=256)
 def _geograpy_context(text: str) -> Any | None:
     try:
-        from geograpy import get_place_context
+        from geograpy import get_place_context  # type: ignore[import-untyped]
     except Exception:
         return None
     try:

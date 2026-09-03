@@ -22,10 +22,12 @@ import callumployed.web.server as web_server
 from callumployed.agents.cover_letter import ApplicantProfile
 from callumployed.central.client import CentralStoreError
 from callumployed.central.config import DEFAULT_CENTRAL_API_URL
+from callumployed.central.models import ResolveCompanyRequest, ResolveCompanyResponse
 from callumployed.cli import app
 from callumployed.data import db
 from callumployed.data.models import (
     Company,
+    CompanyCareerPage,
     ExperienceNote,
     Role,
     RoleDiscoveryAttempt,
@@ -34,6 +36,7 @@ from callumployed.data.models import (
 )
 from callumployed.data.repositories import (
     add_company,
+    add_company_career_page,
     add_cover_letter_example,
     add_experience_note,
     add_role,
@@ -419,10 +422,14 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="company-tier-guide-heading"' in markup
         assert 'id="company-tier-guide-list"' in markup
         assert "0 is highest priority." in markup
-        assert "tier 5 means the internship experience itself matters more" in markup
+        assert "tiers 5 through 7 progressively prioritize gaining experience" in markup
         assert "COMPANY_TIER_DEFINITIONS" in app_javascript
-        assert 'value: "5"' in app_javascript
+        for tier in range(8):
+            assert f'value: "{tier}"' in app_javascript
+            assert f".company-tier-{tier}" in app_styles
         assert 'examples: ["TikTok", "Rivian", "Disney"' in app_javascript
+        assert 'shortLabel: "broad fallback"' in app_javascript
+        assert 'shortLabel: "last resort"' in app_javascript
         assert 'class="company-tier-badge"' in app_javascript
         assert 'class="company-tier-select"' in app_javascript
         assert 'class="company-tier-select-shell"' in app_javascript
@@ -518,7 +525,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=vanilla-20260903-1" in index_markup
+        assert "/assets/app.css?v=vanilla-20260903-2" in index_markup
         assert "/assets/app.js?v=vanilla-20260903-2" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
@@ -3701,6 +3708,29 @@ def test_profile_extraction_skips_llm_when_profile_is_complete(
     assert web_server._populate_missing_applicant_profile_from_resume() == {}
 
 
+def test_master_resume_profile_extraction_is_scheduled_in_background(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = Event()
+    release = Event()
+
+    def fake_populate() -> dict[str, str]:
+        started.set()
+        release.wait(timeout=2)
+        return {}
+
+    monkeypatch.setattr(
+        web_server,
+        "_populate_missing_applicant_profile_from_resume",
+        fake_populate,
+    )
+
+    web_server._schedule_master_resume_profile_extraction()
+
+    assert started.wait(timeout=1)
+    release.set()
+
+
 def test_profile_extraction_requires_an_explicit_post(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4435,6 +4465,7 @@ def test_company_management_endpoints_create_link_and_delete_link(
 ) -> None:
     database = tmp_path / "web-company-management.sqlite3"
     monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "get_central_api_url", lambda connection: None)
     db.ensure_initialized()
 
     server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
@@ -4465,32 +4496,33 @@ def test_company_management_endpoints_create_link_and_delete_link(
         assert company["career_pages"][0]["url"] == "https://example.com/careers"
 
         company_id = company["id"]
-        update_request = Request(
-            f"http://127.0.0.1:{port}/api/companies/{company_id}",
-            data=json.dumps(
-                {
-                    "notes": "autosaved note",
-                    "prestige_tier": "5",
-                }
-            ).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
+        for tier in range(8):
+            update_request = Request(
+                f"http://127.0.0.1:{port}/api/companies/{company_id}",
+                data=json.dumps(
+                    {
+                        "notes": "autosaved note",
+                        "prestige_tier": str(tier),
+                    }
+                ).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
 
-        with urlopen(update_request, timeout=5) as response:
-            updated_payload = json.loads(response.read().decode())
+            with urlopen(update_request, timeout=5) as response:
+                updated_payload = json.loads(response.read().decode())
 
-        assert response.status == 200
-        [company] = updated_payload["companies"]
-        assert company["notes"] == "autosaved note"
-        assert company["prestige_tier"] == "5"
+            assert response.status == 200
+            [company] = updated_payload["companies"]
+            assert company["notes"] == "autosaved note"
+            assert company["prestige_tier"] == str(tier)
 
         invalid_tier_request = Request(
             f"http://127.0.0.1:{port}/api/companies/{company_id}",
             data=json.dumps(
                 {
                     "notes": "autosaved note",
-                    "prestige_tier": "A",
+                    "prestige_tier": "8",
                 }
             ).encode(),
             headers={"Content-Type": "application/json"},
@@ -4550,6 +4582,134 @@ def test_company_management_endpoints_create_link_and_delete_link(
             assert [page.url for page in list_company_career_pages(connection, company_id)] == [
                 "https://example.com/students"
             ]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_browser_client_supports_company_tiers_zero_through_seven() -> None:
+    static_directory = Path(web_server.__file__).with_name("static")
+    app_javascript = (static_directory / "app.js").read_text()
+    app_styles = (static_directory / "app.css").read_text()
+    index_markup = (static_directory / "index.html").read_text()
+
+    for tier in range(8):
+        assert f'value: "{tier}"' in app_javascript
+        assert f".company-tier-{tier}" in app_styles
+    assert 'value: "8"' not in app_javascript
+    assert "0 highest · 7 last resort" in app_javascript
+    assert "tiers 5 through 7 progressively prioritize gaining experience" in index_markup
+
+
+def test_company_create_endpoint_accepts_every_tier_zero_through_seven(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "web-company-create-tiers.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "get_central_api_url", lambda connection: None)
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        for tier in range(8):
+            request = Request(
+                f"http://127.0.0.1:{port}/api/companies",
+                data=json.dumps(
+                    {"name": f"Tier {tier} Co", "prestige_tier": str(tier)}
+                ).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urlopen(request, timeout=5) as response:
+                payload = json.loads(response.read().decode())
+            created = next(
+                company for company in payload["companies"] if company["name"] == f"Tier {tier} Co"
+            )
+            assert created["prestige_tier"] == str(tier)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_company_tier_update_is_pushed_to_central(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "web-company-tier-sync.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    with db.connect() as connection:
+        company = add_company(
+            connection,
+            Company(
+                name="Acme",
+                prestige_tier="2",
+                central_company_id="co_acme",
+                central_sync_status="linked",
+            ),
+        )
+        assert company.id is not None
+        add_company_career_page(
+            connection,
+            CompanyCareerPage(
+                company_id=company.id,
+                url="https://example.com/careers",
+            ),
+        )
+
+    resolved_requests: list[ResolveCompanyRequest] = []
+
+    class FakeCentralStoreClient:
+        def __init__(self, **kwargs: object) -> None:
+            assert kwargs["api_url"] == "https://central.example"
+
+        def resolve_company(self, request: ResolveCompanyRequest) -> ResolveCompanyResponse:
+            resolved_requests.append(request)
+            return ResolveCompanyResponse(
+                action="matched",
+                global_company_id="co_acme",
+                confidence=100,
+                canonical_domain="example.com",
+                normalized_name="acme",
+                default_tier="7",
+            )
+
+    monkeypatch.setattr(
+        web_server,
+        "get_central_api_url",
+        lambda connection: "https://central.example",
+    )
+    monkeypatch.setattr(web_server, "get_central_client_id", lambda connection: "client-1")
+    monkeypatch.setattr(web_server, "get_central_passkey", lambda: None)
+    monkeypatch.setattr(web_server, "CentralStoreClient", FakeCentralStoreClient)
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        request = Request(
+            f"http://127.0.0.1:{port}/api/companies/{company.id}",
+            data=json.dumps({"notes": "", "prestige_tier": "7"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode())
+
+        assert response.status == 200
+        assert payload["companies"][0]["prestige_tier"] == "7"
+        assert len(resolved_requests) == 1
+        central_request = resolved_requests[0]
+        assert central_request.prestige_tier == "7"
+        assert central_request.tier_source_id == "client-1"
+        assert central_request.career_page_urls == ["https://example.com/careers"]
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -5351,11 +5511,11 @@ def test_master_resume_endpoint_uploads_and_replaces_tex_resume(
 ) -> None:
     database = tmp_path / "tracker-master-resume.sqlite3"
     monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
-    extraction_calls: list[bool] = []
+    extraction_schedules: list[bool] = []
     monkeypatch.setattr(
         web_server,
-        "_populate_missing_applicant_profile_from_resume",
-        lambda: extraction_calls.append(True) or {"applicant_email": "callum@example.com"},
+        "_schedule_master_resume_profile_extraction",
+        lambda: extraction_schedules.append(True),
     )
     db.ensure_initialized()
 
@@ -5386,7 +5546,7 @@ def test_master_resume_endpoint_uploads_and_replaces_tex_resume(
 
         assert created_payload["master_resume"]["filename"] == "master.tex"
         assert created_payload["master_resume"]["content_bytes"] == len(b"\\documentclass{article}")
-        assert created_payload["profile_fields_populated"] == ["applicant_email"]
+        assert created_payload["profile_extraction_scheduled"] is True
 
         replacement_request = Request(
             base_url,
@@ -5402,7 +5562,7 @@ def test_master_resume_endpoint_uploads_and_replaces_tex_resume(
         with urlopen(replacement_request, timeout=5) as response:
             replaced_payload = json.loads(response.read().decode())
         assert replaced_payload["master_resume"]["filename"] == "replacement.tex"
-        assert extraction_calls == [True, True]
+        assert extraction_schedules == [True, True]
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -5447,6 +5607,7 @@ def test_master_resume_upload_replaces_resumes_for_interested_roles(
     resume_root = tmp_path / "prepared-resumes"
     monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
     monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    monkeypatch.setattr(web_server, "_schedule_master_resume_profile_extraction", lambda: None)
     env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
     runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
     runner.invoke(
@@ -5669,6 +5830,7 @@ def test_application_materials_endpoint_reports_default_collapsed_state(
         "_resume_resources_root",
         lambda: tmp_path / "resume-resources",
     )
+    monkeypatch.setattr(web_server, "_schedule_master_resume_profile_extraction", lambda: None)
     db.ensure_initialized()
 
     server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())

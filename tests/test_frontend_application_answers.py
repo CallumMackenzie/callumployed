@@ -63,7 +63,7 @@ def test_application_questions_styles_and_cache_keys_are_versioned() -> None:
     assert "padding-top: 20px" in styles
     assert "#close-prepped" in styles
     assert "text-transform: none" in styles
-    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260903-1" />' in index
+    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260903-2" />' in index
     assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-2"></script>' in index
 
 

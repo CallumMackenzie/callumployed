@@ -1,9 +1,9 @@
 import asyncio
+import sqlite3
 import subprocess
 from pathlib import Path
 from typing import Annotated
 
-import turso
 import typer
 
 from callumployed.central.client import CentralStoreClient, CentralStoreError
@@ -27,6 +27,7 @@ from callumployed.data.models import (
 )
 from callumployed.data.repositories import (
     APPLICATION_STATUSES,
+    TrackingStats,
     add_company,
     add_company_career_page,
     add_cover_letter_example,
@@ -1216,7 +1217,7 @@ def _set_role_state(role_id: int, state: RoleStatus, *, summary: str) -> None:
 
 
 def _central_client_from_config(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     *,
     require_passkey: bool,
 ) -> CentralStoreClient:
@@ -1235,7 +1236,7 @@ def _central_client_from_config(
 
 
 def _try_resolve_company_with_central_store(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     company: Company,
     *,
     career_page_urls: list[str],
@@ -1284,7 +1285,7 @@ def _try_resolve_company_with_central_store(
     )
 
 
-def _print_stats(stats: dict[str, object]) -> None:
+def _print_stats(stats: TrackingStats) -> None:
     typer.echo(f"Companies: {stats['companies_total']}")
     typer.echo(f"Jobs: {stats['jobs_total']}")
     typer.echo(f"Applications: {stats['applications_total']}")

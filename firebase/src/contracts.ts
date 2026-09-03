@@ -1,11 +1,12 @@
 export type ResolveCompanyAction = "matched" | "created" | "needs_review";
 export type RoleStatus = "open" | "closed" | "unknown";
+export type CompanyTier = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7";
 
 export interface ResolveCompanyRequest {
   name: string;
   career_page_urls?: string[];
   role_urls?: string[];
-  prestige_tier?: string | null;
+  prestige_tier?: CompanyTier | null;
   tier_source_id?: string | null;
 }
 
@@ -16,14 +17,14 @@ export interface ResolveCompanyResponse {
   matched_on: string[];
   canonical_domain: string | null;
   normalized_name: string | null;
-  default_tier: string | null;
+  default_tier: CompanyTier | null;
   career_page_urls: string[];
   candidates: Array<Record<string, unknown>>;
 }
 
 export interface PublicResolveCompanyResponse {
   global_company_id: string | null;
-  default_tier: string | null;
+  default_tier: CompanyTier | null;
 }
 
 export interface CentralCompany {
@@ -34,7 +35,7 @@ export interface CentralCompany {
   domains: string[];
   ats_slugs: string[];
   aliases: string[];
-  default_tier: string | null;
+  default_tier: CompanyTier | null;
   career_page_urls: string[];
 }
 

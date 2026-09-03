@@ -179,6 +179,7 @@ from callumployed.services.scan_schedule import (
     set_scan_schedule_enabled,
     set_scan_schedule_time,
 )
+from callumployed.services.scan_workflow import CompanyScanResult
 from callumployed.services.scan_workflow import rescan_role as run_rescan_role
 from callumployed.services.scan_workflow import scan_company as run_scan_company
 from callumployed.webscraping.profile_manager import BrowserProfileManager
@@ -243,6 +244,7 @@ COVER_LETTER_MODEL_OPTIONS = (
     ("gpt-4.1-mini", "GPT-4.1 mini"),
 )
 SUPPORTED_COVER_LETTER_MODELS = frozenset(value for value, _label in COVER_LETTER_MODEL_OPTIONS)
+SUPPORTED_COMPANY_TIERS = frozenset(str(tier) for tier in range(8))
 AUTOPREP_COORDINATOR: AutoprepCoordinator | None = None
 APPLICANT_PROFILE_TEXT_CONFIG_KEYS = {
     APPLICANT_EMAIL_CONFIG_KEY,
@@ -301,7 +303,7 @@ class ScanCoordinator:
         self._failures: list[ScanCoordinatorFailure] = []
         self._cancel_requested = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._current_task: asyncio.Task[None] | None = None
+        self._current_task: asyncio.Task[CompanyScanResult | None] | None = None
         self._company_timeout_seconds = company_timeout_seconds
 
     def start(self) -> bool:
@@ -1763,7 +1765,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             notes = _optional_text(payload.get("notes"))
             prestige_tier = _optional_text(payload.get("prestige_tier"))
             if not _is_valid_company_tier(prestige_tier):
-                self.send_error(HTTPStatus.BAD_REQUEST, "Company tier must be 0-5")
+                self.send_error(HTTPStatus.BAD_REQUEST, "Company tier must be 0-7")
                 return
             career_url = _optional_text(payload.get("career_url"))
             career_label = _optional_text(payload.get("career_label")) or "Main"
@@ -1802,16 +1804,26 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             notes = _optional_text(payload.get("notes"))
             prestige_tier = _optional_text(payload.get("prestige_tier"))
             if not _is_valid_company_tier(prestige_tier):
-                self.send_error(HTTPStatus.BAD_REQUEST, "Company tier must be 0-5")
+                self.send_error(HTTPStatus.BAD_REQUEST, "Company tier must be 0-7")
                 return
             try:
                 with db.connect() as connection:
-                    update_company(
+                    existing_company = get_company(connection, company_id)
+                    company = update_company(
                         connection,
                         company_id,
                         notes=notes,
                         prestige_tier=prestige_tier,
                     )
+                    if prestige_tier != existing_company.prestige_tier:
+                        _try_resolve_company_with_central_store(
+                            connection,
+                            company,
+                            career_page_urls=[
+                                page.url
+                                for page in list_company_career_pages(connection, company_id)
+                            ],
+                        )
             except LookupError:
                 self.send_error(HTTPStatus.NOT_FOUND, "Company not found")
                 return
@@ -2400,12 +2412,12 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
 
             updated_count = _replace_role_resumes(interested_roles, resume)
             _refresh_application_material_index()
-            populated_profile = _populate_missing_applicant_profile_from_resume()
+            _schedule_master_resume_profile_extraction()
             self._send_json(
                 {
                     "master_resume": _master_resume_summary(resume),
                     "interested_resumes_updated": updated_count,
-                    "profile_fields_populated": sorted(populated_profile),
+                    "profile_extraction_scheduled": True,
                 }
             )
 
@@ -2951,6 +2963,22 @@ def _populate_missing_applicant_profile_from_resume() -> dict[str, str]:
     if populated:
         _schedule_applicant_profile_reprep()
     return populated
+
+
+def _schedule_master_resume_profile_extraction() -> None:
+    """Populate blank profile fields after an upload without delaying its response."""
+
+    def populate() -> None:
+        try:
+            _populate_missing_applicant_profile_from_resume()
+        except Exception:
+            LOGGER.warning("Background applicant profile extraction failed", exc_info=True)
+
+    threading.Thread(
+        target=populate,
+        name="callumployed-profile-extraction",
+        daemon=True,
+    ).start()
 
 
 def _queue_applicant_profile_reprep() -> None:
@@ -3575,7 +3603,9 @@ def build_role_sankey_payload() -> dict[str, Any]:
         node_statuses.add(source)
         node_statuses.add(target)
 
-    ordered_statuses = [status.value for status in RoleStatus if status.value in node_statuses]
+    ordered_statuses: list[str] = [
+        status.value for status in RoleStatus if status.value in node_statuses
+    ]
     ordered_statuses.extend(sorted(node_statuses.difference(ordered_statuses)))
 
     return {
@@ -4282,7 +4312,7 @@ def build_prep_analysis(
             "materials around the role's strongest requirements."
         )
 
-    feedback_items: list[dict[str, str]] = []
+    feedback_items: list[dict[str, str | None]] = []
     if resume is None:
         feedback_items.append(
             {
@@ -4413,7 +4443,7 @@ def build_role_cover_letter(
     allow_local_fallback: bool = True,
     required_page_count: int | None = 1,
 ) -> dict[str, Any]:
-    """Generate with the configured LangChain provider and role-local Turso retrieval."""
+    """Generate with the configured LangChain provider and role-local SQLite retrieval."""
     role_id = role.get("id")
     if not isinstance(role_id, int):
         raise RuntimeError("Role did not include an ID")
@@ -6254,7 +6284,7 @@ def _clean_applicant_profile_text(key: str, value: object) -> str:
 
 
 def _is_valid_company_tier(value: str | None) -> bool:
-    return value is None or value in {"0", "1", "2", "3", "4", "5"}
+    return value is None or value in SUPPORTED_COMPANY_TIERS
 
 
 def _optional_cover_letter_tweaks(value: object) -> str | None:

@@ -48,6 +48,14 @@ class DiscoveredJobLink(WebscrapingModel):
     reasons: list[str] = Field(default_factory=list)
 
 
+RolePageExtractionMethod = Literal[
+    "jobposting_structured_data",
+    "ats_heuristic",
+    "html_heuristic",
+    "llm",
+]
+
+
 class RolePageAssessment(WebscrapingModel):
     is_role: bool
     is_closed: bool = False
@@ -56,12 +64,7 @@ class RolePageAssessment(WebscrapingModel):
     location: str | None = None
     description: str | None = None
     posting_id: str | None = None
-    extraction_method: Literal[
-        "jobposting_structured_data",
-        "ats_heuristic",
-        "html_heuristic",
-        "llm",
-    ]
+    extraction_method: RolePageExtractionMethod
     rejection_reason: str | None = None
     reasons: list[str] = Field(default_factory=list)
 
