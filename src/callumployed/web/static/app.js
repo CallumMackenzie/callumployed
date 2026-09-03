@@ -101,6 +101,7 @@ const companiesCloseButton = document.querySelector("#companies-close");
 const companiesStatus = document.querySelector("#companies-status");
 const companyCreateForm = document.querySelector("#company-create-form");
 const companyCreateStatus = document.querySelector("#company-create-status");
+const companyTierGuide = document.querySelector("#company-tier-guide");
 const companyTierGuideList = document.querySelector("#company-tier-guide-list");
 const companiesList = document.querySelector("#companies-list");
 const roleAddForm = document.querySelector("#role-add-form");
@@ -241,6 +242,10 @@ let metricsData = null;
 let sankeyData = null;
 let companiesData = null;
 let roleCompanyData = [];
+let companyTierGuideStateLoaded = false;
+let companyTierGuidePersistedOpen = false;
+let companyTierGuideDesiredOpen = false;
+let companyTierGuideSaving = false;
 const companySaveTimers = new Map();
 
 function getActiveSearchQuery() {
@@ -1708,9 +1713,12 @@ async function updateApp() {
   }
 }
 
-function renderCompanies(payload, message = "") {
+function renderCompanies(payload, message = "", restoreTierGuideState = false) {
   companiesData = payload;
   const companies = Array.isArray(payload?.companies) ? payload.companies : [];
+  if (restoreTierGuideState) {
+    applyCompanyTierGuideState(payload?.company_tier_guide_open);
+  }
   renderRoleCompanyOptions(companies);
   renderCompanyTierGuide(companies);
   companiesStatus.textContent = message || `${companies.length} ${companies.length === 1 ? "company" : "companies"} stored`;
@@ -1720,6 +1728,54 @@ function renderCompanies(payload, message = "") {
     return;
   }
   companiesList.innerHTML = companies.map((company) => renderCompanyAccordion(company)).join("");
+}
+
+function setCompanyTierGuideOpen(open) {
+  companyTierGuide.open = open === true;
+}
+
+function applyCompanyTierGuideState(open) {
+  const available = typeof open === "boolean";
+  companyTierGuideStateLoaded = available;
+  companyTierGuidePersistedOpen = available ? open : false;
+  companyTierGuideDesiredOpen = companyTierGuidePersistedOpen;
+  setCompanyTierGuideOpen(companyTierGuidePersistedOpen);
+}
+
+async function persistCompanyTierGuideState() {
+  if (!companyTierGuideStateLoaded || companyTierGuideSaving) return;
+  companyTierGuideSaving = true;
+  try {
+    while (
+      companyTierGuideStateLoaded
+      && companyTierGuidePersistedOpen !== companyTierGuideDesiredOpen
+    ) {
+      const open = companyTierGuideDesiredOpen;
+      const response = await fetch("/api/ui-state/company-tier-guide", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({open}),
+      });
+      if (!response.ok) throw new Error("Company tier guide state update failed");
+      const payload = await response.json();
+      if (typeof payload?.company_tier_guide_open !== "boolean") {
+        throw new Error("Company tier guide state is unavailable");
+      }
+      companyTierGuidePersistedOpen = payload.company_tier_guide_open;
+    }
+  } catch {
+    applyCompanyTierGuideState(undefined);
+    companiesStatus.textContent = "could not save tier guide state; defaulted to closed.";
+    companiesStatus.classList.remove("is-empty");
+  } finally {
+    companyTierGuideSaving = false;
+    if (
+      companyTierGuideStateLoaded
+      && companyTierGuidePersistedOpen !== companyTierGuideDesiredOpen
+    ) {
+      persistCompanyTierGuideState();
+    }
+  }
 }
 
 function renderCompanyTierGuide(companies) {
@@ -1863,6 +1919,7 @@ function renderCompanyLink(page) {
 }
 
 async function openCompaniesView() {
+  applyCompanyTierGuideState(undefined);
   companiesView.hidden = false;
   document.body.classList.add("companies-open");
   companiesCloseButton.focus();
@@ -1876,6 +1933,7 @@ async function openCompaniesView() {
   try {
     await loadCompanies();
   } catch {
+    applyCompanyTierGuideState(undefined);
     companiesStatus.textContent = "could not load companies.";
   }
 }
@@ -1889,7 +1947,7 @@ function closeCompaniesView() {
 async function loadCompanies(message = "") {
   const response = await fetch("/api/companies");
   if (!response.ok) throw new Error("Companies request failed");
-  renderCompanies(await response.json(), message);
+  renderCompanies(await response.json(), message, true);
 }
 
 async function loadRoleCompanyOptions() {
@@ -5100,6 +5158,16 @@ sankeyCloseButton.addEventListener("click", closeSankeyView);
 manageCompaniesButton.addEventListener("click", openCompaniesView);
 
 companiesCloseButton.addEventListener("click", closeCompaniesView);
+
+companyTierGuide.addEventListener("toggle", () => {
+  if (!companyTierGuideStateLoaded) {
+    companyTierGuideDesiredOpen = false;
+    setCompanyTierGuideOpen(false);
+    return;
+  }
+  companyTierGuideDesiredOpen = companyTierGuide.open;
+  persistCompanyTierGuideState();
+});
 
 companyCreateForm.addEventListener("submit", (event) => {
   event.preventDefault();

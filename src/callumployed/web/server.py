@@ -190,6 +190,7 @@ INSTALLER_SCRIPT_URL = (
 )
 LOGGER = logging.getLogger(__name__)
 SCAN_ALL_COMPANY_TIMEOUT_SECONDS = 5 * 60
+COMPANY_TIER_GUIDE_OPEN_CONFIG_KEY = "ui_company_tier_guide_open"
 APPLICANT_FIRST_NAME_CONFIG_KEY = "applicant_first_name"
 APPLICANT_LAST_NAME_CONFIG_KEY = "applicant_last_name"
 APPLICANT_EMAIL_CONFIG_KEY = "applicant_email"
@@ -689,10 +690,15 @@ def build_tracker_payload(query: str | None = None) -> dict[str, Any]:
 
 def build_companies_payload() -> dict[str, Any]:
     with db.connect() as connection:
+        db.run_migrations(connection)
         companies = list_companies(connection)
         scan_discovery_counts = get_company_scan_discovery_counts(connection)
         career_pages_by_company_id = list_company_career_pages_by_company(connection)
+        company_tier_guide_open = (
+            get_config_value(connection, COMPANY_TIER_GUIDE_OPEN_CONFIG_KEY) == "true"
+        )
     return {
+        "company_tier_guide_open": company_tier_guide_open,
         "companies": [
             _company_payload(
                 company,
@@ -992,6 +998,9 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
             if len(path_parts) == 2 and path_parts == ["api", "companies"]:
                 self._add_company()
+                return
+            if path_parts == ["api", "ui-state", "company-tier-guide"]:
+                self._update_company_tier_guide_state()
                 return
             if len(path_parts) == 2 and path_parts == ["api", "roles"]:
                 self._add_role()
@@ -1791,6 +1800,23 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                     career_page_urls=[career_url] if career_url is not None else [],
                 )
             self._send_json(build_companies_payload())
+
+        def _update_company_tier_guide_state(self) -> None:
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            if set(payload) != {"open"} or not isinstance(payload["open"], bool):
+                self.send_error(HTTPStatus.BAD_REQUEST, "Expected boolean open state")
+                return
+            open_state = payload["open"]
+            with db.connect() as connection:
+                db.run_migrations(connection)
+                set_config_value(
+                    connection,
+                    COMPANY_TIER_GUIDE_OPEN_CONFIG_KEY,
+                    "true" if open_state else "false",
+                )
+            self._send_json({"company_tier_guide_open": open_state})
 
         def _update_company(self, company_id_text: str) -> None:
             try:
