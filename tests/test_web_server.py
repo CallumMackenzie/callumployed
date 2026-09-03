@@ -284,6 +284,63 @@ def test_companies_payload_reports_zero_discovered_roles_after_scan(
     assert company_payload["discovered_role_count"] == 0
 
 
+def test_company_tier_guide_state_defaults_closed_and_survives_server_restarts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "company-tier-guide-state.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        with urlopen(f"{base_url}/api/companies", timeout=5) as response:
+            initial = json.loads(response.read().decode())
+        assert initial["company_tier_guide_open"] is False
+
+        open_request = Request(
+            f"{base_url}/api/ui-state/company-tier-guide",
+            data=json.dumps({"open": True}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(open_request, timeout=5) as response:
+            saved = json.loads(response.read().decode())
+        assert saved == {"company_tier_guide_open": True}
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    restarted_server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    restarted_thread = Thread(target=restarted_server.serve_forever, daemon=True)
+    restarted_thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{restarted_server.server_address[1]}"
+        with urlopen(f"{base_url}/api/companies", timeout=5) as response:
+            restored = json.loads(response.read().decode())
+        assert restored["company_tier_guide_open"] is True
+
+        close_request = Request(
+            f"{base_url}/api/ui-state/company-tier-guide",
+            data=json.dumps({"open": False}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(close_request, timeout=5) as response:
+            closed = json.loads(response.read().decode())
+        assert closed == {"company_tier_guide_open": False}
+    finally:
+        restarted_server.shutdown()
+        restarted_server.server_close()
+        restarted_thread.join(timeout=5)
+
+    assert build_companies_payload()["company_tier_guide_open"] is False
+
+
 def _add_scan_candidate(connection: Any, scan_run_id: int, url: str) -> int:
     page_cursor = connection.execute(
         """
@@ -395,7 +452,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "dangerouslySetInnerHTML" not in markup
         assert "dangerouslySetInnerHTML" not in app_javascript
         assert '<div id="root"></div>' not in index_markup
-        assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-2"></script>' in (
+        assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-3"></script>' in (
             index_markup
         )
 
@@ -421,9 +478,16 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="company-create-form"' in markup
         assert 'id="company-tier-guide-heading"' in markup
         assert 'id="company-tier-guide-list"' in markup
+        assert '<details class="company-tier-guide" id="company-tier-guide"' in markup
+        assert '<details class="company-tier-guide" id="company-tier-guide" open' not in markup
+        assert 'class="company-tier-guide-header"' in markup
         assert "0 is highest priority." in markup
         assert "tiers 5 through 7 progressively prioritize gaining experience" in markup
         assert "COMPANY_TIER_DEFINITIONS" in app_javascript
+        assert 'fetch("/api/ui-state/company-tier-guide", {' in app_javascript
+        assert "applyCompanyTierGuideState(undefined);" in app_javascript
+        assert "renderCompanies(await response.json(), message, true);" in app_javascript
+        assert 'companyTierGuide.addEventListener("toggle"' in app_javascript
         for tier in range(8):
             assert f'value: "{tier}"' in app_javascript
             assert f".company-tier-{tier}" in app_styles
@@ -524,8 +588,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=vanilla-20260903-2" in index_markup
-        assert "/assets/app.js?v=vanilla-20260903-2" in index_markup
+        assert "/assets/app.css?v=vanilla-20260903-3" in index_markup
+        assert "/assets/app.js?v=vanilla-20260903-3" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles

@@ -10,7 +10,7 @@
     <link rel="icon" href="/assets/camackenzie-logo.svg?v=20260827-2" type="image/svg+xml" />
     <link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png?v=20260827-2" />
     <link rel="manifest" href="/assets/manifest.webmanifest" />
-    <link rel="stylesheet" href="/assets/app.css?v=vanilla-20260903-2" />
+    <link rel="stylesheet" href="/assets/app.css?v=vanilla-20260903-3" />
   </head>
   <body>
 <div class="page-background" aria-hidden="true"></div>
@@ -458,24 +458,27 @@
           <button type="button" id="companies-close">close</button>
         </header>
         <div class="companies-status" id="companies-status" role="status" aria-live="polite"></div>
-        <section class="company-tier-guide" aria-labelledby="company-tier-guide-heading">
-          <div class="company-tier-guide-header">
+        <details class="company-tier-guide" id="company-tier-guide" aria-labelledby="company-tier-guide-heading">
+          <summary class="company-tier-guide-header">
             <div>
               <p class="company-tier-guide-kicker">priority guide</p>
               <h3 id="company-tier-guide-heading">how to choose a company tier</h3>
             </div>
             <p class="company-tier-guide-scale"><strong>0 is highest priority.</strong> Lower numbers mean more time and attention.</p>
+            <span class="company-tier-guide-chevron" aria-hidden="true">›</span>
+          </summary>
+          <div class="company-tier-guide-body">
+            <p class="company-tier-guide-intro">
+              Rank the company by reputation, selectivity, compensation, and career upside. Being a large or technical
+              company does not automatically make it a high tier; adjust only when the exact role is an unusually strong fit.
+            </p>
+            <div class="company-tier-guide-list" id="company-tier-guide-list"></div>
+            <p class="company-tier-guide-calibration">
+              Use tiers 4 through 7 for the long tail of applications. Tier 4 still needs a recognizable employer or worthwhile
+              technical team; tiers 5 through 7 progressively prioritize gaining experience over company prestige.
+            </p>
           </div>
-          <p class="company-tier-guide-intro">
-            Rank the company by reputation, selectivity, compensation, and career upside. Being a large or technical
-            company does not automatically make it a high tier; adjust only when the exact role is an unusually strong fit.
-          </p>
-          <div class="company-tier-guide-list" id="company-tier-guide-list"></div>
-          <p class="company-tier-guide-calibration">
-            Use tiers 4 through 7 for the long tail of applications. Tier 4 still needs a recognizable employer or worthwhile
-            technical team; tiers 5 through 7 progressively prioritize gaining experience over company prestige.
-          </p>
-        </section>
+        </details>
         <section class="company-form-panel" aria-label="add company">
           <form class="company-create-form" id="company-create-form">
             <label>
@@ -506,6 +509,6 @@
         <div class="companies-list" id="companies-list"></div>
       </div>
     </section>
-    <script type="module" src="/assets/app.js?v=vanilla-20260903-2"></script>
+    <script type="module" src="/assets/app.js?v=vanilla-20260903-3"></script>
   </body>
 </html>
