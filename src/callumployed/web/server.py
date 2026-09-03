@@ -18,7 +18,7 @@ import tempfile
 import threading
 import unicodedata
 from collections import Counter
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
@@ -1661,35 +1661,69 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             if role_url is None:
                 self.send_error(HTTPStatus.BAD_REQUEST, "Role URL is required")
                 return
-            try:
-                with db.connect() as connection:
-                    company = get_company(connection, company_id)
-                    if not company.is_active:
-                        self.send_error(HTTPStatus.BAD_REQUEST, "Company is deactivated")
-                        return
-                    role = add_role(
-                        connection,
-                        Role(
-                            company_id=company_id,
-                            title=_role_title_from_url(role_url),
-                            role_url=role_url,
-                        ),
-                    )
-            except LookupError:
-                self.send_error(HTTPStatus.NOT_FOUND, "Company not found")
-                return
-            except RuntimeError as error:
-                self.send_error(HTTPStatus.BAD_REQUEST, str(error))
-                return
-
+            role: Role | None = None
+            autoprep_job: dict[str, Any] | None = None
             scan_error = None
-            if role.id is not None:
+            claim_barrier = (
+                AUTOPREP_COORDINATOR.defer_claiming()
+                if AUTOPREP_COORDINATOR is not None
+                else nullcontext()
+            )
+            with claim_barrier:
+                try:
+                    with db.connect() as connection:
+                        company = get_company(connection, company_id)
+                        if not company.is_active:
+                            self.send_error(HTTPStatus.BAD_REQUEST, "Company is deactivated")
+                            return
+                        ensure_autoprep_schema(connection)
+                        connection.execute("BEGIN IMMEDIATE")
+                        try:
+                            role = add_role(
+                                connection,
+                                Role(
+                                    company_id=company_id,
+                                    title=_role_title_from_url(role_url),
+                                    role_url=role_url,
+                                    role_status=RoleStatus.INTERESTED,
+                                ),
+                                commit=False,
+                            )
+                            if role.id is None:
+                                raise RuntimeError("Role was not created")
+                            autoprep_job = enqueue_autoprep_jobs(
+                                connection,
+                                [role.id],
+                                idempotency_key=f"explicit-role-{role.id}",
+                                manage_transaction=False,
+                            )[0]
+                            connection.commit()
+                        except Exception:
+                            connection.rollback()
+                            raise
+                except LookupError:
+                    self.send_error(HTTPStatus.NOT_FOUND, "Company not found")
+                    return
+                except RuntimeError as error:
+                    self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+                    return
+                except Exception:
+                    self.send_error(
+                        HTTPStatus.INTERNAL_SERVER_ERROR,
+                        "Could not create and queue the role",
+                    )
+                    return
+
+                if role is None or role.id is None:
+                    self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Role was not created")
+                    return
+                role_id = role.id
                 try:
                     scan = asyncio.run(
                         run_rescan_role(
-                            role.id,
+                            role_id,
                             browser_profile_manager=_configured_browser_profile_manager(),
-                            update_status=True,
+                            update_status=False,
                         )
                     )
                     scanned_role = scan.get("role")
@@ -1698,11 +1732,23 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 except Exception as error:
                     scan_error = str(error)
 
+                with db.connect() as connection:
+                    interested_role = get_role(connection, role_id)
+                    role = role.model_copy(
+                        update={
+                            "role_status": interested_role.role_status,
+                            "updated_at": interested_role.updated_at,
+                        }
+                    )
+
+            _wake_autoprep_coordinator()
+
             self._send_json(
                 {
                     "role": _role_payload(role),
                     "tracker": build_tracker_payload(),
                     "scan_error": scan_error,
+                    "autoprep_job": autoprep_job,
                 }
             )
 

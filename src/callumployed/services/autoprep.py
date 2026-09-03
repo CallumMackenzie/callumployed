@@ -5,8 +5,9 @@ import json
 import logging
 import threading
 import time
+from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from typing import Any, Literal
 
 import turso
@@ -75,6 +76,12 @@ class AutoprepCoordinator:
 
     def wake(self) -> None:
         self._wake.set()
+
+    @contextmanager
+    def defer_claiming(self) -> Iterator[None]:
+        """Temporarily hold new claims while queued role inputs are finalized."""
+        with self._claim_lock:
+            yield
 
     def stop_claiming(self) -> None:
         """Stop accepting persisted work without waiting for active role workers."""
@@ -459,6 +466,7 @@ def enqueue_autoprep_jobs(
     role_ids: list[int],
     *,
     idempotency_key: str,
+    manage_transaction: bool = True,
 ) -> list[dict[str, Any]]:
     normalized_role_ids = sorted(set(role_ids))
     if not normalized_role_ids:
@@ -469,7 +477,8 @@ def enqueue_autoprep_jobs(
     request_hash = _request_hash(normalized_role_ids)
 
     try:
-        connection.execute("BEGIN IMMEDIATE")
+        if manage_transaction:
+            connection.execute("BEGIN IMMEDIATE")
         existing_request = connection.execute(
             "SELECT request_hash, role_ids_json FROM autoprep_requests WHERE idempotency_key = ?",
             (clean_key,),
@@ -478,7 +487,8 @@ def enqueue_autoprep_jobs(
             if str(existing_request["request_hash"]) != request_hash:
                 raise AutoprepConflictError("This Autoprep submission key was already used.")
             saved_role_ids = [int(value) for value in json.loads(existing_request["role_ids_json"])]
-            connection.commit()
+            if manage_transaction:
+                connection.commit()
             return _jobs_for_role_ids(connection, saved_role_ids)
 
         placeholders = ", ".join("?" for _ in normalized_role_ids)
@@ -509,9 +519,11 @@ def enqueue_autoprep_jobs(
                 """,
                 (role_id,),
             )
-        connection.commit()
+        if manage_transaction:
+            connection.commit()
     except Exception:
-        connection.rollback()
+        if manage_transaction:
+            connection.rollback()
         raise
     return _jobs_for_role_ids(connection, normalized_role_ids)
 

@@ -2004,8 +2004,8 @@ async function createRole(form) {
   roleUrlInput.value = "";
   const roleTitle = result.role?.title ? formatUiText(result.role.title) : "role";
   roleAddStatus.textContent = result.scan_error
-    ? `${roleTitle} added; scan could not finish.`
-    : `${roleTitle} added.`;
+    ? `${roleTitle} added to Interested and queued for prep; scan could not finish.`
+    : `${roleTitle} added to Interested and queued for prep.`;
 }
 
 function companyById(companyId) {

@@ -1253,7 +1253,7 @@ def _career_page_from_row(row: turso.Row) -> CompanyCareerPage:
     return CompanyCareerPage.model_validate(dict(row))
 
 
-def add_role(connection: turso.Connection, role: Role) -> Role:
+def add_role(connection: turso.Connection, role: Role, *, commit: bool = True) -> Role:
     cursor = connection.execute(
         """
         INSERT INTO roles (
@@ -1285,7 +1285,8 @@ def add_role(connection: turso.Connection, role: Role) -> Role:
             role.central_synced_at.isoformat() if role.central_synced_at is not None else None,
         ),
     )
-    connection.commit()
+    if commit:
+        connection.commit()
     return get_role(connection, _lastrowid(cursor))
 
 

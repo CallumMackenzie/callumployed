@@ -94,6 +94,46 @@ def test_enqueue_is_durable_and_idempotent(tmp_path: Path) -> None:
             )
 
 
+def test_role_and_autoprep_enqueue_can_share_one_atomic_transaction(tmp_path: Path) -> None:
+    database = tmp_path / "autoprep-atomic-role.sqlite3"
+    with db.connect(database) as connection:
+        db.run_migrations(connection)
+        ensure_autoprep_schema(connection)
+        company = add_company(connection, Company(name="Acme"))
+        assert company.id is not None
+
+        connection.execute("BEGIN IMMEDIATE")
+        role = add_role(
+            connection,
+            Role(
+                company_id=company.id,
+                title="Platform Engineer",
+                role_url="https://example.com/platform-engineer",
+                role_status=RoleStatus.INTERESTED,
+            ),
+            commit=False,
+        )
+        assert role.id is not None
+        [job] = enqueue_autoprep_jobs(
+            connection,
+            [role.id],
+            idempotency_key=f"explicit-role-{role.id}",
+            manage_transaction=False,
+        )
+        assert job["worker_state"] == "queued"
+
+        connection.rollback()
+        assert connection.execute("SELECT COUNT(*) AS count FROM roles").fetchone()["count"] == 0
+        assert (
+            connection.execute("SELECT COUNT(*) AS count FROM autoprep_jobs").fetchone()["count"]
+            == 0
+        )
+        autoprep_request_count = connection.execute(
+            "SELECT COUNT(*) AS count FROM autoprep_requests"
+        ).fetchone()["count"]
+        assert autoprep_request_count == 0
+
+
 def test_enqueue_rejects_roles_that_are_not_interested(tmp_path: Path) -> None:
     database = tmp_path / "autoprep-status.sqlite3"
     with db.connect(database) as connection:
@@ -368,6 +408,46 @@ def test_database_connections_wait_for_brief_concurrent_write_lock(tmp_path: Pat
     holder.close()
 
     assert result == ["written"]
+
+
+def test_coordinator_defers_new_claims_until_role_inputs_are_finalized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "coordinator-defer.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    processed = Event()
+    job_id: int | None = None
+
+    def process_claimed_job(job_id: int) -> None:
+        with db.connect() as connection:
+            finish_autoprep_worker(connection, job_id)
+        processed.set()
+
+    coordinator = AutoprepCoordinator(process_claimed_job, max_workers=1)
+    with coordinator.defer_claiming():
+        with db.connect() as connection:
+            ensure_autoprep_schema(connection)
+            role_id = _interested_role(connection)
+            [job] = enqueue_autoprep_jobs(
+                connection,
+                [role_id],
+                idempotency_key="deferred-claim",
+            )
+            job_id = int(job["id"])
+        coordinator.start()
+        coordinator.wake()
+        claimed_while_deferred = processed.wait(timeout=0.2)
+
+    try:
+        assert claimed_while_deferred is False
+        assert processed.wait(timeout=3)
+    finally:
+        coordinator.stop()
+    assert job_id is not None
+    with db.connect() as connection:
+        assert get_autoprep_job(connection, job_id)["worker_state"] == "idle"
 
 
 def test_coordinator_survives_a_transient_claim_failure(

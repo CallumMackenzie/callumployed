@@ -392,7 +392,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "dangerouslySetInnerHTML" not in markup
         assert "dangerouslySetInnerHTML" not in app_javascript
         assert '<div id="root"></div>' not in index_markup
-        assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-1"></script>' in (
+        assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-2"></script>' in (
             index_markup
         )
 
@@ -445,6 +445,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="role-url-input"' in markup
         assert 'id="role-company-input"' in markup
         assert 'id="role-company-options"' in markup
+        assert "added to Interested and queued for prep." in app_javascript
         assert 'id="prep-view"' in markup
         prep_later_index = markup.index('data-prep-action="later"')
         autoprep_action_index = markup.index('data-prep-action="autoprep"')
@@ -518,7 +519,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
         assert "/assets/app.css?v=vanilla-20260903-1" in index_markup
-        assert "/assets/app.js?v=vanilla-20260903-1" in index_markup
+        assert "/assets/app.js?v=vanilla-20260903-2" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -5239,7 +5240,16 @@ def test_roles_create_endpoint_adds_role_and_runs_rescan(
     ) -> dict[str, object]:
         assert role_id == 1
         assert browser_profile_manager is not None
-        assert update_status is True
+        assert update_status is False
+        queued_job = None
+        with db.connect() as connection:
+            queued_job = connection.execute(
+                "SELECT role_id, worker_state FROM autoprep_jobs WHERE role_id = ?",
+                (role_id,),
+            ).fetchone()
+        assert queued_job is not None
+        assert int(queued_job["role_id"]) == role_id
+        assert str(queued_job["worker_state"]) == "queued"
         return {
             "role": Role(
                 id=1,
@@ -5247,6 +5257,7 @@ def test_roles_create_endpoint_adds_role_and_runs_rescan(
                 title="Backend Platform Intern",
                 role_url="https://example.com/jobs/backend-platform-intern",
                 location="Vancouver",
+                role_status=RoleStatus.INTERESTED,
             )
         }
 
@@ -5275,12 +5286,19 @@ def test_roles_create_endpoint_adds_role_and_runs_rescan(
 
         assert response.status == 200
         assert payload["role"]["title"] == "Backend Platform Intern"
+        assert payload["role"]["role_status"] == "interested"
         assert payload["scan_error"] is None
+        assert payload["autoprep_job"]["role_id"] == 1
+        assert payload["autoprep_job"]["worker_state"] == "queued"
         assert payload["tracker"]["stats"]["jobs_total"] == 1
+        interested = next(
+            status for status in payload["tracker"]["statuses"] if status["key"] == "interested"
+        )
         discovered = next(
             status for status in payload["tracker"]["statuses"] if status["key"] == "discovered"
         )
-        [role] = discovered["jobs"]
+        [role] = interested["jobs"]
+        assert discovered["jobs"] == []
         assert role["company_name"] == "Acme"
         assert role["role_url"] == "https://example.com/jobs/backend-platform-intern"
     finally:
