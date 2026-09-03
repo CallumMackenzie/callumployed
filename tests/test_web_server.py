@@ -691,6 +691,57 @@ def test_effective_role_company_name_prefers_explicit_job_description_identity()
     )
 
 
+def test_role_generation_context_prefers_explicit_posting_title_and_location() -> None:
+    role = {
+        "company_name": "SAP",
+        "title": (
+            "Vancouver SAP iXp Intern HANA and Analytics%2C Agile Developer "
+            "Vancouver Brit V6B 1A9"
+        ),
+        "location": None,
+        "description": (
+            "Position Title: SAP iXp Intern\n"
+            "HANA and Analytics, Agile Developer\n"
+            "Location: Vancouver, BC (Hybrid; 3 days in-office per week)\n"
+            "Anticipated Start Date: 4 January 2027\n"
+        ),
+    }
+
+    resolved = web_server._role_with_effective_company(role)
+
+    assert resolved["title"] == "SAP iXp Intern HANA and Analytics, Agile Developer"
+    assert resolved["location"] == "Vancouver, BC (Hybrid; 3 days in-office per week)"
+
+
+def test_role_generation_context_does_not_absorb_posting_prose_into_title() -> None:
+    role = {
+        "company_name": "Example",
+        "title": "Fallback title",
+        "description": (
+            "Position Title: Engineer\n"
+            "This arbitrary PDF continuation fragment is unrelated prose\n"
+            "Another arbitrary fragment\n"
+            "Location: Toronto"
+        ),
+    }
+
+    resolved = web_server._role_with_effective_company(role)
+
+    assert resolved["title"] == "Engineer"
+
+
+def test_role_generation_context_stops_at_inline_posting_field() -> None:
+    role = {
+        "company_name": "Example",
+        "title": "Fallback title",
+        "description": "Position Title: Engineer Responsibilities: Build APIs\nLocation: Toronto",
+    }
+
+    resolved = web_server._role_with_effective_company(role)
+
+    assert resolved["title"] == "Engineer"
+
+
 def test_effective_role_company_name_does_not_use_incidental_company_mentions() -> None:
     role = {
         "company_name": "Ramp",
@@ -1869,6 +1920,101 @@ def test_fallback_cover_letter_uses_profile_and_experience_notes() -> None:
     assert "Software Engineering" in latex
     assert "kubernetes" in latex.lower()
     assert "Callum Mackenzie" not in latex
+
+
+def test_fallback_cover_letter_excludes_material_index_metadata() -> None:
+    latex = web_server._fallback_cover_letter_latex(
+        {
+            "title": "API Platform Intern",
+            "company_name": "SAP",
+            "location": "Vancouver, BC",
+            "description": "Build and test reliable API services",
+        },
+        web_server.MasterResume(
+            filename="resume.tex",
+            content=r"\resumeItem{Built arbitrary resume fragment without terminal punctuation}",
+            content_sha256="abc",
+        ),
+        applicant_profile=ApplicantProfile(first_name="Jake", last_name="Yeo"),
+        other_experience_context=[
+            {
+                "filename": "project.md",
+                "content": (
+                    "# Indexed project\n\n"
+                    "- Tools: Git\n"
+                    "- Useful attributes: architecture, automation, data, product.\n\n"
+                    "## Index summary\n\n"
+                    "Tools: Git. Useful attributes: architecture and automation. "
+                    "Evidence: Repository-verified.\n\n"
+                    "## Source details\n\n"
+                    "details, teamwork, testing, infrastructure, and outcomes so that shorter "
+                    "application materials can be derived.\n\n"
+                    "cloud infrastructure, authentication, document generation, stakeholder "
+                    "collaboration, technical documentation.\n\n"
+                    "Built arbitrary PDF continuation fragment without terminal punctuation\n\n"
+                    "Built and tested a production API used by a mobile application.\n\n"
+                    "I strengthened its API validation and authentication behavior.\n\n"
+                    "Designed and shipped a reliable deployment workflow!"
+                ),
+            }
+        ],
+    )
+
+    assert "I built and tested a production API" in latex
+    assert "SAP\\\\\nVancouver, BC\\\\\nAPI Platform Intern" in latex
+    assert "I strengthened its API validation" in latex
+    assert "I i strengthened" not in latex
+    assert "details, teamwork" not in latex
+    assert "cloud infrastructure, authentication" not in latex
+    assert "built arbitrary pdf continuation" not in latex.lower()
+    assert "built arbitrary resume fragment" not in latex.lower()
+    assert "I designed and shipped a reliable deployment workflow." in latex
+    assert "workflow!." not in latex
+    assert "Tools:" not in latex
+    assert "Useful attributes:" not in latex
+    assert "Repository-verified:" not in latex
+    assert "User-confirmed:" not in latex
+    assert "I tools" not in latex
+    assert "I useful attributes" not in latex
+
+
+def test_cover_letter_quality_rejects_internal_evidence_metadata() -> None:
+    malformed = (
+        "\\documentclass{article}\n\\begin{document}\n"
+        "Dear Hiring Manager,\\par\n"
+        "Evidence: I built and tested the API.\n"
+        "Sincerely,\\\\\nJake Yeo\n\\end{document}\n"
+    )
+
+    with pytest.raises(web_server.GeneratedDocumentQualityError):
+        web_server._validate_cover_letter_quality(malformed)
+
+
+def test_cover_letter_quality_rejects_latex_formatted_metadata_label() -> None:
+    malformed = r"\textbf{Evidence}: I built and tested the API."
+
+    with pytest.raises(web_server.GeneratedDocumentQualityError):
+        web_server._validate_cover_letter_quality(malformed)
+
+
+def test_cover_letter_quality_allows_user_edited_evidence_label() -> None:
+    edited = "Evidence: this wording was intentionally added by the user."
+
+    web_server._validate_cover_letter_quality_for_source(
+        edited,
+        source="edited_cover_letter",
+    )
+
+
+def test_role_title_from_url_decodes_percent_encoded_punctuation() -> None:
+    role_url = (
+        "https://jobs.sap.com/job/Vancouver-SAP-iXp-Intern-HANA-and-"
+        "Analytics%2C-Agile-Developer-Vancouver-Brit-V6B-1A9/1432658533"
+    )
+
+    assert web_server._role_title_from_url(role_url) == (
+        "Vancouver SAP iXp Intern HANA and Analytics, Agile Developer Vancouver Brit V6B 1A9"
+    )
 
 
 def test_cover_letter_latex_normalizer_escapes_header_ampersands() -> None:

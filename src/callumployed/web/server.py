@@ -3672,7 +3672,10 @@ def build_prepped_roles_payload() -> dict[str, Any]:
             role = get_role(connection, int(job["role_id"]))
             role_payload = role.model_dump(mode="json")
             role_payload["company_name"] = str(job.get("company_name") or "")
-            job["company_name"] = _effective_role_company_name(role_payload)
+            resolved_role = _role_with_effective_company(role_payload)
+            job["company_name"] = resolved_role["company_name"]
+            job["title"] = resolved_role["title"]
+            job["location"] = resolved_role["location"]
         bulk_regeneration = get_latest_bulk_cover_letter_regeneration(connection)
     return {
         "jobs": jobs,
@@ -4119,9 +4122,47 @@ def _effective_role_company_name(role: dict[str, Any]) -> str:
     return fallback
 
 
+def _explicit_posting_title_and_location(role: dict[str, Any]) -> tuple[str | None, str | None]:
+    description = role.get("description")
+    if not isinstance(description, str) or not description.strip():
+        return None, None
+    lines = description.splitlines()
+    title: str | None = None
+    location: str | None = None
+    for index, line in enumerate(lines):
+        title_match = re.match(r"(?i)^\s*position title\s*:\s*(.+?)\s*$", line)
+        if title_match is not None:
+            title_parts = [
+                re.split(
+                    r"(?i)\s+(?=(?:location|responsibilities|anticipated start date|"
+                    r"contract duration|work hours)\s*:)",
+                    title_match.group(1),
+                    maxsplit=1,
+                )[0]
+            ]
+            if index + 2 < len(lines) and re.match(
+                r"(?i)^\s*location\s*:",
+                lines[index + 2],
+            ):
+                continuation = lines[index + 1].strip()
+                if continuation and not continuation.startswith("#") and ":" not in continuation:
+                    title_parts.append(continuation)
+            title = " ".join(" ".join(title_parts).split())
+        location_match = re.match(r"(?i)^\s*location\s*:\s*(.+?)\s*$", line)
+        if location_match is not None:
+            location = " ".join(location_match.group(1).split())
+    return title, location
+
+
 def _role_with_effective_company(role: dict[str, Any]) -> dict[str, Any]:
     resolved = dict(role)
     resolved["company_name"] = _effective_role_company_name(role)
+    resolved["title"] = unquote(str(role.get("title") or "this role"))
+    explicit_title, explicit_location = _explicit_posting_title_and_location(role)
+    if explicit_title:
+        resolved["title"] = explicit_title
+    if explicit_location:
+        resolved["location"] = explicit_location
     return resolved
 
 
@@ -4478,6 +4519,13 @@ def build_role_cover_letter(
                     "rationale. Tighten prose and remove repetition only; never truncate text or "
                     "invent facts."
                 )
+            elif isinstance(error, GeneratedDocumentQualityError):
+                retry_tweaks = (
+                    f"{tweaks or ''}\n\n"
+                    "The previous draft exposed internal evidence-index metadata. Rewrite it as "
+                    "natural first-person applicant prose. Never include labels such as Tools, "
+                    "Useful attributes, Evidence, Repository-verified, or User-confirmed."
+                )
             else:
                 retry_tweaks = (
                     f"{tweaks or ''}\n\n"
@@ -4561,6 +4609,36 @@ class GeneratedDocumentLengthError(RuntimeError):
             f"Generated cover letter body was {word_count} words; "
             f"required range: {minimum}-{maximum}."
         )
+
+
+class GeneratedDocumentQualityError(RuntimeError):
+    pass
+
+
+_COVER_LETTER_INTERNAL_METADATA_PATTERNS = (
+    re.compile(r"(?i)\b(?:I\s+)?tools\s*:"),
+    re.compile(r"(?i)\b(?:I\s+)?useful attributes\s*:"),
+    re.compile(r"(?im)^\s*(?:I\s+)?evidence\s*:"),
+    re.compile(r"(?i)\brepository-verified\s*:"),
+    re.compile(r"(?i)\buser-confirmed\s*:"),
+)
+
+
+def _validate_cover_letter_quality(latex: str) -> None:
+    plain_text = _plain_text_from_latex(latex)
+    if any(
+        pattern.search(candidate)
+        for pattern in _COVER_LETTER_INTERNAL_METADATA_PATTERNS
+        for candidate in (latex, plain_text)
+    ):
+        raise GeneratedDocumentQualityError(
+            "Generated cover letter leaked internal evidence metadata into applicant prose."
+        )
+
+
+def _validate_cover_letter_quality_for_source(latex: str, *, source: str) -> None:
+    if source != "edited_cover_letter":
+        _validate_cover_letter_quality(latex)
 
 
 def _pdf_page_fill_ratio(pdf_path: Path) -> float | None:
@@ -5197,6 +5275,7 @@ def _write_role_cover_letter(
         source=source,
         example_count=len(example_ids),
     )
+    _validate_cover_letter_quality_for_source(latex, source=source)
     body_word_count = _cover_letter_body_word_count(latex)
     too_short = minimum_body_word_count is not None and body_word_count < minimum_body_word_count
     too_long = maximum_body_word_count is not None and body_word_count > maximum_body_word_count
@@ -5820,6 +5899,47 @@ def _fallback_role_priorities(role: dict[str, Any]) -> list[str]:
     ]
 
 
+_FALLBACK_EVIDENCE_START_PATTERN = re.compile(
+    r"(?i)^(?:I|My)\b|^(?:"
+    r"Added|Architected|Automated|Built|Collaborated|Configured|Contributed|Created|"
+    r"Delivered|Deployed|Designed|Developed|Diagnosed|Ensured|Implemented|Improved|"
+    r"Increased|Integrated|Led|Maintained|Managed|Migrated|Optimized|Owned|Reduced|"
+    r"Refactored|Resolved|Strengthened|Supported|Tested|Worked"
+    r")\b"
+)
+
+
+def _is_fallback_evidence_candidate(candidate: str) -> bool:
+    return (
+        40 <= len(candidate) <= 320
+        and candidate.endswith((".", "!", "?"))
+        and bool(_FALLBACK_EVIDENCE_START_PATTERN.match(candidate))
+        and not any(
+            pattern.search(candidate)
+            for pattern in _COVER_LETTER_INTERNAL_METADATA_PATTERNS
+        )
+    )
+
+
+def _fallback_source_evidence_sentences(content: str) -> list[str]:
+    source_marker = "## Source details"
+    if source_marker in content:
+        content = content.split(source_marker, 1)[1]
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", content) if part.strip()]
+    sentences: list[str] = []
+    for paragraph in paragraphs:
+        if paragraph.lstrip().startswith("#"):
+            continue
+        reflowed = " ".join(
+            line.lstrip("#-* ").strip() for line in paragraph.splitlines() if line.strip()
+        )
+        for sentence in re.split(r"(?<=[.!?])\s+", reflowed):
+            candidate = " ".join(sentence.split()).strip()
+            if _is_fallback_evidence_candidate(candidate):
+                sentences.append(candidate)
+    return sentences
+
+
 def _fallback_cover_letter_evidence(
     role: dict[str, Any],
     resume: MasterResume,
@@ -5830,13 +5950,16 @@ def _fallback_cover_letter_evidence(
         for arguments in _latex_command_arguments(resume.content, "resumeItem", 1)
     ]
     for item in other_experience_context or []:
-        content = str(item.get("content") or "")
         candidates.extend(
-            " ".join(line.lstrip("#-* ").split())
-            for line in content.splitlines()
-            if 40 <= len(line.strip()) <= 320 and not line.lstrip().startswith("#")
+            _fallback_source_evidence_sentences(str(item.get("content") or ""))
         )
-    candidates = list(dict.fromkeys(candidate for candidate in candidates if candidate))
+    candidates = list(
+        dict.fromkeys(
+            candidate
+            for candidate in candidates
+            if candidate and _is_fallback_evidence_candidate(candidate)
+        )
+    )
     role_terms = _prep_keywords(
         " ".join(str(role.get(key) or "") for key in ("title", "description"))
     )
@@ -5868,9 +5991,11 @@ def _fallback_cover_letter_evidence(
 
 
 def _first_person_evidence_sentence(value: str) -> str:
-    sentence = value.strip().rstrip(".")
+    sentence = value.strip().rstrip(".!?")
     if not sentence:
         return "I have delivered source-supported software engineering work"
+    if re.match(r"(?i)^(?:I|My)\b", sentence):
+        return sentence
     return f"I {sentence[0].lower()}{sentence[1:]}"
 
 
@@ -5894,6 +6019,8 @@ def _fallback_cover_letter_latex(
 ) -> str:
     title = str(role.get("title") or "this role")
     company = str(role.get("company_name") or "your team")
+    location = str(role.get("location") or "").strip()
+    location_line = f"{location}\\\\\n" if location else ""
     priorities = _fallback_role_priorities(role)
     priority_text = _joined_priority_text(priorities)
     evidence = _fallback_cover_letter_evidence(role, resume, other_experience_context)
@@ -5919,6 +6046,7 @@ def _fallback_cover_letter_latex(
         f"\\noindent {applicant_profile.latex_sender_block}\\par\n"
         "\\vspace{1.1em}\n"
         f"\\noindent {company}\\\\\n"
+        f"{location_line}"
         f"{title}\\\\\n"
         "\\today\\par\n"
         "\\vspace{1.1em}\n\n"
@@ -6924,7 +7052,10 @@ def _role_title_from_url(role_url: str) -> str:
     path_parts = [part for part in parsed.path.split("/") if part]
     if not path_parts:
         return "Manually added role"
-    slug = re.sub(r"[-_]+", " ", path_parts[-1])
+    candidate = path_parts[-1]
+    if candidate.isdigit() and len(path_parts) > 1:
+        candidate = path_parts[-2]
+    slug = re.sub(r"[-_]+", " ", unquote(candidate))
     slug = re.sub(r"\s+", " ", slug).strip()
     return slug or "Manually added role"
 

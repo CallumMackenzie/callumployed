@@ -1,7 +1,8 @@
 from datetime import datetime
 from enum import StrEnum
+from urllib.parse import unquote
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class RoleStatus(StrEnum):
@@ -108,6 +109,11 @@ class Role(AppModel):
     central_source: str = "local"
     central_synced_at: datetime | None = None
 
+    @field_validator("title", mode="before")
+    @classmethod
+    def decode_title(cls, value: object) -> object:
+        return unquote(value) if isinstance(value, str) else value
+
 
 class RoleListItem(AppModel):
     id: int
@@ -128,6 +134,11 @@ class RoleListItem(AppModel):
     central_source: str = "local"
     central_synced_at: datetime | None = None
     review_later_count: int = 0
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def decode_title(cls, value: object) -> object:
+        return unquote(value) if isinstance(value, str) else value
 
 
 class ScanRun(AppModel):

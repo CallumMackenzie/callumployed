@@ -25,6 +25,16 @@ def test_role_defaults_to_discovered() -> None:
     assert role.role_status is RoleStatus.DISCOVERED
 
 
+def test_role_decodes_percent_encoded_title_punctuation() -> None:
+    role = Role(
+        company_id=1,
+        title="SAP iXp Intern HANA and Analytics%2C Agile Developer",
+        role_url="https://example.com/jobs/1",
+    )
+
+    assert role.title == "SAP iXp Intern HANA and Analytics, Agile Developer"
+
+
 def test_scan_run_defaults_to_running() -> None:
     scan_run = ScanRun(company_id=1)
 
