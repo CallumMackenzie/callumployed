@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -138,6 +139,119 @@ def test_saved_application_answers_are_durable_and_role_scoped(tmp_path: Path) -
     assert "session_id" not in first_answers[0]
     assert first_answers[0]["sources"][0]["url"] == "https://acme.example/products"
     assert [item["question"] for item in second_answers] == ["Why Beta?"]
+
+
+def _create_intermediate_application_answers_schema(
+    connection: sqlite3.Connection,
+) -> None:
+    connection.executescript(
+        """
+            CREATE TABLE application_answers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                role_id INTEGER NOT NULL,
+                question TEXT NOT NULL,
+                answer TEXT,
+                backend TEXT NOT NULL,
+                status TEXT NOT NULL,
+                error TEXT,
+                session_id TEXT,
+                source_metadata_json TEXT,
+                research_metadata_json TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                completed_at TEXT,
+                FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE,
+                CHECK (backend IN ('openai', 'hermes', 'openclaw')),
+                CHECK (status IN ('pending', 'completed', 'failed'))
+            );
+        """
+    )
+
+
+def test_schema_migrates_intermediate_answer_backends_without_losing_rows(
+    tmp_path: Path,
+) -> None:
+    with db.connect(tmp_path / "legacy-answers.sqlite3") as connection:
+        db.run_migrations(connection)
+        role_id = _saved_role(connection, company_name="Acme", title="Engineer")
+        _create_intermediate_application_answers_schema(connection)
+        connection.execute(
+            """
+            INSERT INTO application_answers (
+                role_id, question, backend, status, error
+            ) VALUES (?, ?, 'hermes', 'failed', ?)
+            """,
+            (
+                role_id,
+                "Why Acme?",
+                "error code: 429 - insufficient_quota credit_balance_exhausted "
+                "https://platform.openai.com/settings/organization/billing/",
+            ),
+        )
+        connection.commit()
+
+        ensure_autoprep_schema(connection)
+        legacy = connection.execute(
+            "SELECT backend, error FROM application_answers WHERE role_id = ?",
+            (role_id,),
+        ).fetchone()
+        created = create_application_answer(
+            connection,
+            role_id,
+            question="How do you use AI?",
+            backend="codex",
+        )
+        table_sql = str(
+            connection.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'application_answers'"
+            ).fetchone()["sql"]
+        )
+
+    assert legacy is not None
+    assert legacy["backend"] == "hermes"
+    assert "remaining credits" in str(legacy["error"])
+    assert "platform.openai.com" not in str(legacy["error"])
+    assert created["backend"] == "codex"
+    assert "'codex'" in table_sql
+
+
+def test_backend_migration_rolls_back_on_foreign_key_violation(tmp_path: Path) -> None:
+    with db.connect(tmp_path / "invalid-legacy-answers.sqlite3") as connection:
+        db.run_migrations(connection)
+        connection.execute("PRAGMA foreign_keys = OFF")
+        _create_intermediate_application_answers_schema(connection)
+        connection.execute(
+            """
+            INSERT INTO application_answers (role_id, question, backend, status)
+            VALUES (999999, 'Orphaned question', 'openai', 'failed')
+            """
+        )
+        connection.commit()
+        connection.execute("PRAGMA foreign_keys = ON")
+
+        with pytest.raises(
+            RuntimeError,
+            match="migration violated a foreign key constraint",
+        ):
+            ensure_autoprep_schema(connection)
+
+        table_sql = str(
+            connection.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'application_answers'"
+            ).fetchone()["sql"]
+        )
+        legacy_row = connection.execute(
+            "SELECT role_id, question FROM application_answers"
+        ).fetchone()
+        migrated_table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = 'application_answers_migrated'"
+        ).fetchone()
+        foreign_keys_enabled = connection.execute("PRAGMA foreign_keys").fetchone()[0]
+
+    assert "'codex'" not in table_sql
+    assert tuple(legacy_row) == (999999, "Orphaned question")
+    assert migrated_table is None
+    assert foreign_keys_enabled == 1
 
 
 def test_interrupted_application_answers_are_recoverable(tmp_path: Path) -> None:

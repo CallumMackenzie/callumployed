@@ -4344,8 +4344,9 @@ function renderApplicationQuestionsWorkspace(job) {
   const pending = pendingApplicationAnswerRoleIds.has(roleId);
   const loading = loadingApplicationAnswerRoleIds.has(roleId);
   const loadError = applicationAnswerLoadErrors.get(roleId);
+  const savedCount = records.filter((record) => record?.status === "completed" && record?.answer).length;
   return `<section class="application-questions-workspace" aria-labelledby="application-questions-heading-${roleId}">
-    <div class="application-questions-heading"><div><p class="eyebrow">Application helper</p><h4 id="application-questions-heading-${roleId}">Application questions</h4></div><span>${records.length} saved</span></div>
+    <div class="application-questions-heading"><div><p class="eyebrow">Application helper</p><h4 id="application-questions-heading-${roleId}">Application questions</h4></div><span>${savedCount} saved</span></div>
     <p class="application-questions-intro">Paste a question from an application form to generate and keep a role-specific answer.</p>
     <div class="application-answer-history" aria-live="polite">
       ${loading && !records.length ? '<p class="application-answer-empty">Loading saved answers…</p>' : ""}

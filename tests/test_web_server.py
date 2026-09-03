@@ -202,6 +202,7 @@ def test_application_answer_can_be_regenerated_and_deleted_through_role_scoped_a
         )
         assert role.id is not None
         autoprep_service.ensure_autoprep_schema(connection)
+        web_server.set_config_value(connection, "llm_provider", "codex")
         pending = autoprep_service.create_application_answer(
             connection,
             role.id,
@@ -217,7 +218,7 @@ def test_application_answer_can_be_regenerated_and_deleted_through_role_scoped_a
     monkeypatch.setattr(
         web_server,
         "generate_saved_application_answer",
-        lambda role_id, *, question: {
+        lambda role_id, *, question, llm_settings: {
             "answer": "Acme Builds Reliable Products.",
             "session_id": None,
             "sources": [{"kind": "saved_material", "title": "Resume"}],
@@ -239,7 +240,7 @@ def test_application_answer_can_be_regenerated_and_deleted_through_role_scoped_a
 
         assert regenerated["id"] == saved["id"]
         assert regenerated["answer"] == "Acme Builds Reliable Products."
-        assert regenerated["backend"] == "openai"
+        assert regenerated["backend"] == "codex"
         assert "session_id" not in regenerated
         assert regenerated["status"] == "completed"
 
@@ -258,6 +259,68 @@ def test_application_answer_can_be_regenerated_and_deleted_through_role_scoped_a
                 (saved["id"],),
             ).fetchone()["count"]
         assert revision_count == 0
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_application_answer_quota_failure_is_not_exposed_or_counted_as_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "application-answer-quota.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Acme"))
+        assert company.id is not None
+        role = add_role(
+            connection,
+            Role(
+                company_id=company.id,
+                title="Engineer",
+                role_url="https://example.com/engineer",
+                role_status=RoleStatus.INTERESTED,
+            ),
+        )
+        assert role.id is not None
+
+    def exhausted_provider(
+        _role_id: int, *, question: str, llm_settings: object
+    ) -> dict[str, Any]:
+        assert question
+        assert llm_settings
+        raise RuntimeError(
+            "error code: 429 - insufficient_quota credit_balance_exhausted "
+            "https://platform.openai.com/settings/organization/billing/"
+        )
+
+    monkeypatch.setattr(web_server, "generate_saved_application_answer", exhausted_provider)
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        endpoint = (
+            f"http://127.0.0.1:{server.server_address[1]}/api/autoprep/roles/"
+            f"{role.id}/application-answers"
+        )
+        request = Request(
+            endpoint,
+            data=json.dumps({"question": "What AI tools do you use?"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(HTTPError) as response_error:
+            urlopen(request, timeout=5)
+        assert response_error.value.code == 503
+        payload = json.loads(response_error.value.read())["answer"]
+
+        assert payload["status"] == "failed"
+        assert payload["answer"] is None
+        assert "no remaining credits" in payload["error"]
+        assert "platform.openai.com" not in payload["error"]
+        assert "credit_balance_exhausted" not in payload["error"]
     finally:
         server.shutdown()
         server.server_close()
@@ -452,7 +515,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "dangerouslySetInnerHTML" not in markup
         assert "dangerouslySetInnerHTML" not in app_javascript
         assert '<div id="root"></div>' not in index_markup
-        assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-4"></script>' in (
+        assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-5"></script>' in (
             index_markup
         )
 
@@ -589,8 +652,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=vanilla-20260903-4" in index_markup
-        assert "/assets/app.js?v=vanilla-20260903-4" in index_markup
+        assert "/assets/app.css?v=vanilla-20260903-5" in index_markup
+        assert "/assets/app.js?v=vanilla-20260903-5" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -3941,6 +4004,56 @@ def test_application_generation_stays_openai_when_scan_provider_is_codex(
     assert selected.openai_api_key is not None
 
 
+def test_saved_application_answers_use_configured_llm_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "application-answer-provider.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Acme"))
+        assert company.id is not None
+        role = add_role(
+            connection,
+            Role(
+                company_id=company.id,
+                title="Engineer",
+                role_url="https://example.com/engineer",
+                role_status=RoleStatus.INTERESTED,
+                description="Build reliable software.",
+            ),
+        )
+        assert role.id is not None
+        web_server.upsert_master_resume(
+            connection,
+            filename="resume.tex",
+            content=r"\documentclass{article}\begin{document}Resume\end{document}",
+        )
+        web_server.set_config_value(connection, "llm_provider", "codex")
+
+    observed_providers: list[str] = []
+
+    async def fake_generate_role_chat(**kwargs: object) -> SimpleNamespace:
+        settings = kwargs["settings"]
+        assert isinstance(settings, web_server.LlmSettings)
+        observed_providers.append(str(settings.provider))
+        return SimpleNamespace(answer="I use grounded AI tooling.")
+
+    monkeypatch.setattr(web_server, "generate_role_chat", fake_generate_role_chat)
+    monkeypatch.setattr(web_server, "sync_role_context_vectors", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(web_server, "retrieve_role_context", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(web_server, "_saved_role_cover_letter", lambda _role_id: None)
+
+    result = web_server.generate_saved_application_answer(
+        role.id,
+        question="What AI technologies are you comfortable with?",
+    )
+
+    assert observed_providers == ["codex"]
+    assert result["answer"] == "I use grounded AI tooling."
+
+
 def test_profile_extraction_fills_only_blank_settings(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4175,10 +4288,10 @@ def test_config_payload_returns_current_settings(
         },
         {
             "key": "llm_provider",
-            "label": "scan AI provider",
+            "label": "AI provider",
             "description": (
-                "used for job scanning and classification only; application documents and saved "
-                "Q&A always use OpenAI"
+                "used for job scanning, classification, and saved Q&A; application documents "
+                "continue to use OpenAI"
             ),
             "control": "select",
             "value": "openai",

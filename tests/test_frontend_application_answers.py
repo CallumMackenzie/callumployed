@@ -28,6 +28,9 @@ def test_prepped_application_questions_workspace_is_persistent_and_safe() -> Non
     assert "normalizeApplicationAnswerRecords" in source
     assert "preppedApplicationQuestionDrafts" in source
     assert "pendingApplicationAnswerRoleIds" in source
+    assert 'record?.status === "completed" && record?.answer' in source
+    assert "${savedCount} saved" in source
+    assert "${records.length} saved" not in source
     assert "data-application-question-draft" in source
     assert "data-application-question-submit" in source
     assert "data-application-answer-copy" in source
@@ -63,8 +66,8 @@ def test_application_questions_styles_and_cache_keys_are_versioned() -> None:
     assert "padding-top: 20px" in styles
     assert "#close-prepped" in styles
     assert "text-transform: none" in styles
-    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260903-4" />' in index
-    assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-4"></script>' in index
+    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260903-5" />' in index
+    assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-5"></script>' in index
 
 
 def test_currently_applying_folder_ui_is_explained_and_selection_driven() -> None:
@@ -82,8 +85,8 @@ def test_currently_applying_folder_ui_is_explained_and_selection_driven() -> Non
     assert "/currently-applying" in source
     assert "/currently-applying/open" in source
     assert ".currently-applying-guide" in styles
-    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260903-4" />' in index
-    assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-4"></script>' in index
+    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260903-5" />' in index
+    assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-5"></script>' in index
 
 
 def test_frontend_uses_direct_vanilla_assets_without_framework_shell() -> None:
@@ -93,7 +96,7 @@ def test_frontend_uses_direct_vanilla_assets_without_framework_shell() -> None:
     assert not (REPOSITORY_ROOT / "frontend").exists()
     assert not (STATIC_DIRECTORY / "build").exists()
     assert not (STATIC_DIRECTORY / "shell.html").exists()
-    assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-4"></script>' in index
+    assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-5"></script>' in index
     assert '<div id="root"></div>' not in index
     assert "dangerouslySetInnerHTML" not in index
     assert "dangerouslySetInnerHTML" not in source

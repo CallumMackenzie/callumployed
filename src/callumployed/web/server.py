@@ -1351,11 +1351,16 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 with db.connect() as connection:
                     db.run_migrations(connection)
                     ensure_autoprep_schema(connection)
+                    llm_settings = build_configured_llm_settings(connection)
                     pending = create_application_answer(
-                        connection, role_id, question=question, backend="openai"
+                        connection, role_id, question=question, backend=llm_settings.provider
                     )
                 try:
-                    result = generate_saved_application_answer(role_id, question=question.strip())
+                    result = generate_saved_application_answer(
+                        role_id,
+                        question=question.strip(),
+                        llm_settings=llm_settings,
+                    )
                     with db.connect() as connection:
                         answer = complete_application_answer(
                             connection,
@@ -1367,7 +1372,9 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 except Exception as error:
                     with db.connect() as connection:
                         answer = fail_application_answer(
-                            connection, int(pending["id"]), error=_autoprep_error(error)
+                            connection,
+                            int(pending["id"]),
+                            error=_application_answer_error(error),
                         )
                     self._send_json_with_status({"answer": answer}, HTTPStatus.SERVICE_UNAVAILABLE)
                     return
@@ -1386,11 +1393,12 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                     db.run_migrations(connection)
                     ensure_autoprep_schema(connection)
                     get_role(connection, role_id)
+                    llm_settings = build_configured_llm_settings(connection)
                     pending = queue_application_answer_regeneration(
                         connection,
                         role_id,
                         answer_id,
-                        backend="openai",
+                        backend=llm_settings.provider,
                     )
             except AutoprepConflictError as error:
                 self._send_json_with_status({"error": str(error)}, HTTPStatus.CONFLICT)
@@ -1403,6 +1411,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 result = generate_saved_application_answer(
                     role_id,
                     question=str(pending["question"]).strip(),
+                    llm_settings=llm_settings,
                 )
                 with db.connect() as connection:
                     answer = complete_application_answer(
@@ -1417,7 +1426,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                     answer = fail_application_answer(
                         connection,
                         answer_id,
-                        error=_autoprep_error(error),
+                        error=_application_answer_error(error),
                     )
                 self._send_json_with_status(
                     {"answer": answer}, HTTPStatus.SERVICE_UNAVAILABLE
@@ -3251,10 +3260,10 @@ def build_config_payload() -> dict[str, Any]:
             },
             {
                 "key": LLM_PROVIDER_CONFIG_KEY,
-                "label": "scan AI provider",
+                "label": "AI provider",
                 "description": (
-                    "used for job scanning and classification only; application documents and "
-                    "saved Q&A always use OpenAI"
+                    "used for job scanning, classification, and saved Q&A; application documents "
+                    "continue to use OpenAI"
                 ),
                 "control": "select",
                 "value": llm_provider,
@@ -3907,7 +3916,12 @@ def _process_autoprep_job(job_id: int) -> None:
         finish_autoprep_worker(connection, job_id)
 
 
-def generate_saved_application_answer(role_id: int, *, question: str) -> dict[str, Any]:
+def generate_saved_application_answer(
+    role_id: int,
+    *,
+    question: str,
+    llm_settings: LlmSettings | None = None,
+) -> dict[str, Any]:
     role: dict[str, Any] = {}
     with db.connect() as connection:
         db.run_migrations(connection)
@@ -3928,7 +3942,7 @@ def generate_saved_application_answer(role_id: int, *, question: str) -> dict[st
             query=f"{role_model.title} {effective_company_name} {question}",
             limit=20,
         )
-        llm_settings = _llm_settings_for_generation(connection)
+        effective_llm_settings = llm_settings or build_configured_llm_settings(connection)
         job = get_role_autoprep_job(connection, role_id)
     if resume is None:
         raise RuntimeError("No master resume is stored.")
@@ -3963,7 +3977,7 @@ def generate_saved_application_answer(role_id: int, *, question: str) -> dict[st
             cover_letter_content=cover_letter,
             employment_history_context=experience_sections,
             messages=parse_role_chat_messages([{"role": "user", "content": prompt}]),
-            settings=llm_settings,
+            settings=effective_llm_settings,
         )
     )
     return {
@@ -4474,6 +4488,22 @@ def _role_with_effective_company(role: dict[str, Any]) -> dict[str, Any]:
 def _autoprep_error(error: Exception) -> str:
     detail = " ".join(str(error).strip().split())
     return (detail or "Autoprep generation failed.")[-1000:]
+
+
+def _application_answer_error(error: Exception) -> str:
+    detail = " ".join(str(error).strip().split()).lower()
+    if any(
+        marker in detail
+        for marker in ("credit_balance_exhausted", "insufficient_quota", "no credits remaining")
+    ):
+        return (
+            "The AI provider could not generate this answer because its account has no remaining "
+            "credits. Add credits or select another AI provider in Settings, then retry."
+        )
+    return (
+        "The AI provider could not generate this answer. "
+        "Retry or select another provider in Settings."
+    )
 
 
 def build_prep_analysis(

@@ -39,6 +39,12 @@ _COVER_LETTER_STATUSES = {
     "interrupted",
 }
 _TERMINAL_DOCUMENT_STATUSES = {"ready", "failed", "interrupted"}
+_APPLICATION_ANSWER_BACKENDS = {"openai", "codex"}
+_APPLICATION_ANSWER_QUOTA_ERROR = (
+    "The AI provider could not generate this answer because its account has no remaining credits. "
+    "Add credits or select another AI provider in Settings, then retry."
+)
+_AUTOPREP_SCHEMA_LOCK = threading.RLock()
 
 
 class AutoprepConflictError(ValueError):
@@ -149,7 +155,7 @@ class AutoprepCoordinator:
             self._wake.set()
 
 
-def ensure_autoprep_schema(connection: sqlite3.Connection) -> None:
+def _ensure_autoprep_schema(connection: sqlite3.Connection) -> None:
     connection.executescript(
         """
         CREATE TABLE IF NOT EXISTS autoprep_requests (
@@ -231,7 +237,7 @@ def ensure_autoprep_schema(connection: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             completed_at TEXT,
             FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE,
-            CHECK (backend = 'openai'),
+            CHECK (backend IN ('openai', 'codex', 'hermes', 'openclaw')),
             CHECK (status IN ('pending', 'completed', 'failed'))
         );
         CREATE INDEX IF NOT EXISTS idx_application_answers_role
@@ -262,7 +268,93 @@ def ensure_autoprep_schema(connection: sqlite3.Connection) -> None:
     for column_name in ("resume_instruction", "cover_letter_instruction"):
         if column_name not in job_columns:
             connection.execute(f"ALTER TABLE autoprep_jobs ADD COLUMN {column_name} TEXT")
+    _migrate_application_answer_backends(connection)
+    _sanitize_application_answer_quota_errors(connection)
     connection.commit()
+
+
+def _migrate_application_answer_backends(connection: sqlite3.Connection) -> None:
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'application_answers'"
+    ).fetchone()
+    table_sql = str(row["sql"] if row is not None else "")
+    if "'codex'" in table_sql:
+        return
+
+    foreign_keys_enabled = bool(connection.execute("PRAGMA foreign_keys").fetchone()[0])
+    connection.commit()
+    if foreign_keys_enabled:
+        connection.execute("PRAGMA foreign_keys = OFF")
+    try:
+        connection.executescript(
+            """
+            BEGIN IMMEDIATE;
+            CREATE TABLE application_answers_migrated (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                role_id INTEGER NOT NULL,
+                question TEXT NOT NULL,
+                answer TEXT,
+                backend TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                error TEXT,
+                session_id TEXT,
+                source_metadata_json TEXT,
+                research_metadata_json TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                completed_at TEXT,
+                FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE,
+                CHECK (backend IN ('openai', 'codex', 'hermes', 'openclaw')),
+                CHECK (status IN ('pending', 'completed', 'failed'))
+            );
+            INSERT INTO application_answers_migrated (
+                id, role_id, question, answer, backend, status, error, session_id,
+                source_metadata_json, research_metadata_json, created_at, updated_at, completed_at
+            )
+            SELECT
+                id, role_id, question, answer, backend, status, error, session_id,
+                source_metadata_json, research_metadata_json, created_at, updated_at, completed_at
+            FROM application_answers;
+            DROP TABLE application_answers;
+            ALTER TABLE application_answers_migrated RENAME TO application_answers;
+            CREATE INDEX idx_application_answers_role
+                ON application_answers(role_id, created_at DESC, id DESC);
+            """
+        )
+        if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            raise RuntimeError(
+                "Application answer backend migration violated a foreign key constraint."
+            )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        if foreign_keys_enabled:
+            connection.execute("PRAGMA foreign_keys = ON")
+
+
+
+def _sanitize_application_answer_quota_errors(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        UPDATE application_answers
+        SET error = ?
+        WHERE status = 'failed'
+          AND error IS NOT NULL
+          AND (
+            lower(error) LIKE '%credit_balance_exhausted%'
+            OR lower(error) LIKE '%insufficient_quota%'
+            OR lower(error) LIKE '%no credits remaining%'
+          )
+        """,
+        (_APPLICATION_ANSWER_QUOTA_ERROR,),
+    )
+
+
+def ensure_autoprep_schema(connection: sqlite3.Connection) -> None:
+    with _AUTOPREP_SCHEMA_LOCK:
+        _ensure_autoprep_schema(connection)
 
 
 def create_application_answer(
@@ -273,8 +365,8 @@ def create_application_answer(
         raise ValueError("An application question is required.")
     if len(clean_question) > 4000:
         raise ValueError("Application question must be 4000 characters or fewer.")
-    if backend != "openai":
-        raise ValueError("Application answers use openai only.")
+    if backend not in _APPLICATION_ANSWER_BACKENDS:
+        raise ValueError("Application answer backend must be openai or codex.")
     role = connection.execute("SELECT id FROM roles WHERE id = ?", (role_id,)).fetchone()
     if role is None:
         raise ValueError(f"Role {role_id} was not found.")
@@ -313,8 +405,8 @@ def queue_application_answer_regeneration(
     *,
     backend: str,
 ) -> dict[str, Any]:
-    if backend != "openai":
-        raise ValueError("Application answers use openai only.")
+    if backend not in _APPLICATION_ANSWER_BACKENDS:
+        raise ValueError("Application answer backend must be openai or codex.")
     try:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
