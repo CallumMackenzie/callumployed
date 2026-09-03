@@ -214,6 +214,13 @@ let preppedPoll = null;
 let bulkCoverLetterRegenerationPending = false;
 let preppedBulkMessage = "";
 let preppedBulkRegeneration = null;
+let currentlyApplyingGuideOpen = false;
+let currentlyApplyingStatus = "Select a prepared role to update this folder.";
+let currentlyApplyingOpenPending = false;
+let currentlyApplyingSelectionVersion = 0;
+let currentlyApplyingSyncChain = Promise.resolve();
+let currentlyApplyingPendingSignature = null;
+let currentlyApplyingSyncedSignature = null;
 const queuingAutoprepRoleIds = new Set();
 const preppedStatusChangeRoleIds = new Set();
 const preppedCommentsByDocument = new Map();
@@ -3901,6 +3908,7 @@ async function openExistingPreppedRole(roleId) {
   selectedPreppedRoleId = numericRoleId;
   if (!prepView.hidden) closePrepView();
   await openPreppedView();
+  queueCurrentlyApplyingSync(numericRoleId, {force: true});
 }
 
 async function queueRoleForAutoprep(roleId) {
@@ -3942,6 +3950,7 @@ async function queueRoleForAutoprep(roleId) {
     selectedPreppedRoleId = numericRoleId;
     if (!prepView.hidden) closePrepView();
     await openPreppedView({seedJobs: [...seededJobsByRoleId.values()]});
+    queueCurrentlyApplyingSync(numericRoleId, {force: true});
     return acceptedJobs;
   } finally {
     queuingAutoprepRoleIds.delete(numericRoleId);
@@ -4018,6 +4027,12 @@ async function refreshPreppedRoles() {
       selectedPreppedRoleId = preppedJobs[0]?.role_id ?? null;
     }
     renderPreppedRoles();
+    const selectedJob = preppedJobs.find(
+      (job) => Number(job.role_id) === Number(selectedPreppedRoleId),
+    );
+    if (selectedJob?.overall_status === "ready") {
+      queueCurrentlyApplyingSync(selectedJob.role_id);
+    }
   } catch {
     preppedSummary.textContent = "could not refresh preparation progress.";
   }
@@ -4172,6 +4187,89 @@ function renderPreppedRoles() {
   startPreppedPolling();
 }
 
+function currentlyApplyingSignature(job) {
+  return [
+    job.role_id,
+    job.resume_artifact_path,
+    job.cover_letter_artifact_path,
+    job.updated_at,
+  ].join(":");
+}
+
+function selectPreppedRole(roleId) {
+  const numericRoleId = Number(roleId);
+  if (!Number.isInteger(numericRoleId) || numericRoleId <= 0) return;
+  selectedPreppedRoleId = numericRoleId;
+  renderPreppedRoles();
+  queueCurrentlyApplyingSync(numericRoleId, {force: true});
+}
+
+function queueCurrentlyApplyingSync(roleId, {force = false} = {}) {
+  const numericRoleId = Number(roleId);
+  const job = preppedJobs.find((item) => Number(item.role_id) === numericRoleId);
+  if (!job) return;
+  const signature = currentlyApplyingSignature(job);
+  if (!force && (signature === currentlyApplyingSyncedSignature || signature === currentlyApplyingPendingSignature)) {
+    return;
+  }
+  const selectionVersion = ++currentlyApplyingSelectionVersion;
+  currentlyApplyingPendingSignature = signature;
+  currentlyApplyingStatus = job.overall_status === "ready"
+    ? `Updating for ${job.company_name} — ${job.title}...`
+    : "Both documents must be ready before this role can update the folder.";
+  renderPreppedDetail();
+  currentlyApplyingSyncChain = currentlyApplyingSyncChain
+    .catch(() => {})
+    .then(async () => {
+      if (
+        selectionVersion !== currentlyApplyingSelectionVersion
+        || Number(selectedPreppedRoleId) !== numericRoleId
+      ) return;
+      const response = await fetch(
+        `/api/autoprep/roles/${encodeURIComponent(numericRoleId)}/currently-applying`,
+        {method: "POST"},
+      );
+      const payload = await response.json().catch(() => ({}));
+      if (
+        selectionVersion !== currentlyApplyingSelectionVersion
+        || Number(selectedPreppedRoleId) !== numericRoleId
+      ) return;
+      if (!response.ok) throw new Error(payload.error || "Could not update Currently Applying.");
+      currentlyApplyingSyncedSignature = signature;
+      currentlyApplyingStatus = `Ready for ${job.company_name} — ${job.title}.`;
+    })
+    .catch((error) => {
+      if (selectionVersion !== currentlyApplyingSelectionVersion) return;
+      currentlyApplyingStatus = error instanceof Error
+        ? error.message
+        : "Could not update Currently Applying.";
+    })
+    .finally(() => {
+      if (currentlyApplyingPendingSignature === signature) currentlyApplyingPendingSignature = null;
+      if (selectionVersion === currentlyApplyingSelectionVersion) renderPreppedDetail();
+    });
+}
+
+async function openCurrentlyApplyingFolder(button) {
+  if (currentlyApplyingOpenPending) return;
+  currentlyApplyingOpenPending = true;
+  button.disabled = true;
+  button.textContent = "Opening...";
+  try {
+    const response = await fetch("/api/autoprep/currently-applying/open", {method: "POST"});
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "Could not open Currently Applying.");
+    currentlyApplyingStatus = "Opened Currently Applying in Finder.";
+  } catch (error) {
+    currentlyApplyingStatus = error instanceof Error
+      ? error.message
+      : "Could not open Currently Applying.";
+  } finally {
+    currentlyApplyingOpenPending = false;
+    renderPreppedDetail();
+  }
+}
+
 function renderPreppedDetail() {
   const currentIndex = preppedJobs.findIndex((job) => Number(job.role_id) === Number(selectedPreppedRoleId));
   const job = preppedJobs[currentIndex];
@@ -4217,7 +4315,16 @@ function renderPreppedDetail() {
       <button class="review-action danger prepped-disinterested" type="button" data-autoprep-disinterested aria-busy="${movingToDisinterested ? "true" : "false"}" ${disinterestedUnavailable ? "disabled" : ""} title="${autoprepJobIsActive(job) ? "Wait for preparation to finish before moving this role" : "Move this role out of Prepped"}">${movingToDisinterested ? "Moving to Disinterested..." : "Move to Disinterested"}</button>
       <button class="review-action success" type="button" data-autoprep-applied ${job.overall_status === "ready" ? "" : "disabled"}>Applied</button>
     </div>
-    <p class="prepped-safety-note">Autoprep prepares files only. It never submits an application.</p>`;
+    <p class="prepped-safety-note">Autoprep prepares files only. It never submits an application.</p>
+    <details class="currently-applying-guide" data-currently-applying-guide ${currentlyApplyingGuideOpen ? "open" : ""}>
+      <summary>Currently Applying folder</summary>
+      <div class="currently-applying-guide-body">
+        <p>Selecting a prepared role copies its current resume and cover letter into one easy-to-find folder for job-site upload dialogs.</p>
+        <p>The original files stay in the role's documents folder. Selecting another role, or finishing a regeneration for the selected role, safely replaces both copies together.</p>
+        <p class="currently-applying-status" role="status" aria-live="polite">${escapeUiText(currentlyApplyingStatus)}</p>
+        <button type="button" data-currently-applying-open ${currentlyApplyingOpenPending ? "disabled" : ""}>${currentlyApplyingOpenPending ? "Opening..." : "Open Currently Applying Folder"}</button>
+      </div>
+    </details>`;
   if (!loadedApplicationAnswerRoleIds.has(Number(job.role_id))) loadApplicationAnswers(job.role_id);
 }
 
@@ -4652,8 +4759,7 @@ regenerateAllCoverLettersButton.addEventListener("click", regenerateAllPreppedCo
 preppedList.addEventListener("click", (event) => {
   const roleButton = event.target.closest("[data-prepped-role]");
   if (!roleButton) return;
-  selectedPreppedRoleId = Number(roleButton.dataset.preppedRole);
-  renderPreppedRoles();
+  selectPreppedRole(roleButton.dataset.preppedRole);
 });
 
 preppedDetail.addEventListener("input", (event) => {
@@ -4684,6 +4790,11 @@ preppedDetail.addEventListener("input", (event) => {
 });
 
 preppedDetail.addEventListener("toggle", (event) => {
+  const currentlyApplyingGuide = event.target.closest("[data-currently-applying-guide]");
+  if (currentlyApplyingGuide) {
+    currentlyApplyingGuideOpen = currentlyApplyingGuide.open;
+    return;
+  }
   const section = event.target.closest("[data-prepped-detail-section]");
   if (!section) return;
   const key = `${selectedPreppedRoleId}:${section.dataset.preppedDetailSection}`;
@@ -4729,8 +4840,12 @@ preppedDetail.addEventListener("click", async (event) => {
   if (navButton) {
     const currentIndex = preppedJobs.indexOf(job);
     const offset = navButton.dataset.preppedNav === "next" ? 1 : -1;
-    selectedPreppedRoleId = preppedJobs[currentIndex + offset]?.role_id ?? job.role_id;
-    renderPreppedRoles();
+    selectPreppedRole(preppedJobs[currentIndex + offset]?.role_id ?? job.role_id);
+    return;
+  }
+  const currentlyApplyingButton = event.target.closest("[data-currently-applying-open]");
+  if (currentlyApplyingButton) {
+    openCurrentlyApplyingFolder(currentlyApplyingButton);
     return;
   }
   const previewButton = event.target.closest("[data-autoprep-preview]");

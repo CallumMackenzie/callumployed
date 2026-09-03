@@ -4680,6 +4680,45 @@ body.prepped-open {
   font-size: 0.76rem;
 }
 
+.currently-applying-guide {
+  margin-top: 14px;
+  border: 1px solid rgb(95 43 216 / 0.18);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgb(255 255 255 / 0.92), rgb(240 235 255 / 0.52));
+}
+
+.currently-applying-guide > summary {
+  cursor: pointer;
+  padding: 13px 15px;
+  color: #3f218d;
+  font-size: 0.82rem;
+  font-weight: 850;
+}
+
+.currently-applying-guide-body {
+  display: grid;
+  gap: 10px;
+  padding: 0 15px 15px;
+  color: #53615b;
+  font-size: 0.8rem;
+}
+
+.currently-applying-guide-body p {
+  margin: 0;
+}
+
+.currently-applying-guide-body button {
+  width: fit-content;
+  border-color: rgb(95 43 216 / 0.24);
+  background: #fff;
+  color: #3f218d;
+}
+
+.currently-applying-status {
+  min-height: 1.2em;
+  font-weight: 750;
+}
+
 .autoprep-role-status,
 .prepped-status,
 .prepped-document-heading span {

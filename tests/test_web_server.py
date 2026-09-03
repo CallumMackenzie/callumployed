@@ -452,7 +452,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "dangerouslySetInnerHTML" not in markup
         assert "dangerouslySetInnerHTML" not in app_javascript
         assert '<div id="root"></div>' not in index_markup
-        assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-3"></script>' in (
+        assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-4"></script>' in (
             index_markup
         )
 
@@ -589,8 +589,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=vanilla-20260903-3" in index_markup
-        assert "/assets/app.js?v=vanilla-20260903-3" in index_markup
+        assert "/assets/app.css?v=vanilla-20260903-4" in index_markup
+        assert "/assets/app.js?v=vanilla-20260903-4" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -886,6 +886,237 @@ def test_autoprep_pdf_filename_uses_job_description_company_identity(
 
     assert resume_directory == directory
     assert resume_target.name == "cohere-machine-learning-intern-co-op-resume.pdf"
+
+
+def test_autoprep_regeneration_reuses_persisted_role_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source_pdf = tmp_path / "new-resume.pdf"
+    source_pdf.write_bytes(_valid_pdf_bytes())
+    root = tmp_path / "prepared-applications"
+    original_directory = root / "sap-original-title-role-378"
+    original_directory.mkdir(parents=True)
+    original_resume = original_directory / "sap-original-title-resume.pdf"
+    original_resume.write_bytes(_valid_pdf_bytes())
+    monkeypatch.setattr(web_server, "user_data_path", lambda *_args, **_kwargs: tmp_path)
+
+    directory, target = web_server._copy_autoprep_pdf(
+        {
+            "id": 378,
+            "company_name": "SAP",
+            "title": "Resolved title changed during regeneration",
+        },
+        source_pdf,
+        kind="resume",
+        existing_job={
+            "artifact_directory": str(original_directory),
+            "resume_artifact_path": str(original_resume),
+        },
+    )
+
+    assert directory == original_directory
+    assert target == original_resume
+    assert sorted(path.name for path in original_directory.iterdir()) == [original_resume.name]
+    assert not (root / "sap-resolved-title-changed-during-regeneration-role-378").exists()
+
+
+def test_autoprep_atomic_pdf_copy_preserves_previous_file_when_replacement_is_invalid(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "role-resume.pdf"
+    original = _valid_pdf_bytes()
+    target.write_bytes(original)
+    invalid = tmp_path / "invalid.pdf"
+    invalid.write_bytes(b"not a pdf")
+
+    with pytest.raises(RuntimeError, match="could not be verified"):
+        web_server._atomic_copy_verified_pdf(invalid, target)
+
+    assert target.read_bytes() == original
+
+
+def test_autoprep_regeneration_preserves_unrelated_user_files(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(web_server, "user_data_path", lambda *_args, **_kwargs: tmp_path)
+    directory = tmp_path / "prepared-applications" / "sap-engineer-role-378"
+    directory.mkdir(parents=True)
+    resume = directory / "sap-engineer-resume.pdf"
+    user_pdf = directory / "personal-resume.pdf"
+    notes = directory / "notes.txt"
+    resume.write_bytes(_valid_pdf_bytes())
+    user_pdf.write_bytes(_valid_pdf_bytes())
+    notes.write_text("user-authored notes")
+    source = tmp_path / "replacement.pdf"
+    source.write_bytes(_valid_pdf_bytes())
+
+    web_server._copy_autoprep_pdf(
+        {"id": 378, "company_name": "SAP", "title": "Engineer"},
+        source,
+        kind="resume",
+        existing_job={
+            "artifact_directory": str(directory),
+            "resume_artifact_path": str(resume),
+        },
+    )
+
+    assert sorted(path.name for path in directory.iterdir()) == [
+        "notes.txt",
+        "personal-resume.pdf",
+        "sap-engineer-resume.pdf",
+    ]
+    assert user_pdf.is_file()
+    assert notes.read_text() == "user-authored notes"
+
+
+def test_currently_applying_directory_exchange_is_atomic(tmp_path: Path) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / "old.txt").write_text("old")
+    (second / "new.txt").write_text("new")
+
+    web_server._exchange_directories_atomically(first, second)
+
+    assert sorted(path.name for path in first.iterdir()) == ["new.txt"]
+    assert sorted(path.name for path in second.iterdir()) == ["old.txt"]
+
+
+def test_currently_applying_folder_atomically_projects_selected_role_pair(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(web_server, "user_data_path", lambda *_args, **_kwargs: tmp_path)
+    role_directory = tmp_path / "prepared-applications" / "acme-engineer-role-42"
+    role_directory.mkdir(parents=True)
+    resume = role_directory / "acme-engineer-resume.pdf"
+    cover_letter = role_directory / "acme-engineer-cover-letter.pdf"
+    resume.write_bytes(_valid_pdf_bytes())
+    cover_letter.write_bytes(_valid_pdf_bytes())
+    job = {
+        "role_id": 42,
+        "resume_status": "ready",
+        "cover_letter_status": "ready",
+        "resume_artifact_path": str(resume),
+        "cover_letter_artifact_path": str(cover_letter),
+        "artifact_directory": str(role_directory),
+    }
+
+    result = web_server._sync_currently_applying_folder(job)
+    current = tmp_path / "prepared-applications" / "currently-applying"
+
+    assert result["role_id"] == 42
+    assert Path(str(result["path"])) == current
+    assert sorted(path.name for path in current.iterdir()) == [
+        "acme-engineer-cover-letter.pdf",
+        "acme-engineer-resume.pdf",
+    ]
+    assert resume.is_file()
+    assert cover_letter.is_file()
+
+    previous_files = {path.name: path.read_bytes() for path in current.iterdir()}
+    backup = current.with_name(".currently-applying-previous")
+    current.replace(backup)
+    cover_letter.unlink()
+    with pytest.raises(FileNotFoundError):
+        web_server._sync_currently_applying_folder(job)
+    assert {path.name: path.read_bytes() for path in current.iterdir()} == previous_files
+    assert not backup.exists()
+
+
+def test_currently_applying_role_selection_and_open_folder_api(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "currently-applying.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "user_data_path", lambda *_args, **_kwargs: tmp_path)
+    db.ensure_initialized()
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Acme"))
+        assert company.id is not None
+        role = add_role(
+            connection,
+            Role(
+                company_id=company.id,
+                title="Engineer",
+                role_url="https://example.com/engineer",
+                role_status=RoleStatus.INTERESTED,
+            ),
+        )
+        assert role.id is not None
+        autoprep_service.ensure_autoprep_schema(connection)
+        [job] = autoprep_service.enqueue_autoprep_jobs(
+            connection,
+            [role.id],
+            idempotency_key="currently-applying-role",
+        )
+        role_directory = tmp_path / "prepared-applications" / f"acme-engineer-role-{role.id}"
+        role_directory.mkdir(parents=True)
+        resume = role_directory / "acme-engineer-resume.pdf"
+        cover_letter = role_directory / "acme-engineer-cover-letter.pdf"
+        resume.write_bytes(_valid_pdf_bytes())
+        cover_letter.write_bytes(_valid_pdf_bytes())
+        autoprep_service.mark_autoprep_document(
+            connection,
+            int(job["id"]),
+            "resume",
+            "ready",
+            artifact_path=str(resume),
+            artifact_directory=str(role_directory),
+        )
+        autoprep_service.mark_autoprep_document(
+            connection,
+            int(job["id"]),
+            "cover_letter",
+            "ready",
+            artifact_path=str(cover_letter),
+            artifact_directory=str(role_directory),
+        )
+        autoprep_service.finish_autoprep_worker(connection, int(job["id"]))
+
+    open_calls: list[list[str]] = []
+
+    def fake_open(arguments: list[str], **_kwargs: object) -> SimpleNamespace:
+        open_calls.append(arguments)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(web_server.subprocess, "run", fake_open)
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        select = Request(
+            f"{base_url}/api/autoprep/roles/{role.id}/currently-applying",
+            data=b"",
+            method="POST",
+        )
+        with urlopen(select, timeout=5) as response:
+            selected = json.loads(response.read().decode())
+        assert selected["updated"] is True
+        current = tmp_path / "prepared-applications" / "currently-applying"
+        assert sorted(path.name for path in current.iterdir()) == [
+            "acme-engineer-cover-letter.pdf",
+            "acme-engineer-resume.pdf",
+        ]
+
+        open_request = Request(
+            f"{base_url}/api/autoprep/currently-applying/open",
+            data=b"",
+            method="POST",
+        )
+        with urlopen(open_request, timeout=5) as response:
+            opened = json.loads(response.read().decode())
+        assert opened == {"opened": True, "path": str(current.resolve())}
+        assert open_calls == [["open", str(current.resolve())]]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def test_ai_role_experience_retrieval_requests_concrete_ai_project_context(

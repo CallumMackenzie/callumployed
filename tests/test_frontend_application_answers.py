@@ -63,8 +63,27 @@ def test_application_questions_styles_and_cache_keys_are_versioned() -> None:
     assert "padding-top: 20px" in styles
     assert "#close-prepped" in styles
     assert "text-transform: none" in styles
-    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260903-3" />' in index
-    assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-3"></script>' in index
+    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260903-4" />' in index
+    assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-4"></script>' in index
+
+
+def test_currently_applying_folder_ui_is_explained_and_selection_driven() -> None:
+    source = FRONTEND_SOURCE.read_text()
+    styles = (STATIC_DIRECTORY / "app.css").read_text()
+    index = (STATIC_DIRECTORY / "index.html").read_text()
+
+    assert 'class="currently-applying-guide"' in source
+    assert "Currently Applying folder" in source
+    assert "The original files stay in the role's documents folder." in source
+    assert "data-currently-applying-open" in source
+    assert "Open Currently Applying Folder" in source
+    assert "queueCurrentlyApplyingSync" in source
+    assert "selectPreppedRole" in source
+    assert "/currently-applying" in source
+    assert "/currently-applying/open" in source
+    assert ".currently-applying-guide" in styles
+    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260903-4" />' in index
+    assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-4"></script>' in index
 
 
 def test_frontend_uses_direct_vanilla_assets_without_framework_shell() -> None:
@@ -74,7 +93,7 @@ def test_frontend_uses_direct_vanilla_assets_without_framework_shell() -> None:
     assert not (REPOSITORY_ROOT / "frontend").exists()
     assert not (STATIC_DIRECTORY / "build").exists()
     assert not (STATIC_DIRECTORY / "shell.html").exists()
-    assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-3"></script>' in index
+    assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-4"></script>' in index
     assert '<div id="root"></div>' not in index
     assert "dangerouslySetInnerHTML" not in index
     assert "dangerouslySetInnerHTML" not in source

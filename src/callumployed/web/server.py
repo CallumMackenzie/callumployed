@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import ctypes
 import gzip
 import json
 import logging
@@ -247,6 +248,7 @@ COVER_LETTER_MODEL_OPTIONS = (
 SUPPORTED_COVER_LETTER_MODELS = frozenset(value for value, _label in COVER_LETTER_MODEL_OPTIONS)
 SUPPORTED_COMPANY_TIERS = frozenset(str(tier) for tier in range(8))
 AUTOPREP_COORDINATOR: AutoprepCoordinator | None = None
+CURRENTLY_APPLYING_LOCK = threading.Lock()
 APPLICANT_PROFILE_TEXT_CONFIG_KEYS = {
     APPLICANT_EMAIL_CONFIG_KEY,
     APPLICANT_PHONE_CONFIG_KEY,
@@ -848,6 +850,17 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 self._enqueue_autoprep()
                 return
 
+            if path_parts == ["api", "autoprep", "currently-applying", "open"]:
+                self._open_currently_applying_folder()
+                return
+
+            if (
+                len(path_parts) == 5
+                and path_parts[:3] == ["api", "autoprep", "roles"]
+                and path_parts[4] == "currently-applying"
+            ):
+                self._select_currently_applying_role(path_parts[3])
+                return
             if (
                 len(path_parts) == 5
                 and path_parts[:3] == ["api", "autoprep", "roles"]
@@ -1486,6 +1499,54 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Could not open documents folder")
                 return
             self._send_json({"opened": True, "path": directory_value})
+
+        def _select_currently_applying_role(self, role_id_text: str) -> None:
+            try:
+                role_id = int(role_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
+                return
+            with db.connect() as connection:
+                ensure_autoprep_schema(connection)
+                job = get_role_autoprep_job(connection, role_id)
+            if job is None:
+                self.send_error(HTTPStatus.NOT_FOUND, "Autoprep role not found")
+                return
+            try:
+                result = _sync_currently_applying_folder(job)
+            except (FileNotFoundError, ValueError) as error:
+                self._send_json_with_status({"error": str(error)}, HTTPStatus.CONFLICT)
+                return
+            except (OSError, RuntimeError):
+                LOGGER.exception("Could not refresh Currently Applying for role %s", role_id)
+                self.send_error(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    "Could not refresh the Currently Applying folder",
+                )
+                return
+            self._send_json({"updated": True, **result})
+
+        def _open_currently_applying_folder(self) -> None:
+            directory = _currently_applying_directory()
+            root = _prepared_applications_root().resolve()
+            resolved = directory.resolve()
+            if (
+                resolved.parent != root
+                or resolved.name != "currently-applying"
+                or not resolved.is_dir()
+            ):
+                self.send_error(HTTPStatus.NOT_FOUND, "Currently Applying folder is not available")
+                return
+            try:
+                subprocess.run(["open", str(resolved)], check=True, timeout=10)
+            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                LOGGER.exception("Could not open Currently Applying folder %s", resolved)
+                self.send_error(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    "Could not open the Currently Applying folder",
+                )
+                return
+            self._send_json({"opened": True, "path": str(resolved)})
 
         def _open_application_material_index(self) -> None:
             notes: list[ExperienceNote] = []
@@ -3964,7 +4025,12 @@ def _prepare_autoprep_resume(
             required_page_count=1,
         )
     source_pdf = _required_generated_pdf(generated, "resume")
-    artifact_directory, artifact_path = _copy_autoprep_pdf(role_payload, source_pdf, kind="resume")
+    artifact_directory, artifact_path = _copy_autoprep_pdf(
+        role_payload,
+        source_pdf,
+        kind="resume",
+        existing_job=current_job,
+    )
     counterpart = _copy_autoprep_counterpart(
         role_payload,
         current_job,
@@ -4044,6 +4110,7 @@ def _prepare_autoprep_cover_letter(
         role_payload,
         source_pdf,
         kind="cover-letter",
+        existing_job=current_job,
     )
     counterpart = _copy_autoprep_counterpart(
         role_payload,
@@ -4126,22 +4193,50 @@ def _copy_autoprep_pdf(
     source_pdf: Path,
     *,
     kind: str,
+    existing_job: dict[str, Any] | None = None,
 ) -> tuple[Path, Path]:
     role_id = role.get("id")
     if not isinstance(role_id, int):
         raise RuntimeError("Autoprep role did not include an ID.")
     company = _safe_filename(_effective_role_company_name(role))
     title = _safe_filename(str(role.get("title") or "role"))
-    directory = (
-        user_data_path("callumployed", appauthor=False)
-        / "prepared-applications"
-        / f"{company}-{title}-role-{role_id}"
-    )
+    directory = _existing_autoprep_directory(existing_job or {}, role_id)
+    if directory is None:
+        directory = _prepared_applications_root() / f"{company}-{title}-role-{role_id}"
     directory.mkdir(parents=True, exist_ok=True)
     suffix = "resume" if kind == "resume" else "cover-letter"
+    artifact_field = "resume_artifact_path" if kind == "resume" else "cover_letter_artifact_path"
+    existing_artifact = (existing_job or {}).get(artifact_field)
     target = directory / f"{company}-{title}-{suffix}.pdf"
+    if isinstance(existing_artifact, str):
+        candidate = Path(existing_artifact).resolve()
+        if candidate.parent == directory.resolve() and candidate.suffix.lower() == ".pdf":
+            target = candidate
     _atomic_copy_verified_pdf(source_pdf, target)
     return directory, target
+
+
+def _prepared_applications_root() -> Path:
+    return user_data_path("callumployed", appauthor=False) / "prepared-applications"
+
+
+def _currently_applying_directory() -> Path:
+    return _prepared_applications_root() / "currently-applying"
+
+
+def _existing_autoprep_directory(job: dict[str, Any], role_id: int) -> Path | None:
+    directory_value = job.get("artifact_directory")
+    if not isinstance(directory_value, str):
+        return None
+    directory = Path(directory_value).resolve()
+    root = _prepared_applications_root().resolve()
+    if (
+        directory.parent != root
+        or not directory.name.endswith(f"-role-{role_id}")
+        or not directory.is_dir()
+    ):
+        return None
+    return directory
 
 
 def _atomic_copy_verified_pdf(source_pdf: Path, target: Path) -> None:
@@ -4150,8 +4245,14 @@ def _atomic_copy_verified_pdf(source_pdf: Path, target: Path) -> None:
         temporary_path = Path(temporary.name)
     try:
         shutil.copyfile(source_pdf, temporary_path)
-        if temporary_path.stat().st_size <= 0:
-            raise RuntimeError("Prepared PDF copy was empty.")
+        try:
+            valid_pdf = temporary_path.stat().st_size > 0 and bool(
+                PdfReader(str(temporary_path)).pages
+            )
+        except Exception as error:
+            raise RuntimeError("Prepared PDF copy could not be verified.") from error
+        if not valid_pdf:
+            raise RuntimeError("Prepared PDF copy could not be verified.")
         temporary_path.replace(target)
         if not target.is_file() or target.stat().st_size <= 0 or not PdfReader(str(target)).pages:
             raise RuntimeError("Prepared PDF could not be verified after its atomic write.")
@@ -4175,13 +4276,105 @@ def _copy_autoprep_counterpart(
     source = Path(source_value)
     if not source.is_file():
         return None
-    company = _safe_filename(_effective_role_company_name(role))
-    title = _safe_filename(str(role.get("title") or "role"))
-    suffix = "cover-letter" if counterpart_kind == "cover_letter" else "resume"
-    target = directory / f"{company}-{title}-{suffix}.pdf"
+    if source.resolve().parent == directory.resolve():
+        target = source.resolve()
+    else:
+        company = _safe_filename(_effective_role_company_name(role))
+        title = _safe_filename(str(role.get("title") or "role"))
+        suffix = "cover-letter" if counterpart_kind == "cover_letter" else "resume"
+        target = directory / f"{company}-{title}-{suffix}.pdf"
     if source.resolve() != target.resolve():
         _atomic_copy_verified_pdf(source, target)
     return counterpart_kind, str(target)
+
+
+def _ready_autoprep_document_pair(job: dict[str, Any]) -> tuple[int, Path, Path]:
+    role_id = job.get("role_id")
+    if not isinstance(role_id, int):
+        raise ValueError("Prepared role does not have a valid ID.")
+    if job.get("resume_status") != "ready" or job.get("cover_letter_status") != "ready":
+        raise ValueError("Both documents must be ready before selecting this role.")
+    directory = _existing_autoprep_directory(job, role_id)
+    if directory is None:
+        raise FileNotFoundError("The selected role's documents folder is not available.")
+    paths: list[Path] = []
+    for field, label in (
+        ("resume_artifact_path", "resume"),
+        ("cover_letter_artifact_path", "cover letter"),
+    ):
+        value = job.get(field)
+        if not isinstance(value, str):
+            raise FileNotFoundError(f"The selected role's {label} is not available.")
+        path = Path(value).resolve()
+        if path.parent != directory or path.suffix.lower() != ".pdf" or not path.is_file():
+            raise FileNotFoundError(f"The selected role's {label} is not available.")
+        if path.stat().st_size <= 0 or not PdfReader(str(path)).pages:
+            raise RuntimeError(f"The selected role's {label} PDF is invalid.")
+        paths.append(path)
+    if paths[0].name == paths[1].name:
+        raise RuntimeError("Prepared document filenames must be distinct.")
+    return role_id, paths[0], paths[1]
+
+
+def _exchange_directories_atomically(first: Path, second: Path) -> None:
+    """Atomically exchange two directories on supported local platforms."""
+    library = ctypes.CDLL(None, use_errno=True)
+    first_bytes = os.fsencode(first)
+    second_bytes = os.fsencode(second)
+    if sys.platform == "darwin":
+        renamex_np = library.renamex_np
+        renamex_np.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        renamex_np.restype = ctypes.c_int
+        result = renamex_np(first_bytes, second_bytes, 0x00000002)
+    elif sys.platform.startswith("linux") and hasattr(library, "renameat2"):
+        renameat2 = library.renameat2
+        renameat2.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        renameat2.restype = ctypes.c_int
+        result = renameat2(-100, first_bytes, -100, second_bytes, 0x00000002)
+    else:
+        raise RuntimeError("Atomic directory exchange is not supported on this platform.")
+    if result != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number), str(first), str(second))
+
+
+def _sync_currently_applying_folder(job: dict[str, Any]) -> dict[str, object]:
+    root = _prepared_applications_root()
+    root.mkdir(parents=True, exist_ok=True)
+    destination = _currently_applying_directory()
+    with CURRENTLY_APPLYING_LOCK:
+        backup = root / ".currently-applying-previous"
+        if backup.exists() and not destination.exists():
+            if not backup.is_dir() or backup.is_symlink():
+                raise RuntimeError("Currently Applying recovery path is not a directory.")
+            backup.replace(destination)
+        role_id, resume, cover_letter = _ready_autoprep_document_pair(job)
+        temporary = Path(tempfile.mkdtemp(prefix=".currently-applying-", dir=root))
+        try:
+            _atomic_copy_verified_pdf(resume, temporary / resume.name)
+            _atomic_copy_verified_pdf(cover_letter, temporary / cover_letter.name)
+            if len(list(temporary.iterdir())) != 2:
+                raise RuntimeError("Currently Applying must contain exactly two documents.")
+            if destination.exists():
+                if not destination.is_dir() or destination.is_symlink():
+                    raise RuntimeError("Currently Applying path is not a safe directory.")
+                _exchange_directories_atomically(destination, temporary)
+            else:
+                temporary.replace(destination)
+        finally:
+            if temporary.exists():
+                shutil.rmtree(temporary)
+    return {
+        "role_id": role_id,
+        "path": str(destination.resolve()),
+        "filenames": [resume.name, cover_letter.name],
+    }
 
 
 _SELF_IDENTIFIED_EMPLOYER_PATTERNS = (
