@@ -3181,6 +3181,27 @@ a:hover .role-link-icon {
   min-width: 0;
 }
 
+.company-create-status {
+  grid-column: 1 / -1;
+  min-height: 1.15rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.company-create-status[data-state="error"] {
+  color: #a82f28;
+}
+
+.company-create-status[data-state="success"] {
+  color: #147447;
+}
+
+.company-create-form button:disabled {
+  cursor: wait;
+  opacity: 0.64;
+}
+
 .company-create-form span,
 .company-info span {
   color: var(--muted);

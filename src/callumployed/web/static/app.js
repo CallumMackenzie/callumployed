@@ -100,6 +100,7 @@ const companiesView = document.querySelector("#companies-view");
 const companiesCloseButton = document.querySelector("#companies-close");
 const companiesStatus = document.querySelector("#companies-status");
 const companyCreateForm = document.querySelector("#company-create-form");
+const companyCreateStatus = document.querySelector("#company-create-status");
 const companyTierGuideList = document.querySelector("#company-tier-guide-list");
 const companiesList = document.querySelector("#companies-list");
 const roleAddForm = document.querySelector("#role-add-form");
@@ -1882,23 +1883,55 @@ async function loadRoleCompanyOptions() {
   renderRoleCompanyOptions(payload.companies);
 }
 
+function setCompanyCreateStatus(message, state = "") {
+  companyCreateStatus.textContent = message;
+  companyCreateStatus.dataset.state = state;
+}
+
+function normalizeCompanyCareerUrl(value) {
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed) return "";
+  const candidate = /^[a-z][a-z\d+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const url = new URL(candidate);
+    if (!["http:", "https:"].includes(url.protocol) || !url.hostname) throw new Error();
+    return url.href;
+  } catch {
+    throw new Error("Enter a valid career link, such as company.com/careers.");
+  }
+}
+
 async function createCompany(form) {
+  const submitButton = form.querySelector('button[type="submit"]');
   const formData = new FormData(form);
   const payload = {
-    name: String(formData.get("name") ?? ""),
-    career_url: String(formData.get("career_url") ?? ""),
+    name: String(formData.get("name") ?? "").trim(),
+    career_url: normalizeCompanyCareerUrl(formData.get("career_url")),
     notes: String(formData.get("notes") ?? ""),
   };
+  submitButton.disabled = true;
   companiesStatus.textContent = "adding company...";
-  const response = await fetch("/api/companies", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) throw new Error("Company create failed");
-  form.reset();
-  renderCompanies(await response.json(), "company added.");
-  loadTracker(getActiveSearchQuery()).catch(() => {});
+  setCompanyCreateStatus("adding company...", "pending");
+  try {
+    const response = await fetch("/api/companies", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      throw new Error(
+        response.status === 400
+          ? "Check the company name and career link, then try again."
+          : "Could not add company. Try again.",
+      );
+    }
+    form.reset();
+    renderCompanies(await response.json(), "company added.");
+    setCompanyCreateStatus("company added.", "success");
+    loadTracker(getActiveSearchQuery()).catch(() => {});
+  } finally {
+    submitButton.disabled = false;
+  }
 }
 
 async function addCompanyCareerPage(form) {
@@ -5057,8 +5090,12 @@ companiesCloseButton.addEventListener("click", closeCompaniesView);
 
 companyCreateForm.addEventListener("submit", (event) => {
   event.preventDefault();
-  createCompany(companyCreateForm).catch(() => {
+  createCompany(companyCreateForm).catch((error) => {
     companiesStatus.textContent = "could not add company.";
+    setCompanyCreateStatus(
+      error instanceof Error ? error.message : "Could not add company. Try again.",
+      "error",
+    );
   });
 });
 

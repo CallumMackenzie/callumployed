@@ -10,7 +10,7 @@
     <link rel="icon" href="/assets/camackenzie-logo.svg?v=20260827-2" type="image/svg+xml" />
     <link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png?v=20260827-2" />
     <link rel="manifest" href="/assets/manifest.webmanifest" />
-    <link rel="stylesheet" href="/assets/app.css?v=vanilla-20260902-3" />
+    <link rel="stylesheet" href="/assets/app.css?v=vanilla-20260903-1" />
   </head>
   <body>
 <div class="page-background" aria-hidden="true"></div>
@@ -484,18 +484,28 @@
             </label>
             <label>
               <span>career link</span>
-              <input id="company-url-input" name="career_url" type="url" placeholder="https://..." />
+              <input
+                id="company-url-input"
+                name="career_url"
+                type="text"
+                inputmode="url"
+                autocomplete="url"
+                autocapitalize="off"
+                spellcheck="false"
+                placeholder="company.com/careers"
+              />
             </label>
             <label>
               <span>notes</span>
               <input id="company-notes-input" name="notes" type="text" />
             </label>
             <button type="submit">add company</button>
+            <div class="company-create-status" id="company-create-status" role="status" aria-live="polite"></div>
           </form>
         </section>
         <div class="companies-list" id="companies-list"></div>
       </div>
     </section>
-    <script type="module" src="/assets/app.js?v=vanilla-20260902-3"></script>
+    <script type="module" src="/assets/app.js?v=vanilla-20260903-1"></script>
   </body>
 </html>

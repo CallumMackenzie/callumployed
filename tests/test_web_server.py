@@ -392,7 +392,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "dangerouslySetInnerHTML" not in markup
         assert "dangerouslySetInnerHTML" not in app_javascript
         assert '<div id="root"></div>' not in index_markup
-        assert '<script type="module" src="/assets/app.js?v=vanilla-20260902-3"></script>' in (
+        assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-1"></script>' in (
             index_markup
         )
 
@@ -426,6 +426,12 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'class="company-tier-badge"' in app_javascript
         assert 'class="company-tier-select"' in app_javascript
         assert 'class="company-tier-select-shell"' in app_javascript
+        assert 'id="company-create-status"' in markup
+        assert 'id="company-url-input"' in markup
+        assert 'name="career_url"' in markup
+        assert 'inputmode="url"' in markup
+        assert "normalizeCompanyCareerUrl" in app_javascript
+        assert '`https://${trimmed}`' in app_javascript
         assert 'id="companies-list"' in markup
         assert 'id="prep-interested"' not in markup
         assert 'class="quick-action" type="button" id="prepped-roles"' in markup
@@ -511,8 +517,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=vanilla-20260902-3" in index_markup
-        assert "/assets/app.js?v=vanilla-20260902-3" in index_markup
+        assert "/assets/app.css?v=vanilla-20260903-1" in index_markup
+        assert "/assets/app.js?v=vanilla-20260903-1" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
