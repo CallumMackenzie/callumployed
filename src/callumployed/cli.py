@@ -27,6 +27,7 @@ from callumployed.data.models import (
 )
 from callumployed.data.repositories import (
     APPLICATION_STATUSES,
+    TrackingStats,
     add_company,
     add_company_career_page,
     add_cover_letter_example,
@@ -1284,7 +1285,7 @@ def _try_resolve_company_with_central_store(
     )
 
 
-def _print_stats(stats: dict[str, object]) -> None:
+def _print_stats(stats: TrackingStats) -> None:
     typer.echo(f"Companies: {stats['companies_total']}")
     typer.echo(f"Jobs: {stats['jobs_total']}")
     typer.echo(f"Applications: {stats['applications_total']}")

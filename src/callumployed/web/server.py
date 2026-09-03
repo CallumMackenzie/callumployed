@@ -179,6 +179,7 @@ from callumployed.services.scan_schedule import (
     set_scan_schedule_enabled,
     set_scan_schedule_time,
 )
+from callumployed.services.scan_workflow import CompanyScanResult
 from callumployed.services.scan_workflow import rescan_role as run_rescan_role
 from callumployed.services.scan_workflow import scan_company as run_scan_company
 from callumployed.webscraping.profile_manager import BrowserProfileManager
@@ -302,7 +303,7 @@ class ScanCoordinator:
         self._failures: list[ScanCoordinatorFailure] = []
         self._cancel_requested = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._current_task: asyncio.Task[None] | None = None
+        self._current_task: asyncio.Task[CompanyScanResult | None] | None = None
         self._company_timeout_seconds = company_timeout_seconds
 
     def start(self) -> bool:
@@ -3556,7 +3557,9 @@ def build_role_sankey_payload() -> dict[str, Any]:
         node_statuses.add(source)
         node_statuses.add(target)
 
-    ordered_statuses = [status.value for status in RoleStatus if status.value in node_statuses]
+    ordered_statuses: list[str] = [
+        status.value for status in RoleStatus if status.value in node_statuses
+    ]
     ordered_statuses.extend(sorted(node_statuses.difference(ordered_statuses)))
 
     return {
@@ -4263,7 +4266,7 @@ def build_prep_analysis(
             "materials around the role's strongest requirements."
         )
 
-    feedback_items: list[dict[str, str]] = []
+    feedback_items: list[dict[str, str | None]] = []
     if resume is None:
         feedback_items.append(
             {

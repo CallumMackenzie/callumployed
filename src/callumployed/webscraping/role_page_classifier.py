@@ -4,7 +4,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import extruct  # type: ignore[import-untyped]
-import trafilatura
+import trafilatura  # type: ignore[import-untyped]
 from bs4 import BeautifulSoup
 
 from callumployed.webscraping.description_parser import extract_job_description

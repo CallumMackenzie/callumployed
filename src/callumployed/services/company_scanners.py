@@ -4,7 +4,7 @@ import json
 import re
 import urllib.request
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol, TypedDict, cast
 from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
@@ -63,6 +63,30 @@ GREENHOUSE_API_PATTERN = re.compile(
 KULA_CAREERS_HOST = "careers.kula.ai"
 
 
+class _StoredAssessment(TypedDict):
+    title: str
+    location: str | None
+    description: str | None
+    posting_id: object
+    confidence: float
+    extraction_method: Literal[
+        "jobposting_structured_data",
+        "ats_heuristic",
+        "html_heuristic",
+        "llm",
+    ]
+    reasons: list[str]
+
+
+class _ByteDancePageData(TypedDict):
+    count: int
+    job_post_list: list[dict[str, object]]
+
+
+class _ByteDancePage(TypedDict):
+    data: _ByteDancePageData
+
+
 @dataclass(frozen=True)
 class ScannerOptions:
     scan_run_id: int | None
@@ -113,7 +137,7 @@ class ByteDanceApiScanner:
         posts = self._fetch_all_posts(career_page)
         candidates: list[ScoredLinkCandidate] = []
         links: list[DiscoveredJobLink] = []
-        assessments: dict[str, dict[str, object]] = {}
+        assessments: dict[str, _StoredAssessment] = {}
 
         for post in posts:
             title = str(post.get("title") or "")
@@ -187,7 +211,7 @@ class ByteDanceApiScanner:
             deduped.append(post)
         return deduped
 
-    def _fetch_page(self, career_page: CompanyCareerPage, *, offset: int) -> dict[str, object]:
+    def _fetch_page(self, career_page: CompanyCareerPage, *, offset: int) -> _ByteDancePage:
         payload = {
             **_payload_from_url(career_page.url),
             "limit": self.limit,
@@ -200,7 +224,7 @@ class ByteDanceApiScanner:
             method="POST",
         )
         with urllib.request.urlopen(request, timeout=30) as response:
-            return json.loads(response.read().decode())
+            return cast(_ByteDancePage, json.loads(response.read().decode()))
 
 
 class KulaJobBoardScanner:
@@ -222,7 +246,7 @@ class KulaJobBoardScanner:
         posts = posts if isinstance(posts, list) else []
         candidates: list[ScoredLinkCandidate] = []
         links: list[DiscoveredJobLink] = []
-        assessments: dict[str, dict[str, object]] = {}
+        assessments: dict[str, _StoredAssessment] = {}
 
         for post in posts:
             if not isinstance(post, dict) or not post.get("listed", True):
@@ -342,7 +366,7 @@ class AshbyJobBoardScanner:
             postings = self._fetch_graphql_postings(board_url)
         candidates: list[ScoredLinkCandidate] = []
         links: list[DiscoveredJobLink] = []
-        assessments: dict[str, dict[str, object]] = {}
+        assessments: dict[str, _StoredAssessment] = {}
 
         for posting in postings:
             posting_id = _optional_string(posting.get("id"))
@@ -429,7 +453,8 @@ class AshbyJobBoardScanner:
     def _fetch_html(self, url: str) -> str:
         request = urllib.request.Request(url, headers={"user-agent": "callumployed"})
         with urllib.request.urlopen(request, timeout=30) as response:
-            return response.read().decode()
+            payload: bytes = response.read()
+            return payload.decode()
 
     def _fetch_json(self, url: str, payload: dict[str, object]) -> dict[str, object]:
         request = urllib.request.Request(
@@ -536,7 +561,7 @@ class GreenhouseJobBoardScanner:
         jobs = self._fetch_jobs(str(board["board_token"]), str(board["api_host"]))
         candidates: list[ScoredLinkCandidate] = []
         links: list[DiscoveredJobLink] = []
-        assessments: dict[str, dict[str, object]] = {}
+        assessments: dict[str, _StoredAssessment] = {}
 
         for job in jobs:
             posting_id = _optional_string(job.get("id")) or str(job.get("id") or "")
@@ -600,7 +625,8 @@ class GreenhouseJobBoardScanner:
     def _fetch_html(self, url: str) -> str:
         request = urllib.request.Request(url, headers={"user-agent": "callumployed"})
         with urllib.request.urlopen(request, timeout=30) as response:
-            return response.read().decode()
+            payload: bytes = response.read()
+            return payload.decode()
 
     def _fetch_json(self, url: str) -> dict[str, object]:
         request = urllib.request.Request(url, headers={"user-agent": "callumployed"})
@@ -670,7 +696,7 @@ def _persist_scan_result(
     career_page: CompanyCareerPage,
     scan_run_id: int,
     result: CareersPageScanResult,
-    assessments: dict[str, dict[str, object]],
+    assessments: dict[str, _StoredAssessment],
 ) -> None:
     if company.id is None:
         return
@@ -727,8 +753,8 @@ def _persist_scan_result(
                     assessment_location=role.location,
                     assessment_description=role.description,
                     assessment_posting_id=role.posting_id,
-                    assessment_extraction_method=str(assessment["extraction_method"]),
-                    assessment_reasons=list(assessment["reasons"]),
+                    assessment_extraction_method=assessment["extraction_method"],
+                    assessment_reasons=assessment["reasons"],
                     status=RoleDiscoveryStatus.SUCCEEDED,
                 ),
             )

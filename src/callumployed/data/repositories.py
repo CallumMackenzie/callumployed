@@ -4,6 +4,7 @@ import math
 import re
 import sqlite3
 from pathlib import PurePath
+from typing import TypedDict
 
 from callumployed.data.models import (
     Company,
@@ -27,6 +28,14 @@ from callumployed.data.models import (
 from callumployed.webscraping.models import CareersPageScanResult, ScoredLinkCandidate
 
 INCLUDE_GRADUATE_DEGREE_ROLES_CONFIG_KEY = "include_graduate_degree_roles"
+
+
+class TrackingStats(TypedDict):
+    companies_total: int
+    jobs_total: int
+    applications_total: int
+    jobs_by_status: dict[str, int]
+    applications_by_status: dict[str, int]
 INCLUDE_HARDWARE_ROLES_CONFIG_KEY = "include_hardware_roles"
 REQUIRE_SOFTWARE_KEYWORDS_CONFIG_KEY = "require_software_keywords"
 INTERNSHIP_MODE_CONFIG_KEY = "internship_mode"
@@ -1686,7 +1695,7 @@ def list_role_items(
     return [RoleListItem.model_validate(dict(row)) for row in rows]
 
 
-def get_tracking_stats(connection: sqlite3.Connection) -> dict[str, object]:
+def get_tracking_stats(connection: sqlite3.Connection) -> TrackingStats:
     company_row = connection.execute(
         "SELECT COUNT(*) AS count FROM companies WHERE is_active = 1"
     ).fetchone()
