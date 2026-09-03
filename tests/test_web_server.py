@@ -3707,6 +3707,29 @@ def test_profile_extraction_skips_llm_when_profile_is_complete(
     assert web_server._populate_missing_applicant_profile_from_resume() == {}
 
 
+def test_master_resume_profile_extraction_is_scheduled_in_background(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = Event()
+    release = Event()
+
+    def fake_populate() -> dict[str, str]:
+        started.set()
+        release.wait(timeout=2)
+        return {}
+
+    monkeypatch.setattr(
+        web_server,
+        "_populate_missing_applicant_profile_from_resume",
+        fake_populate,
+    )
+
+    web_server._schedule_master_resume_profile_extraction()
+
+    assert started.wait(timeout=1)
+    release.set()
+
+
 def test_profile_extraction_requires_an_explicit_post(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5470,11 +5493,11 @@ def test_master_resume_endpoint_uploads_and_replaces_tex_resume(
 ) -> None:
     database = tmp_path / "tracker-master-resume.sqlite3"
     monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
-    extraction_calls: list[bool] = []
+    extraction_schedules: list[bool] = []
     monkeypatch.setattr(
         web_server,
-        "_populate_missing_applicant_profile_from_resume",
-        lambda: extraction_calls.append(True) or {"applicant_email": "callum@example.com"},
+        "_schedule_master_resume_profile_extraction",
+        lambda: extraction_schedules.append(True),
     )
     db.ensure_initialized()
 
@@ -5505,7 +5528,7 @@ def test_master_resume_endpoint_uploads_and_replaces_tex_resume(
 
         assert created_payload["master_resume"]["filename"] == "master.tex"
         assert created_payload["master_resume"]["content_bytes"] == len(b"\\documentclass{article}")
-        assert created_payload["profile_fields_populated"] == ["applicant_email"]
+        assert created_payload["profile_extraction_scheduled"] is True
 
         replacement_request = Request(
             base_url,
@@ -5521,7 +5544,7 @@ def test_master_resume_endpoint_uploads_and_replaces_tex_resume(
         with urlopen(replacement_request, timeout=5) as response:
             replaced_payload = json.loads(response.read().decode())
         assert replaced_payload["master_resume"]["filename"] == "replacement.tex"
-        assert extraction_calls == [True, True]
+        assert extraction_schedules == [True, True]
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -5566,6 +5589,7 @@ def test_master_resume_upload_replaces_resumes_for_interested_roles(
     resume_root = tmp_path / "prepared-resumes"
     monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
     monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    monkeypatch.setattr(web_server, "_schedule_master_resume_profile_extraction", lambda: None)
     env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
     runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
     runner.invoke(
@@ -5788,6 +5812,7 @@ def test_application_materials_endpoint_reports_default_collapsed_state(
         "_resume_resources_root",
         lambda: tmp_path / "resume-resources",
     )
+    monkeypatch.setattr(web_server, "_schedule_master_resume_profile_extraction", lambda: None)
     db.ensure_initialized()
 
     server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())

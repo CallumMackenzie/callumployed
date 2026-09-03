@@ -2365,12 +2365,12 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
 
             updated_count = _replace_role_resumes(interested_roles, resume)
             _refresh_application_material_index()
-            populated_profile = _populate_missing_applicant_profile_from_resume()
+            _schedule_master_resume_profile_extraction()
             self._send_json(
                 {
                     "master_resume": _master_resume_summary(resume),
                     "interested_resumes_updated": updated_count,
-                    "profile_fields_populated": sorted(populated_profile),
+                    "profile_extraction_scheduled": True,
                 }
             )
 
@@ -2916,6 +2916,22 @@ def _populate_missing_applicant_profile_from_resume() -> dict[str, str]:
     if populated:
         _schedule_applicant_profile_reprep()
     return populated
+
+
+def _schedule_master_resume_profile_extraction() -> None:
+    """Populate blank profile fields after an upload without delaying its response."""
+
+    def populate() -> None:
+        try:
+            _populate_missing_applicant_profile_from_resume()
+        except Exception:
+            LOGGER.warning("Background applicant profile extraction failed", exc_info=True)
+
+    threading.Thread(
+        target=populate,
+        name="callumployed-profile-extraction",
+        daemon=True,
+    ).start()
 
 
 def _queue_applicant_profile_reprep() -> None:

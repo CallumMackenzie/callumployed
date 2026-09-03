@@ -30,6 +30,14 @@ from callumployed.webscraping.profile_manager import BrowserProfileManager
 runner = CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def isolate_cli_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "CALLUMPLOYED_DATABASE_PATH",
+        str(tmp_path / "default-cli.sqlite3"),
+    )
+
+
 def _plain_output(output: str) -> str:
     return " ".join(unstyle(output).split())
 
@@ -377,7 +385,7 @@ def test_companies_show_command_prints_saved_company_info(tmp_path: Path) -> Non
             "--notes",
             "High-priority target.",
             "--prestige-tier",
-            "A",
+            "1",
         ],
         env=env,
     )
