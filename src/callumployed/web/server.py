@@ -4394,7 +4394,7 @@ def build_role_cover_letter(
     allow_local_fallback: bool = True,
     required_page_count: int | None = 1,
 ) -> dict[str, Any]:
-    """Generate with the configured LangChain provider and role-local Turso retrieval."""
+    """Generate with the configured LangChain provider and role-local SQLite retrieval."""
     role_id = role.get("id")
     if not isinstance(role_id, int):
         raise RuntimeError("Role did not include an ID")

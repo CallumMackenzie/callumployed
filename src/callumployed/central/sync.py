@@ -1,6 +1,5 @@
+import sqlite3
 from dataclasses import dataclass
-
-import turso
 
 from callumployed.central.client import CentralStoreClient, CentralStoreError
 from callumployed.central.config import get_central_client_id
@@ -42,7 +41,7 @@ class PullCompaniesResult:
 
 
 def resolve_unlinked_companies(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     client: CentralStoreClient,
 ) -> ResolveCompaniesResult:
     result = ResolveCompaniesResult()
@@ -104,7 +103,7 @@ def resolve_unlinked_companies(
 
 
 def pull_companies(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     client: CentralStoreClient,
 ) -> PullCompaniesResult:
     central_companies = client.list_companies().companies
@@ -179,7 +178,7 @@ def pull_companies(
 
 
 def pull_roles(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     client: CentralStoreClient,
 ) -> PullRolesResult:
     central_roles = client.list_roles().roles
@@ -231,7 +230,7 @@ def pull_roles(
 
 
 def _create_company_from_central_role(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     central_role: CentralRole,
 ) -> Company:
     company = add_company(
@@ -252,7 +251,7 @@ def _create_company_from_central_role(
 
 
 def _create_company_from_central_company(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     central_company: CentralCompany,
 ) -> Company:
     company = add_company(
@@ -275,7 +274,7 @@ def _create_company_from_central_company(
 
 
 def _sync_central_company_career_pages(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     company: Company,
     central_company: CentralCompany,
 ) -> None:

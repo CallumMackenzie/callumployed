@@ -1,7 +1,6 @@
 import hashlib
+import sqlite3
 from collections import Counter
-
-import turso
 
 from callumployed import __version__
 from callumployed.central.client import CentralStoreClient
@@ -31,7 +30,7 @@ _REJECTION_REASON_CATEGORIES = {
 
 
 def build_scan_metrics(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     company: Company,
     scan_run: ScanRun,
 ) -> ScanMetricsRequest:

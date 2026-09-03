@@ -1,9 +1,9 @@
 import asyncio
+import sqlite3
 import subprocess
 from pathlib import Path
 from typing import Annotated
 
-import turso
 import typer
 
 from callumployed.central.client import CentralStoreClient, CentralStoreError
@@ -1216,7 +1216,7 @@ def _set_role_state(role_id: int, state: RoleStatus, *, summary: str) -> None:
 
 
 def _central_client_from_config(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     *,
     require_passkey: bool,
 ) -> CentralStoreClient:
@@ -1235,7 +1235,7 @@ def _central_client_from_config(
 
 
 def _try_resolve_company_with_central_store(
-    connection: turso.Connection,
+    connection: sqlite3.Connection,
     company: Company,
     *,
     career_page_urls: list[str],

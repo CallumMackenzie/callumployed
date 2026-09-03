@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 import time
-
-import turso
 
 from callumployed.config import LlmSettings
 from callumployed.data.repositories import (
@@ -88,7 +87,7 @@ SUPPORTED_COVER_LETTER_MODELS = {
 }
 
 
-def get_settings(connection: turso.Connection) -> dict[str, str | bool]:
+def get_settings(connection: sqlite3.Connection) -> dict[str, str | bool]:
     schedule_enabled, schedule_time, _ = get_scan_schedule(connection)
     environment_provider = _clean_llm_provider_or_default(LlmSettings().provider)
     persisted_provider = get_config_value(connection, "llm_provider")
@@ -121,7 +120,7 @@ def get_settings(connection: turso.Connection) -> dict[str, str | bool]:
     }
 
 
-def set_setting(connection: turso.Connection, key: str, value: object) -> str | bool:
+def set_setting(connection: sqlite3.Connection, key: str, value: object) -> str | bool:
     if key not in SETTING_KEYS:
         expected = ", ".join(sorted(SETTING_KEYS))
         raise ValueError(f"Unknown setting: {key}. Expected one of: {expected}")
@@ -156,7 +155,7 @@ def set_setting(connection: turso.Connection, key: str, value: object) -> str | 
     return cleaned
 
 
-def schedule_applicant_profile_reprep(connection: turso.Connection) -> None:
+def schedule_applicant_profile_reprep(connection: sqlite3.Connection) -> None:
     """Persist a refresh deadline after the applicant profile's quiet period."""
     set_config_value(
         connection,
@@ -165,12 +164,12 @@ def schedule_applicant_profile_reprep(connection: turso.Connection) -> None:
     )
 
 
-def configured_browser_profile_manager(connection: turso.Connection) -> BrowserProfileManager:
+def configured_browser_profile_manager(connection: sqlite3.Connection) -> BrowserProfileManager:
     headless = bool(get_settings(connection)["scan_headless"])
     return BrowserProfileManager(headless=headless)
 
 
-def configured_llm_settings(connection: turso.Connection) -> LlmSettings:
+def configured_llm_settings(connection: sqlite3.Connection) -> LlmSettings:
     provider = str(get_settings(connection)["llm_provider"])
     return LlmSettings().model_copy(update={"provider": provider})
 
