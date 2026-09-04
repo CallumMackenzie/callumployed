@@ -24,6 +24,7 @@ Rules:
 - use only information explicitly present in the resume
 - return an empty string when a field is absent or ambiguous
 - first_name and last_name are the applicant's name, not a reference or employer
+- preserve name punctuation such as hyphens
 - institution is the applicant's current or most recent school or university
 - degree is the degree and program as written in the education section
 - preserve meaningful phone formatting

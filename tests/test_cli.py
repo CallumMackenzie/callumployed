@@ -89,6 +89,95 @@ def test_update_command_runs_remote_installer(
     ]
 
 
+def test_startup_enable_writes_and_bootstraps_macos_launch_agent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launch_agent_path = tmp_path / "Library" / "LaunchAgents" / "com.callum.callumployed.plist"
+    cli_path = tmp_path / "bin" / "callumployed"
+    calls: list[tuple[list[str], bool]] = []
+    monkeypatch.setattr(cli_module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(cli_module.os, "getuid", lambda: 501)
+    monkeypatch.setattr(cli_module, "_launch_agent_path", lambda: launch_agent_path)
+    monkeypatch.setattr(cli_module, "_callumployed_cli_path", lambda: cli_path)
+
+    def fake_run(args: list[str], *, check: bool, **_kwargs: object) -> None:
+        calls.append((args, check))
+
+    monkeypatch.setattr(cli_module.subprocess, "run", fake_run)
+
+    result = runner.invoke(app, ["startup", "enable", "--host", "0.0.0.0", "--port", "9000"])
+
+    assert result.exit_code == 0
+    with launch_agent_path.open("rb") as plist_file:
+        payload = cli_module.plistlib.load(plist_file)
+    assert payload["Label"] == "com.callum.callumployed"
+    assert payload["ProgramArguments"] == [
+        str(Path(cli_module.sys.executable).resolve()),
+        str(cli_path),
+        "serve",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "9000",
+    ]
+    assert payload["RunAtLoad"] is True
+    assert payload["KeepAlive"] is True
+    assert calls == [
+        (["launchctl", "bootout", "gui/501/com.callum.callumployed"], False),
+        (["launchctl", "bootstrap", "gui/501", str(launch_agent_path)], True),
+        (["launchctl", "enable", "gui/501/com.callum.callumployed"], True),
+        (["launchctl", "kickstart", "-k", "gui/501/com.callum.callumployed"], True),
+    ]
+    assert "Enabled Callumployed at login" in result.output
+
+
+def test_startup_disable_boots_out_and_removes_macos_launch_agent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launch_agent_path = tmp_path / "Library" / "LaunchAgents" / "com.callum.callumployed.plist"
+    launch_agent_path.parent.mkdir(parents=True)
+    launch_agent_path.write_text("existing")
+    calls: list[tuple[list[str], bool]] = []
+    monkeypatch.setattr(cli_module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(cli_module.os, "getuid", lambda: 501)
+    monkeypatch.setattr(cli_module, "_launch_agent_path", lambda: launch_agent_path)
+
+    def fake_run(args: list[str], *, check: bool, **_kwargs: object) -> None:
+        calls.append((args, check))
+
+    monkeypatch.setattr(cli_module.subprocess, "run", fake_run)
+
+    result = runner.invoke(app, ["startup", "disable"])
+
+    assert result.exit_code == 0
+    assert not launch_agent_path.exists()
+    assert calls == [
+        (["launchctl", "bootout", "gui/501/com.callum.callumployed"], False),
+    ]
+    assert "Disabled Callumployed at login" in result.output
+
+
+def test_startup_reports_unsupported_platform_without_running_launchctl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli_module.platform, "system", lambda: "Linux")
+
+    def unexpected_run(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("launchctl must not run outside macOS")
+
+    monkeypatch.setattr(cli_module.subprocess, "run", unexpected_run)
+
+    result = runner.invoke(app, ["startup", "enable"])
+
+    assert result.exit_code == 0
+    assert (
+        "Startup management is not yet supported on Linux; currently only macOS launchctl "
+        "is supported."
+    ) in result.output
+
+
 class PassthroughProfileManager:
     async def render(
         self,

@@ -63,6 +63,7 @@ def test_applicant_profile_prompt_contains_resume_and_extraction_rules() -> None
 
     assert "Callum Mackenzie" in prompt
     assert "use only information explicitly present" in prompt
+    assert "preserve name punctuation such as hyphens" in prompt
     assert '"format": "latex"' in prompt
 
 

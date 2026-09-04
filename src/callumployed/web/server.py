@@ -1730,12 +1730,16 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             payload = self._read_json_body()
             if payload is None:
                 return
+            company_id: int | None = None
             try:
                 raw_company_id = payload.get("company_id")
-                if raw_company_id is None:
-                    raise TypeError
-                company_id = int(raw_company_id)
+                if raw_company_id is not None:
+                    company_id = int(raw_company_id)
             except (TypeError, ValueError):
+                self.send_error(HTTPStatus.BAD_REQUEST, "Company ID must be an integer")
+                return
+            company_name = _optional_text(payload.get("company_name"))
+            if company_id is None and company_name is None:
                 self.send_error(HTTPStatus.BAD_REQUEST, "Company is required")
                 return
             role_url = _optional_text(payload.get("role_url"))
@@ -1753,10 +1757,43 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             with claim_barrier:
                 try:
                     with db.connect() as connection:
-                        company = get_company(connection, company_id)
+                        if company_id is not None:
+                            company = get_company(connection, company_id)
+                        else:
+                            if company_name is None:
+                                raise RuntimeError("Company is required")
+                            cleaned_company_name = " ".join(company_name.split())
+                            normalized_company_name = cleaned_company_name.casefold()
+                            matched_company = next(
+                                (
+                                    candidate
+                                    for candidate in list_companies(
+                                        connection,
+                                        include_inactive=True,
+                                    )
+                                    if " ".join(candidate.name.split()).casefold()
+                                    == normalized_company_name
+                                ),
+                                None,
+                            )
+                            if matched_company is None:
+                                company = add_company(
+                                    connection,
+                                    Company(name=cleaned_company_name),
+                                )
+                                _try_resolve_company_with_central_store(
+                                    connection,
+                                    company,
+                                    career_page_urls=[],
+                                )
+                            else:
+                                company = matched_company
                         if not company.is_active:
                             self.send_error(HTTPStatus.BAD_REQUEST, "Company is deactivated")
                             return
+                        if company.id is None:
+                            raise RuntimeError("Company did not include an ID")
+                        company_id = company.id
                         ensure_autoprep_schema(connection)
                         connection.execute("BEGIN IMMEDIATE")
                         try:
@@ -1828,6 +1865,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 {
                     "role": _role_payload(role),
                     "tracker": build_tracker_payload(),
+                    "companies": build_companies_payload(),
                     "scan_error": scan_error,
                     "autoprep_job": autoprep_job,
                 }
@@ -6517,7 +6555,7 @@ def _configured_browser_profile_manager() -> BrowserProfileManager:
 def _clean_applicant_name_part(value: object) -> str:
     if not isinstance(value, str):
         raise ValueError("Applicant name values must be text")
-    cleaned = re.sub(r"[^A-Za-z]", "", value)
+    cleaned = re.sub(r"[^A-Za-z-]", "", value)
     if len(cleaned) > 80:
         raise ValueError("Applicant name values are too long")
     return cleaned

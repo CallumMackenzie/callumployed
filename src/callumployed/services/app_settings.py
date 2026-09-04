@@ -195,7 +195,7 @@ def _clean_text_setting(key: str, value: object) -> str:
         raise ValueError(f"{key} must be text")
     cleaned = " ".join(value.split()) if key in APPLICANT_KEYS else value.strip()
     if key in {"applicant_first_name", "applicant_last_name"}:
-        cleaned = re.sub(r"[^A-Za-z]", "", cleaned)
+        cleaned = re.sub(r"[^A-Za-z-]", "", cleaned)
     if key == "applicant_email" and cleaned:
         local, separator, domain = cleaned.partition("@")
         if not separator or not local or "." not in domain:

@@ -239,6 +239,8 @@ Examples:
 ```bash
 callumployed stats
 callumployed serve
+callumployed startup enable
+callumployed startup disable
 callumployed materials show
 callumployed materials set-master-resume path/to/master.tex
 callumployed materials add-cover-letter-example path/to/example1.tex path/to/example2.md
@@ -251,6 +253,11 @@ callumployed roles rescan 49
 `callumployed serve` starts a local web tracker at `http://127.0.0.1:8765`
 with overall stats, status panes, search, compact application-material controls,
 and collapsible job lists.
+
+On macOS, `callumployed startup enable` installs and starts a per-user LaunchAgent so
+the tracker runs after login. Use `--host` and `--port` to override its bind address,
+and run `callumployed startup disable` to unload and remove it. Other operating systems
+currently report that startup management is unsupported without changing system state.
 
 ### Web tracker
 

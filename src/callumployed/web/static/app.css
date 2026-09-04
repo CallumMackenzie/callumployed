@@ -96,11 +96,14 @@ body::after {
   pointer-events: none;
 }
 
-.review-open::after,
-.prep-open::after,
-.settings-open::after,
-.sankey-open::after,
-.companies-open::after {
+body.review-open::after,
+body.prep-open::after,
+body.settings-open::after,
+body.metrics-open::after,
+body.sankey-open::after,
+body.companies-open::after,
+body.autoprep-open::after,
+body.prepped-open::after {
   animation-play-state: paused;
 }
 
@@ -109,31 +112,25 @@ body::after {
   z-index: 1;
 }
 
-body.review-open {
-  overflow: hidden;
-}
-
-body.prep-open {
-  overflow: hidden;
-}
-
-body.settings-open {
-  overflow: hidden;
-}
-
-body.sankey-open {
-  overflow: hidden;
-}
-
-body.companies-open {
+body.review-open,
+body.prep-open,
+body.settings-open,
+body.metrics-open,
+body.sankey-open,
+body.companies-open,
+body.autoprep-open,
+body.prepped-open {
   overflow: hidden;
 }
 
 body.review-open .shell,
 body.prep-open .shell,
 body.settings-open .shell,
+body.metrics-open .shell,
 body.sankey-open .shell,
-body.companies-open .shell {
+body.companies-open .shell,
+body.autoprep-open .shell,
+body.prepped-open .shell {
   visibility: hidden;
   pointer-events: none;
 }
@@ -149,7 +146,9 @@ a:hover {
 }
 
 button,
-input {
+input,
+select,
+textarea {
   font: inherit;
 }
 
@@ -184,6 +183,8 @@ button:active {
 
 button:focus-visible,
 input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
 summary:focus-visible {
   outline: 3px solid rgb(45 224 111 / 0.38);
   outline-offset: 2px;
@@ -1358,8 +1359,7 @@ a:hover .role-link-icon {
 }
 
 .latest-scan-dot,
-.missing-latest-scan-dot,
-.prep-started-dot {
+.missing-latest-scan-dot {
   width: 0.58rem;
   height: 0.58rem;
   flex: 0 0 auto;
@@ -1375,11 +1375,6 @@ a:hover .role-link-icon {
 .missing-latest-scan-dot {
   background: #d92d20;
   box-shadow: 0 0 0 2px #ffe7e4;
-}
-
-.prep-started-dot {
-  background: #f6c945;
-  box-shadow: 0 0 0 2px #fff6cc;
 }
 
 .job-company {
@@ -2896,7 +2891,7 @@ a:hover .role-link-icon {
 }
 
 .setting-text-input {
-  width: min(220px, 100%);
+  width: min(320px, 100%);
   min-height: 40px;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
@@ -4320,7 +4315,8 @@ a:hover .role-link-icon {
     width: 100%;
   }
 
-  .settings-shell {
+  .settings-shell,
+  .metrics-shell {
     width: min(100% - 20px, 860px);
     padding-top: 18px;
   }
@@ -4339,7 +4335,8 @@ a:hover .role-link-icon {
     align-items: start;
   }
 
-  .settings-header {
+  .settings-header,
+  .metrics-header {
     align-items: start;
   }
 
@@ -4513,10 +4510,14 @@ a:hover .role-link-icon {
     justify-self: start;
   }
 
-  .setting-select,
-  .setting-text-input {
+  .setting-select {
     justify-self: start;
     width: min(100%, 240px);
+  }
+
+  .setting-text-input {
+    justify-self: stretch;
+    width: 100%;
   }
 
   .materials-panel .material-row button {
@@ -4569,11 +4570,6 @@ a:hover .role-link-icon {
 }
 
 /* Durable Autoprep workspaces ------------------------------------------ */
-body.autoprep-open,
-body.prepped-open {
-  overflow: hidden;
-}
-
 .autoprep-shell,
 .prepped-shell {
   width: min(1120px, calc(100% - 40px));
@@ -4865,10 +4861,6 @@ body.prepped-open {
   border-radius: 14px;
 }
 
-.prepped-document.has-open-preview {
-  grid-column: 1 / -1;
-}
-
 .prepped-filename,
 .prepped-session {
   overflow-wrap: anywhere;
@@ -4960,23 +4952,6 @@ body.prepped-open {
 #close-prepped:hover {
   border-color: rgb(0 137 123 / 0.42);
   background: linear-gradient(135deg, #fff, rgb(218 250 235 / 0.96));
-}
-
-.job-prepped-note,
-.prep-autoprep-note {
-  width: fit-content;
-  margin: 8px 0 0;
-  border: 1px solid rgb(0 137 123 / 0.2);
-  border-radius: 999px;
-  padding: 5px 9px;
-  background: var(--green-soft);
-  color: #285444;
-  font-size: 0.76rem;
-  font-weight: 850;
-}
-
-.prep-autoprep-note {
-  margin: 16px 0 0;
 }
 
 @media (max-width: 760px) {
@@ -5252,24 +5227,6 @@ body.prepped-open {
   background: rgb(240 235 255 / 0.96);
   color: #3f218d;
   font-weight: 900;
-}
-
-.prepped-pdf-preview {
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: #f1f4f2;
-  overflow: hidden;
-}
-
-.prepped-pdf-preview[hidden] {
-  display: none;
-}
-
-.prepped-pdf-preview iframe {
-  display: block;
-  width: 100%;
-  height: clamp(640px, 78vh, 900px);
-  border: 0;
 }
 
 @media (max-width: 760px) {

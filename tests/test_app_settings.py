@@ -91,6 +91,21 @@ def test_shared_settings_can_modify_every_current_setting(
     assert saved == requested
 
 
+def test_shared_settings_preserve_hyphenated_applicant_names(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "CALLUMPLOYED_DATABASE_PATH",
+        str(tmp_path / "hyphenated-applicant-name.sqlite3"),
+    )
+
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        assert set_setting(connection, "applicant_last_name", "Smith-Jones") == "Smith-Jones"
+        assert get_settings(connection)["applicant_last_name"] == "Smith-Jones"
+
+
 def test_shared_settings_reject_retired_application_generation_backend(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

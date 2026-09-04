@@ -224,7 +224,6 @@ let currentlyApplyingSyncedSignature = null;
 const queuingAutoprepRoleIds = new Set();
 const preppedStatusChangeRoleIds = new Set();
 const preppedCommentsByDocument = new Map();
-const openPreppedPreviews = new Set();
 const openPreppedDetailSections = new Set();
 const preppedApplicationAnswersByRoleId = new Map();
 const preppedApplicationQuestionDrafts = new Map();
@@ -235,10 +234,6 @@ const confirmingApplicationAnswerDeleteIds = new Set();
 const regeneratingApplicationAnswerIds = new Set();
 const deletingApplicationAnswerIds = new Set();
 const applicationAnswerLoadErrors = new Map();
-const preppedPreviewBlobUrls = new Map();
-const preppedPreviewVersions = new Map();
-const preppedPreviewErrors = new Map();
-const loadingPreppedPreviews = new Set();
 let materialsInitialized = false;
 let materialsRenderVersion = 0;
 let scanStatusPoll = null;
@@ -809,7 +804,6 @@ function renderJob(job, statusKey) {
         <span class="job-identity">
           <span class="job-company">[${escapeUiText(job.company_name)}]</span>
           ${renderRoleTitle(job.title, job.role_url, "job-title")}
-          ${statusKey === "interested" && job.prep_started ? renderPrepStartedDot() : ""}
           ${statusKey === "closed" && job.updated_in_latest_scan ? renderLatestScanDot() : ""}
           ${["discovered", "interested"].includes(statusKey) && job.missing_from_latest_scan ? renderMissingLatestScanDot() : ""}
         </span>
@@ -849,10 +843,6 @@ function renderMissingLatestScanDot() {
   return '<span class="missing-latest-scan-dot" title="not seen in latest scan" aria-label="not seen in latest scan"></span>';
 }
 
-function renderPrepStartedDot() {
-  return '<span class="prep-started-dot" title="application materials started" aria-label="application materials started"></span>';
-}
-
 function renderDiscoveredActions(job) {
   return `
     <div class="job-actions job-actions-nowrap" aria-label="discovered role actions">
@@ -867,13 +857,11 @@ function renderDiscoveredActions(job) {
 function renderInterestedActions(job) {
   return `
     <div class="job-actions" aria-label="interested role actions">
-      <button class="job-action success" type="button" data-prep-role-id="${job.id}">prep</button>
-      <button class="job-action success" type="button" data-autoprep-role-id="${job.id}">${job.autoprep_started ? "view / regenerate prep" : "autoprep"}</button>
+      <button class="job-action success" type="button" data-autoprep-role-id="${job.id}">prep</button>
       <button class="job-action" type="button" data-role-id="${job.id}" data-status="applied">applied</button>
       <button class="job-action" type="button" data-role-id="${job.id}" data-status="disinterested">disinterested</button>
       <button class="job-action danger" type="button" data-role-id="${job.id}" data-status="closed">closed</button>
     </div>
-    ${job.autoprep_started ? '<p class="job-prepped-note">already prepped</p>' : ""}
   `;
 }
 
@@ -2085,14 +2073,11 @@ function selectedRoleCompany() {
 
 async function createRole(form) {
   const company = selectedRoleCompany();
-  if (!company?.id) {
-    roleAddStatus.textContent = "pick a saved company.";
-    return;
-  }
   const formData = new FormData(form);
+  const companyName = String(formData.get("company") ?? "").trim();
   const payload = {
-    company_id: company.id,
     role_url: String(formData.get("role_url") ?? ""),
+    ...(company?.id ? { company_id: company.id } : { company_name: companyName }),
   };
   roleAddStatus.textContent = "adding role...";
   const response = await fetch("/api/roles", {
@@ -2106,6 +2091,10 @@ async function createRole(form) {
     render(result.tracker);
   } else {
     await loadTracker(getActiveSearchQuery());
+  }
+  if (result.companies?.companies) {
+    companiesData = result.companies;
+    renderRoleCompanyOptions(result.companies.companies);
   }
   roleUrlInput.value = "";
   const roleTitle = result.role?.title ? formatUiText(result.role.title) : "role";
@@ -2553,12 +2542,6 @@ statusListEl.addEventListener("click", (event) => {
   const reviewAction = event.target.closest("[data-review-role-id]");
   if (reviewAction) {
     openReviewView(reviewAction.dataset.reviewRoleId);
-    return;
-  }
-
-  const prepAction = event.target.closest("[data-prep-role-id]");
-  if (prepAction) {
-    openPrepView(prepAction.dataset.prepRoleId);
     return;
   }
 
@@ -3187,7 +3170,7 @@ async function renderPrepRole(message = "") {
   });
   const autoprepButton = prepView.querySelector('[data-prep-action="autoprep"]');
   if (autoprepButton) {
-    autoprepButton.textContent = current?.autoprep_started ? "view / regenerate prep" : "autoprep";
+    autoprepButton.textContent = "prep";
   }
 
   if (!current) {
@@ -3230,7 +3213,6 @@ async function renderPrepRole(message = "") {
         </button>
       </nav>
     </section>
-    ${current.autoprep_started ? '<p class="prep-autoprep-note">already prepped — open Prepped Roles to view or regenerate its documents.</p>' : ""}
     <div class="prep-workspace">
       ${renderPrepResume(current)}
       ${renderPrepCoverLetter(current)}
@@ -3985,7 +3967,7 @@ async function queueRoleForAutoprep(roleId) {
       const trackedRole = getInterestedJobs().find(
         (role) => Number(role.id) === numericRoleId,
       );
-      button.textContent = trackedRole?.autoprep_started ? "view / regenerate prep" : "autoprep";
+      button.textContent = "prep";
     });
   }
 }
@@ -4014,12 +3996,7 @@ function closePreppedView({clearHash = true} = {}) {
   preppedView.hidden = true;
   document.body.classList.remove("prepped-open");
   stopPreppedPolling();
-  openPreppedPreviews.clear();
   openPreppedDetailSections.clear();
-  preppedPreviewBlobUrls.forEach((blobUrl) => URL.revokeObjectURL(blobUrl));
-  preppedPreviewBlobUrls.clear();
-  preppedPreviewVersions.clear();
-  preppedPreviewErrors.clear();
   if (clearHash && window.location.hash === "#prepped-roles") setWorkspaceHash("");
 }
 
@@ -4027,9 +4004,6 @@ window.addEventListener("pagehide", () => {
   document.querySelectorAll("[data-preview-blob-url]").forEach((preview) => {
     URL.revokeObjectURL(preview.dataset.previewBlobUrl);
   });
-  preppedPreviewBlobUrls.forEach((blobUrl) => URL.revokeObjectURL(blobUrl));
-  preppedPreviewBlobUrls.clear();
-  preppedPreviewVersions.clear();
 });
 
 async function refreshPreppedRoles() {
@@ -4111,30 +4085,6 @@ function autoprepStatusLabel(status) {
   })[status] ?? formatUiText(status);
 }
 
-function preppedPreviewVersion(job, documentKind) {
-  const fieldKind = documentKind === "cover-letter" ? "cover_letter" : "resume";
-  return `${job.updated_at || ""}:${job[`${fieldKind}_artifact_path`] || ""}`;
-}
-
-function discardPreppedPreview(key, {close = false} = {}) {
-  const blobUrl = preppedPreviewBlobUrls.get(key);
-  if (blobUrl) URL.revokeObjectURL(blobUrl);
-  preppedPreviewBlobUrls.delete(key);
-  preppedPreviewVersions.delete(key);
-  preppedPreviewErrors.delete(key);
-  if (close) openPreppedPreviews.delete(key);
-}
-
-function discardStalePreppedPreviews() {
-  preppedPreviewVersions.forEach((version, key) => {
-    const [roleId, documentKind] = key.split(":");
-    const job = preppedJobs.find((item) => Number(item.role_id) === Number(roleId));
-    if (!job || preppedPreviewVersion(job, documentKind) !== version) {
-      discardPreppedPreview(key, {close: true});
-    }
-  });
-}
-
 function updatePreppedBulkRegenerationMessage() {
   if (!preppedBulkRegeneration) return;
   const currentBulkJobs = preppedBulkRegeneration.jobs || preppedJobs;
@@ -4176,7 +4126,6 @@ function updatePreppedBulkRegenerationMessage() {
 }
 
 function renderPreppedRoles() {
-  discardStalePreppedPreviews();
   updatePreppedBulkRegenerationMessage();
   const activeCount = preppedJobs.filter(autoprepJobIsActive).length;
   const regeneratableCount = preppedJobs.filter(
@@ -4549,43 +4498,6 @@ async function deleteApplicationAnswer(roleId, answerId) {
   }
 }
 
-async function loadPreppedPdfPreview(job, documentKind) {
-  const key = `${job.role_id}:${documentKind}`;
-  const version = preppedPreviewVersion(job, documentKind);
-  if (
-    preppedPreviewVersions.get(key) === version
-    || loadingPreppedPreviews.has(key)
-  ) return;
-  discardPreppedPreview(key);
-  loadingPreppedPreviews.add(key);
-  preppedPreviewErrors.delete(key);
-  renderPreppedDetail();
-  try {
-    const url = `/api/autoprep/roles/${encodeURIComponent(job.role_id)}/documents/${documentKind}.pdf?v=${encodeURIComponent(job.updated_at || "")}`;
-    const blobUrl = await fetchPdfBlobUrl(url);
-    const currentJob = preppedJobs.find((item) => Number(item.role_id) === Number(job.role_id));
-    if (
-      !openPreppedPreviews.has(key)
-      || !currentJob
-      || preppedPreviewVersion(currentJob, documentKind) !== version
-    ) {
-      URL.revokeObjectURL(blobUrl);
-      openPreppedPreviews.delete(key);
-      return;
-    }
-    preppedPreviewBlobUrls.set(key, blobUrl);
-    preppedPreviewVersions.set(key, version);
-  } catch (error) {
-    preppedPreviewErrors.set(
-      key,
-      error instanceof Error ? error.message : "PDF preview unavailable",
-    );
-  } finally {
-    loadingPreppedPreviews.delete(key);
-    if (Number(selectedPreppedRoleId) === Number(job.role_id)) renderPreppedDetail();
-  }
-}
-
 function renderPreppedDocument(job, documentKind, label) {
   const fieldKind = documentKind === "cover-letter" ? "cover_letter" : "resume";
   const status = job[`${fieldKind}_status`];
@@ -4604,27 +4516,17 @@ function renderPreppedDocument(job, documentKind, label) {
   const canRegenerate = !active
     && (status === "ready" || retryingFailedDocument)
     && (retryingFailedDocument || documentKind === "cover-letter" || String(comments).trim());
-  const previewOpen = openPreppedPreviews.has(key);
   const previewUrl = `/api/autoprep/roles/${encodeURIComponent(job.role_id)}/documents/${documentKind}.pdf?v=${encodeURIComponent(job.updated_at || "")}`;
-  const previewBlobUrl = preppedPreviewBlobUrls.get(key);
-  const previewError = preppedPreviewErrors.get(key);
-  const previewLoading = loadingPreppedPreviews.has(key);
   const viewLink = artifactPath
     ? `<a class="prep-cover-pdf-link" data-autoprep-view="${documentKind}" href="${escapeHtml(previewUrl)}" target="_blank" rel="noreferrer" aria-label="View ${escapeHtml(label.toLowerCase())} PDF in browser">View PDF</a>`
     : "";
   return `
-    <section class="prepped-document${previewOpen ? " has-open-preview" : ""} status-${escapeHtml(status)}">
+    <section class="prepped-document status-${escapeHtml(status)}">
       <div class="prepped-document-heading"><h4>${escapeHtml(label)}</h4><span>${escapeHtml(autoprepStatusLabel(status))}</span></div>
       <p class="prepped-filename">${escapeHtml(filename)}</p>
       ${error ? `<p class="prepped-error">${escapeHtml(error)}</p>` : ""}
       <div class="prepped-document-actions">
-        <button type="button" data-autoprep-preview="${documentKind}" ${artifactPath ? "" : "disabled"}>${previewOpen ? "Hide preview" : "Preview PDF"}</button>
         ${viewLink}
-      </div>
-      <div class="prepped-pdf-preview" data-autoprep-preview-panel="${documentKind}" ${previewOpen && artifactPath ? "" : "hidden"}>
-        ${previewOpen && previewBlobUrl ? `<iframe title="${escapeHtml(label)} PDF preview" src="${escapeHtml(previewBlobUrl)}"></iframe>` : ""}
-        ${previewOpen && previewLoading ? `<p>Loading PDF preview...</p>` : ""}
-        ${previewOpen && previewError ? `<p class="prepped-error">${escapeUiText(previewError)}</p>` : ""}
       </div>
       <label class="prepped-comments-label" for="prepped-comments-${escapeHtml(key)}">${commentsLabel}</label>
       <textarea id="prepped-comments-${escapeHtml(key)}" data-autoprep-comments="${documentKind}" rows="4" placeholder="${commentsPlaceholder}" ${active ? "disabled" : ""}>${escapeUiText(comments)}</textarea>
@@ -4663,7 +4565,6 @@ async function regenerateAutoprepDocument(job, documentKind, button) {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Regeneration request failed");
     preppedCommentsByDocument.delete(key);
-    discardPreppedPreview(key, {close: true});
     const index = preppedJobs.findIndex((item) => Number(item.role_id) === Number(job.role_id));
     if (index >= 0) preppedJobs[index] = payload.job;
     renderPreppedRoles();
@@ -4705,7 +4606,6 @@ async function regenerateAllPreppedCoverLetters() {
         (job) => Number(job.role_id) === Number(updatedJob.role_id),
       );
       if (index >= 0) preppedJobs[index] = updatedJob;
-      discardPreppedPreview(`${updatedJob.role_id}:cover-letter`, {close: true});
     });
     await refreshPreppedRoles();
     startPreppedPolling();
@@ -4732,8 +4632,6 @@ async function markPreppedRoleDisinterested(roleId, button) {
   );
   try {
     await updateRoleStatusById(roleId, "disinterested");
-    discardPreppedPreview(`${roleId}:resume`, {close: true});
-    discardPreppedPreview(`${roleId}:cover-letter`, {close: true});
     if (currentIndex < 0) throw new Error("This prepared role is no longer in the queue.");
     preppedJobs.splice(currentIndex, 1);
     const nextRoleId = preppedJobs[
@@ -4768,8 +4666,6 @@ async function markPreppedRoleApplied(roleId, button) {
   try {
     const response = await fetch(`/api/autoprep/roles/${encodeURIComponent(roleId)}/applied`, {method: "POST"});
     if (!response.ok) throw new Error("Applied update failed");
-    discardPreppedPreview(`${roleId}:resume`, {close: true});
-    discardPreppedPreview(`${roleId}:cover-letter`, {close: true});
     if (currentIndex < 0) throw new Error("This prepared role is no longer in the queue.");
     preppedJobs.splice(currentIndex, 1);
     const nextRoleId = preppedJobs[Math.min(currentIndex, preppedJobs.length - 1)]?.role_id;
@@ -4884,20 +4780,6 @@ preppedDetail.addEventListener("click", async (event) => {
   const currentlyApplyingButton = event.target.closest("[data-currently-applying-open]");
   if (currentlyApplyingButton) {
     openCurrentlyApplyingFolder(currentlyApplyingButton);
-    return;
-  }
-  const previewButton = event.target.closest("[data-autoprep-preview]");
-  if (previewButton) {
-    const documentKind = previewButton.dataset.autoprepPreview;
-    const key = `${job.role_id}:${documentKind}`;
-    if (openPreppedPreviews.has(key)) {
-      openPreppedPreviews.delete(key);
-      renderPreppedDetail();
-    } else {
-      openPreppedPreviews.add(key);
-      renderPreppedDetail();
-      loadPreppedPdfPreview(job, documentKind);
-    }
     return;
   }
   const regenerateButton = event.target.closest("[data-autoprep-regenerate]");

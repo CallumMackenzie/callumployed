@@ -46,6 +46,8 @@ from callumployed.data.repositories import (
     finish_scan_run,
     get_company,
     get_config_value,
+    get_role,
+    list_companies,
     list_company_career_pages,
     list_cover_letter_examples,
     list_experience_notes,
@@ -515,7 +517,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "dangerouslySetInnerHTML" not in markup
         assert "dangerouslySetInnerHTML" not in app_javascript
         assert '<div id="root"></div>' not in index_markup
-        assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-7"></script>' in (
+        assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-9"></script>' in (
             index_markup
         )
 
@@ -575,6 +577,11 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "function submitAutoprepSelection" not in app_javascript
         assert "body: JSON.stringify({role_ids:" not in app_javascript
         assert 'id="role-add-form"' in markup
+        assert 'list="role-company-options"' in markup
+        assert 'id="role-company-options"' in markup
+        assert "renderRoleCompanyOptions(companies)" in app_javascript
+        assert "{ company_id: company.id } : { company_name: companyName }" in app_javascript
+        assert 'roleAddStatus.textContent = "pick a saved company."' not in app_javascript
         assert "Add Explicit Role" in markup
         assert 'id="role-url-input"' in markup
         assert 'id="role-company-input"' in markup
@@ -652,8 +659,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=vanilla-20260903-7" in index_markup
-        assert "/assets/app.js?v=vanilla-20260903-7" in index_markup
+        assert "/assets/app.css?v=vanilla-20260903-9" in index_markup
+        assert "/assets/app.js?v=vanilla-20260903-9" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -666,11 +673,11 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'class="prep-workspace-nav"' in app_javascript
         assert 'data-prep-section-target="prep-resume-' in app_javascript
         assert 'class="prep-document-workspace"' in app_javascript
-        assert 'class="prepped-document${previewOpen ? " has-open-preview" : ""}' in (
-            app_javascript
-        )
+        assert 'class="prepped-document status-${escapeHtml(status)}"' in app_javascript
         assert 'data-autoprep-view="${documentKind}"' in app_javascript
         assert ">View PDF</a>" in app_javascript
+        assert "Preview PDF" not in app_javascript
+        assert "data-autoprep-preview" not in app_javascript
         assert 'id="regenerate-all-cover-letters"' in markup
         assert 'id="prepped-bulk-status"' in markup
         assert "data-autoprep-disinterested" in app_javascript
@@ -733,9 +740,10 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "await refreshPreppedRoles();\n    startPreppedPolling();" in bulk_function
         assert ".prep-role-hero" in app_styles
         assert ".prep-document-workspace" in app_styles
-        assert ".prepped-document.has-open-preview" in app_styles
+        assert ".prepped-document.has-open-preview" not in app_styles
+        assert ".prepped-pdf-preview" not in app_styles
         assert "grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);" in app_styles
-        assert "height: clamp(640px, 78vh, 900px);" in app_styles
+        assert "height: clamp(640px, 78vh, 900px);" not in app_styles
         assert 'fetch("/api/central/resolve-companies", { method: "POST" })' in app_javascript
         assert "loadInitialTrackerData().finally(scheduleCentralCompanySync);" in app_javascript
         assert "}, 10_000);" in app_javascript
@@ -755,10 +763,12 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'setting.autocomplete ?? "name"' in app_javascript
         assert 'aria-label="disinterested role actions"' in app_javascript
         assert 'data-autoprep-role-id="${job.id}"' in app_javascript
-        assert 'job.autoprep_started ? "view / regenerate prep" : "autoprep"' in app_javascript
-        assert 'class="job-prepped-note">already prepped</p>' in app_javascript
-        assert 'current?.autoprep_started ? "view / regenerate prep" : "autoprep"' in app_javascript
-        assert 'class="prep-autoprep-note">already prepped' in app_javascript
+        assert 'data-autoprep-role-id="${job.id}">prep</button>' in app_javascript
+        assert "data-prep-role-id" not in app_javascript
+        assert "view / regenerate prep" not in app_javascript
+        assert "already prepped" not in app_javascript
+        assert "prep-started-dot" not in app_javascript
+        assert "prep-started-dot" not in app_styles
         assert "if (trackedRole?.autoprep_started)" in app_javascript
         assert "if (current.autoprep_started)" in app_javascript
         assert "await openExistingPreppedRole(current.id);" in app_javascript
@@ -4065,7 +4075,7 @@ def test_profile_extraction_fills_only_blank_settings(
         return SimpleNamespace(
             model_dump=lambda: {
                 "first_name": "Extracted",
-                "last_name": "Mackenzie",
+                "last_name": "Mackenzie-Smith",
                 "email": "callum@example.com",
                 "phone": "+1 (250) 555-0123",
                 "institution": "University of Victoria",
@@ -4089,10 +4099,10 @@ def test_profile_extraction_fills_only_blank_settings(
 
     populated = web_server._populate_missing_applicant_profile_from_resume()
 
-    assert populated["applicant_last_name"] == "Mackenzie"
+    assert populated["applicant_last_name"] == "Mackenzie-Smith"
     with web_server.db.connect() as connection:
         assert web_server.get_config_value(connection, "applicant_first_name") == "Callum"
-        assert web_server.get_config_value(connection, "applicant_last_name") == "Mackenzie"
+        assert web_server.get_config_value(connection, "applicant_last_name") == "Mackenzie-Smith"
         assert web_server.get_config_value(connection, "applicant_email") == "callum@example.com"
         assert (
             web_server.get_config_value(
@@ -5807,6 +5817,80 @@ def test_tracker_status_endpoint_moves_role(
     discovered = next(status for status in payload["statuses"] if status["key"] == "discovered")
     assert interested["count"] == 1
     assert discovered["count"] == 0
+
+
+def test_roles_create_endpoint_creates_unknown_company_without_career_page_and_scans_role(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-role-create-company.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(
+        web_server,
+        "_try_resolve_company_with_central_store",
+        lambda *_args, **_kwargs: None,
+    )
+    scanned_urls: list[str] = []
+
+    async def fake_run_rescan_role(
+        role_id: int,
+        *,
+        browser_profile_manager: object,
+        update_status: bool,
+    ) -> dict[str, object]:
+        assert browser_profile_manager is not None
+        assert update_status is False
+        with db.connect() as connection:
+            role = get_role(connection, role_id)
+            company = get_company(connection, role.company_id)
+            assert company.name == "New Company"
+            assert list_company_career_pages(connection, company.id or 0) == []
+        scanned_urls.append(role.role_url)
+        return {
+            "role": role.model_copy(
+                update={"title": "New Company Platform Intern", "location": "Remote"}
+            )
+        }
+
+    monkeypatch.setattr(web_server, "run_rescan_role", fake_run_rescan_role)
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        role_url = "https://new-company.example/jobs/platform-intern"
+        request = Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/roles",
+            data=json.dumps(
+                {
+                    "company_name": "  New   Company  ",
+                    "role_url": role_url,
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode())
+
+        assert response.status == 200
+        assert scanned_urls == [role_url]
+        assert payload["role"]["title"] == "New Company Platform Intern"
+        assert payload["role"]["role_status"] == "interested"
+        assert [company["name"] for company in payload["companies"]["companies"]] == [
+            "New Company"
+        ]
+        with db.connect() as connection:
+            [company] = list_companies(connection)
+            assert company.name == "New Company"
+            assert company.id is not None
+            assert list_company_career_pages(connection, company.id) == []
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
 
 
 def test_roles_create_endpoint_adds_role_and_runs_rescan(

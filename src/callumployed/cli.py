@@ -1,6 +1,10 @@
 import asyncio
+import os
+import platform
+import plistlib
 import sqlite3
 import subprocess
+import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -94,6 +98,7 @@ central_app = typer.Typer(help="Sync with the central Callumployed role store.")
 INSTALLER_SCRIPT_URL = (
     "https://raw.githubusercontent.com/CallumMackenzie/callumployed/master/scripts/install.sh"
 )
+LAUNCH_AGENT_LABEL = "com.callum.callumployed"
 
 app.add_typer(companies_app, name="companies")
 app.add_typer(roles_app, name="roles")
@@ -143,6 +148,107 @@ def update_command() -> None:
         raise typer.Exit(1) from error
     except subprocess.CalledProcessError as error:
         raise typer.Exit(error.returncode) from error
+
+
+@app.command("startup")
+def startup_command(
+    action: Annotated[str, typer.Argument(help="Enable or disable startup.")],
+    host: Annotated[str, typer.Option("--host", help="Host interface to bind.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port", help="Port to bind.")] = 8765,
+) -> None:
+    """Enable or disable the Callumployed macOS LaunchAgent."""
+    normalized_action = action.strip().lower()
+    if normalized_action not in {"enable", "disable"}:
+        raise typer.BadParameter("Choose either enable or disable", param_hint="action")
+    operating_system = platform.system()
+    if operating_system != "Darwin":
+        typer.echo(
+            f"Startup management is not yet supported on {operating_system}; "
+            "currently only macOS launchctl is supported."
+        )
+        return
+
+    launch_agent_path = _launch_agent_path()
+    launch_domain = f"gui/{os.getuid()}"
+    service_target = f"{launch_domain}/{LAUNCH_AGENT_LABEL}"
+    try:
+        if normalized_action == "enable":
+            _write_launch_agent(launch_agent_path, host=host, port=port)
+            subprocess.run(
+                ["launchctl", "bootout", service_target],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            subprocess.run(
+                ["launchctl", "bootstrap", launch_domain, str(launch_agent_path)],
+                check=True,
+            )
+            subprocess.run(["launchctl", "enable", service_target], check=True)
+            subprocess.run(
+                ["launchctl", "kickstart", "-k", service_target],
+                check=True,
+            )
+            typer.echo(f"Enabled Callumployed at login: {launch_agent_path}")
+            return
+
+        subprocess.run(
+            ["launchctl", "bootout", service_target],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        launch_agent_path.unlink(missing_ok=True)
+        typer.echo(f"Disabled Callumployed at login: {launch_agent_path}")
+    except FileNotFoundError as error:
+        typer.echo("launchctl is unavailable; startup settings were not changed.", err=True)
+        raise typer.Exit(1) from error
+    except subprocess.CalledProcessError as error:
+        typer.echo("launchctl could not update the Callumployed startup service.", err=True)
+        raise typer.Exit(error.returncode) from error
+
+
+def _launch_agent_path() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{LAUNCH_AGENT_LABEL}.plist"
+
+
+def _callumployed_cli_path() -> Path:
+    adjacent_entrypoint = Path(sys.executable).resolve().with_name("callumployed")
+    if adjacent_entrypoint.exists():
+        return adjacent_entrypoint
+    return Path(sys.argv[0]).resolve()
+
+
+def _write_launch_agent(path: Path, *, host: str, port: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    home_directory = path.parents[2]
+    log_directory = home_directory / "Library" / "Logs"
+    log_directory.mkdir(parents=True, exist_ok=True)
+    log_path = log_directory / "callumployed.log"
+    payload = {
+        "Label": LAUNCH_AGENT_LABEL,
+        "ProgramArguments": [
+            str(Path(sys.executable).resolve()),
+            str(_callumployed_cli_path()),
+            "serve",
+            "--host",
+            host,
+            "--port",
+            str(port),
+        ],
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "WorkingDirectory": str(home_directory),
+        "EnvironmentVariables": {
+            "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        },
+        "StandardOutPath": str(log_path),
+        "StandardErrorPath": str(log_path),
+    }
+    temporary_path = path.with_name(f".{path.name}.tmp")
+    with temporary_path.open("wb") as plist_file:
+        plistlib.dump(payload, plist_file)
+    temporary_path.replace(path)
 
 
 @materials_app.command("set-master-resume")
