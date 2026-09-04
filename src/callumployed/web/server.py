@@ -379,7 +379,6 @@ class ScanCoordinator:
                 self._finished_at = _now_utc()
 
     async def _scan_all_companies(self) -> None:
-        llm_settings = LlmSettings()
         with db.connect() as connection:
             companies = list_companies(connection)
             llm_settings = build_configured_llm_settings(connection)
@@ -2287,6 +2286,8 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
             try:
                 chat_context = build_role_chat_context(role_id)
+                with db.connect() as connection:
+                    llm_settings = build_configured_llm_settings(connection)
                 response = asyncio.run(
                     generate_role_chat(
                         role=chat_context["role"],
@@ -2294,6 +2295,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                         cover_letter_content=chat_context["cover_letter_content"],
                         employment_history_context=chat_context["employment_history_context"],
                         messages=messages,
+                        settings=llm_settings,
                     )
                 )
             except LookupError:
@@ -3299,10 +3301,7 @@ def build_config_payload() -> dict[str, Any]:
             {
                 "key": LLM_PROVIDER_CONFIG_KEY,
                 "label": "AI provider",
-                "description": (
-                    "used for job scanning, classification, and saved Q&A; application documents "
-                    "continue to use OpenAI"
-                ),
+                "description": "used for every AI-backed feature in Callumployed",
                 "control": "select",
                 "value": llm_provider,
                 "default": DEFAULT_LLM_PROVIDER,
@@ -4560,6 +4559,7 @@ def build_prep_analysis(
                     resume_content=resume.content,
                 )
                 experience_notes = list_experience_notes(connection)
+                llm_settings = build_configured_llm_settings(connection)
             response = asyncio.run(
                 evaluate_resume_feedback(
                     role=role,
@@ -4568,6 +4568,7 @@ def build_prep_analysis(
                     other_experience_context=[
                         _experience_note_context(note) for note in experience_notes
                     ],
+                    settings=llm_settings,
                 )
             )
             payload = response.model_dump(mode="json")
@@ -4750,7 +4751,6 @@ def build_role_cover_letter(
     experience_context: list[dict[str, object]] = []
     role_context: list[dict[str, object]] = []
     cover_letter_model = DEFAULT_COVER_LETTER_MODEL
-    llm_settings = LlmSettings(model=cover_letter_model)
     fallback_role = _role_with_effective_company(role)
     role_for_prompt = dict(fallback_role)
     role_for_prompt.pop("description", None)
@@ -5433,7 +5433,6 @@ def build_role_resume(
     source_latex = previous_latex or _ensure_role_resume_copy(role_id, resume).read_text()
     authoritative_latex = resume.content
     experience_notes: list[ExperienceNote] = []
-    llm_settings = LlmSettings()
     with db.connect() as connection:
         db.run_migrations(connection)
         experience_notes = list_experience_notes(connection)
@@ -6492,17 +6491,11 @@ def _config_bool(value: str | None, *, default: bool) -> bool:
 
 
 def _llm_settings_for_generation(
-    _connection: Any,
+    connection: Any,
     *,
     model: str | None = None,
 ) -> LlmSettings:
-    environment_settings = LlmSettings()
-    return LlmSettings(
-        provider="openai",
-        model=model or environment_settings.model,
-        codex_model=environment_settings.codex_model,
-        openai_api_key=environment_settings.openai_api_key,
-    )
+    return build_configured_llm_settings(connection, model=model)
 
 
 def _clean_llm_provider(value: object) -> str:

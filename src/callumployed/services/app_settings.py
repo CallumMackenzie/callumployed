@@ -169,9 +169,18 @@ def configured_browser_profile_manager(connection: sqlite3.Connection) -> Browse
     return BrowserProfileManager(headless=headless)
 
 
-def configured_llm_settings(connection: sqlite3.Connection) -> LlmSettings:
+def configured_llm_settings(
+    connection: sqlite3.Connection,
+    *,
+    model: str | None = None,
+) -> LlmSettings:
     provider = str(get_settings(connection)["llm_provider"])
-    return LlmSettings().model_copy(update={"provider": provider})
+    updates: dict[str, str | None] = {"provider": provider}
+    if model is not None:
+        updates["model"] = model
+        if provider == "codex":
+            updates["codex_model"] = model
+    return LlmSettings().model_copy(update=updates)
 
 
 def parse_bool(value: object) -> bool:

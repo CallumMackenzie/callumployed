@@ -945,8 +945,10 @@ def _queue_autoprep_regeneration_in_transaction(
         return int(existing["job_id"])
     if job["worker_state"] != "idle":
         raise AutoprepConflictError("This role is already being prepared.")
-    if str(job[f"{prefix}_status"]) != "ready":
-        raise AutoprepConflictError("Only a ready document can be regenerated.")
+    if str(job[f"{prefix}_status"]) not in _TERMINAL_DOCUMENT_STATUSES:
+        raise AutoprepConflictError(
+            "Only a ready, failed, or interrupted document can be regenerated."
+        )
     connection.execute(
         """
         INSERT INTO autoprep_regenerations (

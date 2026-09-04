@@ -55,6 +55,32 @@ def test_shared_settings_normalize_provider_sources(
     assert llm_settings.provider == expected
 
 
+def test_configured_llm_settings_maps_an_explicit_model_to_the_selected_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(tmp_path / "provider-model.sqlite3"))
+
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        app_settings.set_config_value(connection, "llm_provider", "codex")
+        codex = app_settings.configured_llm_settings(
+            connection,
+            model="gpt-5.6-terra",
+        )
+        app_settings.set_config_value(connection, "llm_provider", "openai")
+        openai = app_settings.configured_llm_settings(
+            connection,
+            model="gpt-4.1-mini",
+        )
+
+    assert codex.provider == "codex"
+    assert codex.model == "gpt-5.6-terra"
+    assert codex.codex_model == "gpt-5.6-terra"
+    assert openai.provider == "openai"
+    assert openai.model == "gpt-4.1-mini"
+
+
 def test_shared_settings_can_modify_every_current_setting(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

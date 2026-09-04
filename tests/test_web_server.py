@@ -1,6 +1,8 @@
+import ast
 import asyncio
 import base64
 import gzip
+import inspect
 import json
 import os
 import socket
@@ -517,7 +519,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "dangerouslySetInnerHTML" not in markup
         assert "dangerouslySetInnerHTML" not in app_javascript
         assert '<div id="root"></div>' not in index_markup
-        assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-12"></script>' in (
+        assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-13"></script>' in (
             index_markup
         )
 
@@ -659,8 +661,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=vanilla-20260903-12" in index_markup
-        assert "/assets/app.js?v=vanilla-20260903-12" in index_markup
+        assert "/assets/app.css?v=vanilla-20260903-13" in index_markup
+        assert "/assets/app.js?v=vanilla-20260903-13" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -1523,6 +1525,7 @@ def test_prep_analysis_passes_recommendation_history_to_agent(
     async def fake_evaluate_resume_feedback(**kwargs: object) -> object:
         captured["knowledge_base"] = kwargs.get("knowledge_base")
         captured["other_experience_context"] = kwargs.get("other_experience_context")
+        captured["settings"] = kwargs.get("settings")
 
         class Response:
             def model_dump(self, **_kwargs: object) -> dict[str, object]:
@@ -1543,6 +1546,7 @@ def test_prep_analysis_passes_recommendation_history_to_agent(
             filename="projects.md",
             content="Built a Kubernetes scheduler that is not on the current resume.",
         )
+        web_server.set_config_value(connection, "llm_provider", "codex")
 
     analysis = web_server.build_prep_analysis(
         {
@@ -1560,6 +1564,8 @@ def test_prep_analysis_passes_recommendation_history_to_agent(
     )
 
     assert analysis["recommendation_history_matches"] == 1
+    assert isinstance(captured["settings"], web_server.LlmSettings)
+    assert captured["settings"].provider == "codex"
     assert captured["knowledge_base"] == fake_list_knowledge()
     other_experience_context = captured["other_experience_context"]
     assert isinstance(other_experience_context, list)
@@ -1760,6 +1766,7 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         web_server.set_config_value(connection, "applicant_email", "jake@example.com")
         web_server.set_config_value(connection, "applicant_institution", "University of Victoria")
         web_server.set_config_value(connection, "applicant_degree", "Software Engineering")
+        web_server.set_config_value(connection, "llm_provider", "codex")
         web_server.set_config_value(connection, "cover_letter_model", "gpt-5.6-terra")
         web_server.build_material_index([web_server._experience_note_index_source(note)])
     db.ensure_initialized()
@@ -1827,8 +1834,9 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         }
         settings = captured_calls[0]["settings"]
         assert isinstance(settings, web_server.LlmSettings)
-        assert settings.provider == "openai"
+        assert settings.provider == "codex"
         assert settings.model == "gpt-5.6-terra"
+        assert settings.codex_model == "gpt-5.6-terra"
         saved_latex = (resume_root / "role-1" / "cover-letter.tex").read_text()
         assert "Dear Hiring Manager" in saved_latex
         assert "Dear Acme" not in saved_latex
@@ -2782,6 +2790,7 @@ Master resume
                 "Curated a watercolor gallery."
             ),
         )
+        web_server.set_config_value(connection, "llm_provider", "codex")
         connection.commit()
         web_server.build_material_index([web_server._experience_note_index_source(note)])
     db.ensure_initialized()
@@ -2816,6 +2825,9 @@ Master resume
         assert len(captured_calls) == 1
         assert captured_calls[0]["resume_content"] == "Current editor latex"
         assert captured_calls[0]["tweaks"] == "Emphasize distributed systems."
+        settings = captured_calls[0]["settings"]
+        assert isinstance(settings, web_server.LlmSettings)
+        assert settings.provider == "codex"
 
         indexed_context = captured_calls[0]["other_experience_context"]
         assert isinstance(indexed_context, list)
@@ -3724,6 +3736,7 @@ def test_role_chat_endpoint_uses_role_material_contexts(
             filename="projects.md",
             content="Built a Kubernetes scheduler.",
         )
+        web_server.set_config_value(connection, "llm_provider", "codex")
         connection.commit()
     db.ensure_initialized()
 
@@ -3754,6 +3767,8 @@ def test_role_chat_endpoint_uses_role_material_contexts(
         assert captured["resume_content"] == "Role resume latex"
         assert captured["cover_letter_content"] == "Cover letter latex"
         assert captured["messages"][0].content == "What should I emphasize?"
+        assert isinstance(captured["settings"], web_server.LlmSettings)
+        assert captured["settings"].provider == "codex"
         assert captured["employment_history_context"] == [
             {
                 "filename": "projects.md",
@@ -3990,7 +4005,7 @@ def test_llm_provider_accepts_only_settings_options(provider: str) -> None:
         web_server._clean_llm_provider("hermes")
 
 
-def test_application_generation_stays_openai_when_scan_provider_is_codex(
+def test_application_generation_uses_configured_provider_and_document_model(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4001,13 +4016,22 @@ def test_application_generation_stays_openai_when_scan_provider_is_codex(
 
     with web_server.db.connect() as connection:
         web_server.db.run_migrations(connection)
-        defaults = web_server._llm_settings_for_generation(connection)
+        defaults = web_server._llm_settings_for_generation(
+            connection,
+            model="gpt-4.1-mini",
+        )
         web_server.set_config_value(connection, "llm_provider", "codex")
-        selected = web_server._llm_settings_for_generation(connection)
+        selected = web_server._llm_settings_for_generation(
+            connection,
+            model="gpt-5.6-terra",
+        )
 
     assert defaults.provider == "openai"
+    assert defaults.model == "gpt-4.1-mini"
     assert defaults.openai_api_key is not None
-    assert selected.provider == "openai"
+    assert selected.provider == "codex"
+    assert selected.model == "gpt-5.6-terra"
+    assert selected.codex_model == "gpt-5.6-terra"
     assert selected.openai_api_key is not None
 
 
@@ -4067,8 +4091,10 @@ def test_profile_extraction_fills_only_blank_settings(
 ) -> None:
     database = tmp_path / "profile-extraction.sqlite3"
     monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    captured: dict[str, object] = {}
 
-    async def fake_extract_applicant_profile(**_kwargs: object) -> SimpleNamespace:
+    async def fake_extract_applicant_profile(**kwargs: object) -> SimpleNamespace:
+        captured.update(kwargs)
         return SimpleNamespace(
             model_dump=lambda: {
                 "first_name": "Extracted",
@@ -4093,10 +4119,13 @@ def test_profile_extraction_fills_only_blank_settings(
             content=r"\documentclass{article}\begin{document}Resume\end{document}",
         )
         web_server.set_config_value(connection, "applicant_first_name", "Callum")
+        web_server.set_config_value(connection, "llm_provider", "codex")
 
     populated = web_server._populate_missing_applicant_profile_from_resume()
 
     assert populated["applicant_last_name"] == "Mackenzie-Smith"
+    assert isinstance(captured["settings"], web_server.LlmSettings)
+    assert captured["settings"].provider == "codex"
     with web_server.db.connect() as connection:
         assert web_server.get_config_value(connection, "applicant_first_name") == "Callum"
         assert web_server.get_config_value(connection, "applicant_last_name") == "Mackenzie-Smith"
@@ -4296,10 +4325,7 @@ def test_config_payload_returns_current_settings(
         {
             "key": "llm_provider",
             "label": "AI provider",
-            "description": (
-                "used for job scanning, classification, and saved Q&A; application documents "
-                "continue to use OpenAI"
-            ),
+            "description": "used for every AI-backed feature in Callumployed",
             "control": "select",
             "value": "openai",
             "default": "openai",
@@ -6977,3 +7003,41 @@ def test_tracker_status_endpoint_moves_closed_role_to_interested(
     interested = next(item for item in payload["statuses"] if item["key"] == "interested")
     assert closed["count"] == 0
     assert interested["count"] == 1
+
+
+def test_production_ai_calls_always_receive_explicit_settings_snapshot() -> None:
+    """Prevent server workflows from silently falling back to agent environment defaults."""
+    required_keyword = {
+        "extract_applicant_profile": "settings",
+        "evaluate_resume_feedback": "settings",
+        "generate_saved_application_answer": "llm_settings",
+        "generate_cover_letter": "settings",
+        "generate_resume_tweak": "settings",
+        "generate_role_chat": "settings",
+        "run_scan_company": "llm_settings",
+    }
+    seen: set[str] = set()
+    violations: list[str] = []
+    tree = ast.parse(inspect.getsource(web_server))
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name):
+            function_name = node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            function_name = node.func.attr
+        else:
+            continue
+        keyword_name = required_keyword.get(function_name)
+        if keyword_name is None:
+            continue
+        seen.add(function_name)
+        keyword = next((item for item in node.keywords if item.arg == keyword_name), None)
+        if keyword is None or (
+            isinstance(keyword.value, ast.Constant) and keyword.value.value is None
+        ):
+            violations.append(f"{function_name} at line {node.lineno}")
+
+    assert seen == set(required_keyword)
+    assert violations == []

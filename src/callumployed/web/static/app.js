@@ -4072,11 +4072,16 @@ function autoprepStatusLabel(status) {
   })[status] ?? formatUiText(status);
 }
 
+function autoprepCoverLetterIsRegeneratable(job) {
+  return (
+    job.worker_state === "idle"
+    && ["ready", "failed", "interrupted"].includes(job.cover_letter_status)
+  );
+}
+
 function renderPreppedRoles() {
   const activeCount = preppedJobs.filter(autoprepJobIsActive).length;
-  const regeneratableCount = preppedJobs.filter(
-    (job) => job.worker_state === "idle" && job.cover_letter_status === "ready",
-  ).length;
+  const regeneratableCount = preppedJobs.filter(autoprepCoverLetterIsRegeneratable).length;
   preppedSummary.textContent = preppedJobs.length
     ? `${preppedJobs.length} prepped ${preppedJobs.length === 1 ? "role" : "roles"}${activeCount ? ` · ${activeCount} in progress` : ""}`
     : "No queued or prepared roles.";

@@ -679,9 +679,19 @@ def test_bulk_cover_letter_regeneration_queues_ready_roles_and_reports_skips(
             company="Beta",
             title="Busy Engineer",
         )
-        ready_job, busy_job = enqueue_autoprep_jobs(
+        partial_role_id = _interested_role(
             connection,
-            [ready_role_id, busy_role_id],
+            company="Gamma",
+            title="Partial Engineer",
+        )
+        interrupted_role_id = _interested_role(
+            connection,
+            company="Delta",
+            title="Interrupted Engineer",
+        )
+        ready_job, busy_job, partial_job, interrupted_job = enqueue_autoprep_jobs(
+            connection,
+            [ready_role_id, busy_role_id, partial_role_id, interrupted_role_id],
             idempotency_key="bulk-cover-setup",
         )
         claimed = claim_next_autoprep_job(connection)
@@ -702,19 +712,66 @@ def test_bulk_cover_letter_regeneration_queues_ready_roles_and_reports_skips(
             artifact_path=str(tmp_path / "cover-letter.pdf"),
         )
         finish_autoprep_worker(connection, ready_job["id"])
+        claimed_busy = claim_next_autoprep_job(connection)
+        assert claimed_busy is not None
+        assert claimed_busy["id"] == busy_job["id"]
+        claimed_partial = claim_next_autoprep_job(connection)
+        assert claimed_partial is not None
+        assert claimed_partial["id"] == partial_job["id"]
+        mark_autoprep_document(
+            connection,
+            partial_job["id"],
+            "resume",
+            "ready",
+            artifact_path=str(tmp_path / "partial-resume.pdf"),
+        )
+        mark_autoprep_document(
+            connection,
+            partial_job["id"],
+            "cover_letter",
+            "failed",
+            error="Provider generation failed.",
+        )
+        partial_job = finish_autoprep_worker(connection, partial_job["id"])
+        assert partial_job["overall_status"] == "partially_complete"
+        claimed_interrupted = claim_next_autoprep_job(connection)
+        assert claimed_interrupted is not None
+        assert claimed_interrupted["id"] == interrupted_job["id"]
+        mark_autoprep_document(
+            connection,
+            interrupted_job["id"],
+            "resume",
+            "ready",
+            artifact_path=str(tmp_path / "interrupted-resume.pdf"),
+        )
+        mark_autoprep_document(
+            connection,
+            interrupted_job["id"],
+            "cover_letter",
+            "interrupted",
+            error="Worker stopped before generation completed.",
+        )
+        interrupted_job = finish_autoprep_worker(connection, interrupted_job["id"])
+        assert interrupted_job["overall_status"] == "partially_complete"
 
         result = autoprep_service.queue_all_prepped_cover_letter_regenerations(
             connection,
             idempotency_key="bulk-cover-click",
         )
 
-        assert result["requested_count"] == 2
-        assert result["queued_count"] == 1
-        assert [job["role_id"] for job in result["jobs"]] == [ready_role_id]
-        assert result["jobs"][0]["resume_status"] == "ready"
-        assert result["jobs"][0]["cover_letter_status"] == "queued"
-        assert result["jobs"][0]["cover_letter_instruction"] == (
-            autoprep_service.BULK_COVER_LETTER_REGENERATION_INSTRUCTION
+        assert result["requested_count"] == 4
+        assert result["queued_count"] == 3
+        assert [job["role_id"] for job in result["jobs"]] == [
+            ready_role_id,
+            partial_role_id,
+            interrupted_role_id,
+        ]
+        assert all(job["resume_status"] == "ready" for job in result["jobs"])
+        assert all(job["cover_letter_status"] == "queued" for job in result["jobs"])
+        assert all(
+            job["cover_letter_instruction"]
+            == autoprep_service.BULK_COVER_LETTER_REGENERATION_INSTRUCTION
+            for job in result["jobs"]
         )
         assert result["skipped"] == [
             {
@@ -739,7 +796,11 @@ def test_bulk_cover_letter_regeneration_queues_ready_roles_and_reports_skips(
             connection,
             idempotency_key="bulk-cover-click",
         )
-        assert [job["role_id"] for job in replay["jobs"]] == [ready_role_id]
+        assert [job["role_id"] for job in replay["jobs"]] == [
+            ready_role_id,
+            partial_role_id,
+            interrupted_role_id,
+        ]
         assert replay["skipped"] == result["skipped"]
         unchanged_busy = get_autoprep_job(connection, busy_job["id"])
         assert unchanged_busy["cover_letter_status"] == "ready"
