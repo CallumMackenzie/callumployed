@@ -113,7 +113,6 @@ def test_startup_enable_writes_and_bootstraps_macos_launch_agent(
         payload = cli_module.plistlib.load(plist_file)
     assert payload["Label"] == "com.callum.callumployed"
     assert payload["ProgramArguments"] == [
-        str(Path(cli_module.sys.executable).resolve()),
         str(cli_path),
         "serve",
         "--host",
@@ -130,6 +129,25 @@ def test_startup_enable_writes_and_bootstraps_macos_launch_agent(
         (["launchctl", "kickstart", "-k", "gui/501/com.callum.callumployed"], True),
     ]
     assert "Enabled Callumployed at login" in result.output
+
+
+def test_callumployed_cli_path_preserves_virtualenv_before_resolving_python(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_python = tmp_path / "uv" / "bin" / "python"
+    base_python.parent.mkdir(parents=True)
+    base_python.touch()
+    virtualenv_bin = tmp_path / "source" / ".venv" / "bin"
+    virtualenv_bin.mkdir(parents=True)
+    virtualenv_python = virtualenv_bin / "python"
+    virtualenv_python.symlink_to(base_python)
+    virtualenv_entrypoint = virtualenv_bin / "callumployed"
+    virtualenv_entrypoint.touch()
+    monkeypatch.setattr(cli_module.sys, "executable", str(virtualenv_python))
+    monkeypatch.setattr(cli_module.sys, "argv", [str(tmp_path / "fallback-callumployed")])
+
+    assert cli_module._callumployed_cli_path() == virtualenv_entrypoint
 
 
 def test_startup_disable_boots_out_and_removes_macos_launch_agent(

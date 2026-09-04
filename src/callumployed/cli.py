@@ -213,7 +213,7 @@ def _launch_agent_path() -> Path:
 
 
 def _callumployed_cli_path() -> Path:
-    adjacent_entrypoint = Path(sys.executable).resolve().with_name("callumployed")
+    adjacent_entrypoint = Path(sys.executable).with_name("callumployed")
     if adjacent_entrypoint.exists():
         return adjacent_entrypoint
     return Path(sys.argv[0]).resolve()
@@ -225,11 +225,11 @@ def _write_launch_agent(path: Path, *, host: str, port: int) -> None:
     log_directory = home_directory / "Library" / "Logs"
     log_directory.mkdir(parents=True, exist_ok=True)
     log_path = log_directory / "callumployed.log"
+    cli_path = _callumployed_cli_path()
     payload = {
         "Label": LAUNCH_AGENT_LABEL,
         "ProgramArguments": [
-            str(Path(sys.executable).resolve()),
-            str(_callumployed_cli_path()),
+            str(cli_path),
             "serve",
             "--host",
             host,
