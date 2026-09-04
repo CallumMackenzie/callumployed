@@ -44,8 +44,20 @@ def test_prompt_contains_complete_material_and_source_policy() -> None:
         "the only authorities",
         "normal sentence capitalization",
         "strict JSON",
+        "first person as the applicant",
+        "ready to paste unchanged",
+        "answer the employer's question directly",
+        "keep source authority internal",
+        "do not infer that no events are planned",
     ):
         assert phrase.lower() in prompt.lower()
+    for leaked_instruction in (
+        "label all facts as saved-material facts",
+        "state when the supplied material does not support an answer",
+        '"sources"',
+        '"research"',
+    ):
+        assert leaked_instruction.lower() not in prompt.lower()
 
 
 def test_prompt_bounds_every_source_category_without_dropping_its_edges() -> None:
@@ -139,6 +151,52 @@ def test_saved_application_answers_are_durable_and_role_scoped(tmp_path: Path) -
     assert "session_id" not in first_answers[0]
     assert first_answers[0]["sources"][0]["url"] == "https://acme.example/products"
     assert [item["question"] for item in second_answers] == ["Why Beta?"]
+
+
+def test_application_answer_validation_distinguishes_provenance_from_applicant_prose(
+    tmp_path: Path,
+) -> None:
+    with db.connect(tmp_path / "answer-validation.sqlite3") as connection:
+        db.run_migrations(connection)
+        ensure_autoprep_schema(connection)
+        role_id = _saved_role(connection, company_name="Acme", title="Engineer")
+        valid_pending = create_application_answer(
+            connection,
+            role_id,
+            question="Describe a cost-saving accomplishment.",
+            backend="codex",
+        )
+        valid = complete_application_answer(
+            connection,
+            int(valid_pending["id"]),
+            answer="I saved material costs by 20% through supplier consolidation.",
+        )
+        for leaked_answer in (
+            "According to the resume you provided, I attended nwHacks 2025.",
+            "The resume shows that I attended nwHacks 2025.",
+            "My supplied resume shows that I attended nwHacks 2025.",
+            "The provided materials show that I attended nwHacks 2025.",
+        ):
+            leaked_pending = create_application_answer(
+                connection,
+                role_id,
+                question="Which conferences have you attended?",
+                backend="codex",
+            )
+            with pytest.raises(ValueError, match="paste-ready application answer"):
+                complete_application_answer(
+                    connection,
+                    int(leaked_pending["id"]),
+                    answer=leaked_answer,
+                )
+            leaked = autoprep_service.get_application_answer(
+                connection, int(leaked_pending["id"])
+            )
+            assert leaked["status"] == "pending"
+            assert leaked["answer"] is None
+
+    assert valid["status"] == "completed"
+    assert valid["answer"] == "I saved material costs by 20% through supplier consolidation."
 
 
 def _create_intermediate_application_answers_schema(

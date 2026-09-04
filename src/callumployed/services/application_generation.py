@@ -33,14 +33,17 @@ def build_application_prompt(
     previous_output: str | None = None,
 ) -> str:
     web_policy = (
-        "Web search is unavailable. Answer only from the saved materials and label all "
-        "facts as saved-material facts."
+        "Web search is unavailable. Use only the saved application materials and saved role. "
+        "Keep source authority internal; do not mention sources, context, evidence checks, "
+        "prompts, generation, or supplied materials in the user-facing answer."
+        if task == "answer_question"
+        else (
+            "Web search is unavailable. Use only the saved application materials and saved role "
+            "as factual authorities."
+        )
     )
     output_contract = {
-        "answer_question": (
-            '{"answer":"...","sources":[{"kind":"saved_material",'
-            '"title":"...","url":null}],"research":{"used_web":false}}'
-        ),
+        "answer_question": '{"answer":"..."}',
         "resume": '{"latex":"complete LaTeX document","summary":"short summary","sources":[]}',
         "cover_letter": '{"latex":"complete LaTeX document","example_ids":[],"sources":[]}',
     }.get(task, '{"answer":"..."}')
@@ -60,7 +63,24 @@ def build_application_prompt(
             "SOURCE AUTHORITY POLICY: Saved application materials and the saved role are the only "
             "authorities. You must not invent applicant facts, metrics, experience, education, "
             "skills, referrals, outcomes, company claims, or job requirements. Preserve exact "
-            "saved facts and state when the supplied material does not support an answer."
+            "saved facts."
+        ),
+        *(
+            [
+                (
+                    "APPLICATION ANSWER CONTRACT: Write in first person as the applicant. Answer "
+                    "the employer's question directly in polished prose ready to paste unchanged. "
+                    "Keep source authority internal. Do not volunteer a disclaimer about missing "
+                    "experience. For a question offering multiple alternatives, answer with the "
+                    "supported alternatives and silently omit unsupported ones; do not infer that "
+                    "no events are planned merely because future plans are absent. If the question "
+                    "explicitly asks about entirely unsupported experience, answer plainly and "
+                    "briefly without guessing, then pivot only to relevant supported experience. "
+                    "Do not include citations or URLs unless requested."
+                )
+            ]
+            if task == "answer_question"
+            else []
         ),
     ]
     variable_sections = [

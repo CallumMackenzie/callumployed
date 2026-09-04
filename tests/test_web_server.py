@@ -269,6 +269,76 @@ def test_application_answer_can_be_regenerated_and_deleted_through_role_scoped_a
         thread.join(timeout=5)
 
 
+def test_application_answer_regeneration_rejects_provenance_leak_and_preserves_prior_answer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "application-answer-provenance-leak.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Stripe"))
+        assert company.id is not None
+        role = add_role(
+            connection,
+            Role(
+                company_id=company.id,
+                title="Engineer",
+                role_url="https://example.com/engineer",
+                role_status=RoleStatus.INTERESTED,
+            ),
+        )
+        assert role.id is not None
+        autoprep_service.ensure_autoprep_schema(connection)
+        pending = autoprep_service.create_application_answer(
+            connection,
+            role.id,
+            question="Which conferences have you attended?",
+            backend="codex",
+        )
+        saved = autoprep_service.complete_application_answer(
+            connection,
+            int(pending["id"]),
+            answer="I attended nwHacks 2025, where my team won the Aquareum.tv Sponsor Prize.",
+        )
+
+    monkeypatch.setattr(
+        web_server,
+        "generate_saved_application_answer",
+        lambda role_id, *, question, llm_settings: {
+            "answer": (
+                "Saved materials document that I attended nwHacks 2025. "
+                "They do not identify any other conferences."
+            ),
+            "sources": [],
+            "research": {"used_web": False},
+        },
+    )
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        endpoint = (
+            f"http://127.0.0.1:{server.server_address[1]}/api/autoprep/roles/{role.id}"
+            f"/application-answers/{saved['id']}/regenerate"
+        )
+        with pytest.raises(HTTPError) as response_error:
+            urlopen(Request(endpoint, data=b"", method="POST"), timeout=5)
+        assert response_error.value.code == 503
+        failed = json.loads(response_error.value.read())["answer"]
+
+        assert failed["status"] == "failed"
+        assert failed["answer"] == saved["answer"]
+        assert "could not produce a paste-ready answer" in failed["error"].lower()
+        with db.connect() as connection:
+            persisted = autoprep_service.get_application_answer(connection, int(saved["id"]))
+        assert persisted["answer"] == saved["answer"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
 def test_application_answer_quota_failure_is_not_exposed_or_counted_as_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import sqlite3
 import threading
 import time
@@ -45,6 +46,26 @@ _COVER_LETTER_STATUSES = {
 }
 _TERMINAL_DOCUMENT_STATUSES = {"ready", "failed", "interrupted"}
 _APPLICATION_ANSWER_BACKENDS = {"openai", "codex"}
+_APPLICATION_ANSWER_PROVENANCE_PATTERNS = (
+    r"\bbased on (?:the )?(?:saved|supplied)[- ]materials?\b",
+    (
+        r"\b(?:the )?(?:saved|supplied)[- ]materials?\s+"
+        r"(?:documents?|shows?|showed|indicates?|identif(?:y|ies|ied)|includes?|mentions?|"
+        r"supports?|states?|confirms?|do not|does not|did not)\b"
+    ),
+    (
+        r"\b(?:the|my) (?:(?:saved|supplied|provided) )?"
+        r"(?:resume|cover letter|materials?)\s+"
+        r"(?:documents?|shows?|showed|indicates?|identif(?:y|ies|ied)|includes?|mentions?|"
+        r"supports?|states?|confirms?)\b"
+    ),
+    r"\bsaved-material facts?\b",
+    (
+        r"\baccording to (?:the )?(?:resume|cover letter|materials?|context|information) "
+        r"(?:you )?(?:provided|supplied|saved)\b"
+    ),
+    r"@url:",
+)
 _APPLICATION_ANSWER_QUOTA_ERROR = (
     "The AI provider could not generate this answer because its account has no remaining credits. "
     "Add credits or select another AI provider in Settings, then retry."
@@ -501,6 +522,13 @@ def complete_application_answer(
     sources: object = None,
     research: object = None,
 ) -> dict[str, Any]:
+    clean_answer = answer.strip()
+    normalized_answer = " ".join(clean_answer.lower().split())
+    if not clean_answer or any(
+        re.search(pattern, normalized_answer)
+        for pattern in _APPLICATION_ANSWER_PROVENANCE_PATTERNS
+    ):
+        raise ValueError("The AI could not produce a paste-ready application answer.")
     connection.execute(
         """
         UPDATE application_answers
@@ -510,7 +538,7 @@ def complete_application_answer(
         WHERE id = ? AND status = 'pending'
         """,
         (
-            answer.strip(),
+            clean_answer,
             json.dumps(sources, ensure_ascii=False) if sources is not None else None,
             json.dumps(research, ensure_ascii=False) if research is not None else None,
             answer_id,

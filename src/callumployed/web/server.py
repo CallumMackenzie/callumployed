@@ -4538,6 +4538,11 @@ def _autoprep_error(error: Exception) -> str:
 
 def _application_answer_error(error: Exception) -> str:
     detail = " ".join(str(error).strip().split()).lower()
+    if "paste-ready application answer" in detail:
+        return (
+            "The AI could not produce a paste-ready answer. "
+            "Your previous answer was preserved; retry or select another provider in Settings."
+        )
     if any(
         marker in detail
         for marker in ("credit_balance_exhausted", "insufficient_quota", "no credits remaining")
