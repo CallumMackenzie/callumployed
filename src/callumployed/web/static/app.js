@@ -50,7 +50,6 @@ const preppedView = document.querySelector("#prepped-view");
 const closePreppedButton = document.querySelector("#close-prepped");
 const preppedSummary = document.querySelector("#prepped-summary");
 const regenerateAllCoverLettersButton = document.querySelector("#regenerate-all-cover-letters");
-const preppedBulkStatus = document.querySelector("#prepped-bulk-status");
 const preppedList = document.querySelector("#prepped-list");
 const preppedDetail = document.querySelector("#prepped-detail");
 const scanAllButton = document.querySelector("#scan-all-button");
@@ -212,8 +211,6 @@ let preppedJobs = [];
 let selectedPreppedRoleId = null;
 let preppedPoll = null;
 let bulkCoverLetterRegenerationPending = false;
-let preppedBulkMessage = "";
-let preppedBulkRegeneration = null;
 let currentlyApplyingGuideOpen = false;
 let currentlyApplyingStatus = "Select a prepared role to update this folder.";
 let currentlyApplyingOpenPending = false;
@@ -4012,16 +4009,6 @@ async function refreshPreppedRoles() {
     if (!response.ok) throw new Error("Prepped roles request failed");
     const payload = await response.json();
     preppedJobs = payload.jobs ?? [];
-    const latestBulk = payload.bulk_cover_letter_regeneration;
-    if (latestBulk) {
-      const bulkJobs = Array.isArray(latestBulk.jobs) ? latestBulk.jobs : [];
-      preppedBulkRegeneration = {
-        idempotencyKey: latestBulk.idempotency_key,
-        roleIds: bulkJobs.map((job) => Number(job.role_id)),
-        jobs: bulkJobs,
-        skipped: Array.isArray(latestBulk.skipped) ? latestBulk.skipped : [],
-      };
-    }
     if (!preppedJobs.some((job) => Number(job.role_id) === Number(selectedPreppedRoleId))) {
       selectedPreppedRoleId = preppedJobs[0]?.role_id ?? null;
     }
@@ -4085,48 +4072,7 @@ function autoprepStatusLabel(status) {
   })[status] ?? formatUiText(status);
 }
 
-function updatePreppedBulkRegenerationMessage() {
-  if (!preppedBulkRegeneration) return;
-  const currentBulkJobs = preppedBulkRegeneration.jobs || preppedJobs;
-  const jobsByRoleId = new Map(
-    currentBulkJobs.map((job) => [Number(job.role_id), job]),
-  );
-  const trackedJobs = preppedBulkRegeneration.roleIds.map(
-    (roleId) => jobsByRoleId.get(Number(roleId)),
-  );
-  const completedCount = trackedJobs.filter(
-    (job) => job?.worker_state === "idle" && job.cover_letter_status === "ready",
-  ).length;
-  const failedJobs = trackedJobs.filter(
-    (job) => !job || (
-      job.worker_state === "idle"
-      && ["failed", "interrupted"].includes(job.cover_letter_status)
-    ),
-  );
-  const remainingCount = trackedJobs.length - completedCount - failedJobs.length;
-  const skippedDetails = preppedBulkRegeneration.skipped.length
-    ? ` Skipped before queueing: ${preppedBulkRegeneration.skipped
-      .map((item) => `${item.company_name} — ${item.title}: ${item.reason}`)
-      .join(" · ")}`
-    : "";
-  const failureDetails = failedJobs.length
-    ? ` Queued regeneration failures: ${failedJobs.map((job) => (
-      job
-        ? `${job.company_name} — ${job.title}: ${job.cover_letter_error || "generation failed"}`
-        : "A role left the Prepped queue before regeneration completed"
-    )).join(" · ")}`
-    : "";
-  if (!trackedJobs.length) {
-    preppedBulkMessage = `No cover letters were queued.${skippedDetails}`;
-  } else if (remainingCount > 0) {
-    preppedBulkMessage = `Cover-letter regeneration in progress: ${completedCount} of ${trackedJobs.length} complete · ${remainingCount} remaining.${skippedDetails}${failureDetails}`;
-  } else {
-    preppedBulkMessage = `Cover-letter regeneration complete: ${completedCount} succeeded, ${failedJobs.length} failed.${skippedDetails}${failureDetails}`;
-  }
-}
-
 function renderPreppedRoles() {
-  updatePreppedBulkRegenerationMessage();
   const activeCount = preppedJobs.filter(autoprepJobIsActive).length;
   const regeneratableCount = preppedJobs.filter(
     (job) => job.worker_state === "idle" && job.cover_letter_status === "ready",
@@ -4144,7 +4090,6 @@ function renderPreppedRoles() {
   regenerateAllCoverLettersButton.textContent = bulkCoverLetterRegenerationPending
     ? "queuing cover letters..."
     : "regenerate all cover letters";
-  preppedBulkStatus.textContent = preppedBulkMessage;
   preppedList.innerHTML = preppedJobs.map((job) => {
     const hasGenerationFailure = autoprepJobHasGenerationFailure(job);
     const documentGenerating = !hasGenerationFailure && autoprepJobIsGenerating(job);
@@ -4577,8 +4522,6 @@ async function regenerateAutoprepDocument(job, documentKind, button) {
 async function regenerateAllPreppedCoverLetters() {
   if (bulkCoverLetterRegenerationPending) return;
   bulkCoverLetterRegenerationPending = true;
-  preppedBulkRegeneration = null;
-  preppedBulkMessage = "Queuing eligible cover letters...";
   renderPreppedRoles();
   try {
     const response = await fetch("/api/autoprep/cover-letters/regenerate", {
@@ -4590,17 +4533,6 @@ async function regenerateAllPreppedCoverLetters() {
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Bulk regeneration request failed");
-    const queuedCount = Number(payload.queued_count || 0);
-    const skipped = Array.isArray(payload.skipped) ? payload.skipped : [];
-    preppedBulkRegeneration = {
-      roleIds: (payload.jobs || []).map((job) => Number(job.role_id)),
-      jobs: payload.jobs || [],
-      skipped,
-    };
-    if (!queuedCount && !skipped.length) {
-      preppedBulkRegeneration = null;
-      preppedBulkMessage = "No prepped roles are available to regenerate.";
-    }
     (payload.jobs || []).forEach((updatedJob) => {
       const index = preppedJobs.findIndex(
         (job) => Number(job.role_id) === Number(updatedJob.role_id),
@@ -4610,10 +4542,7 @@ async function regenerateAllPreppedCoverLetters() {
     await refreshPreppedRoles();
     startPreppedPolling();
   } catch (error) {
-    preppedBulkRegeneration = null;
-    preppedBulkMessage = error instanceof Error
-      ? error.message
-      : "Bulk regeneration request failed";
+    window.alert(error instanceof Error ? error.message : "Bulk regeneration request failed");
   } finally {
     bulkCoverLetterRegenerationPending = false;
     renderPreppedRoles();
@@ -4637,7 +4566,6 @@ async function markPreppedRoleDisinterested(roleId, button) {
     const nextRoleId = preppedJobs[
       Math.min(currentIndex, preppedJobs.length - 1)
     ]?.role_id;
-    preppedBulkMessage = "Role moved to Disinterested.";
     if (nextRoleId == null) {
       selectedPreppedRoleId = null;
       renderPreppedRoles();
@@ -4646,9 +4574,7 @@ async function markPreppedRoleDisinterested(roleId, button) {
     }
     loadInitialTrackerData();
   } catch (error) {
-    preppedBulkMessage = error instanceof Error
-      ? error.message
-      : "Could not move this role to Disinterested.";
+    window.alert(error instanceof Error ? error.message : "Could not move this role to Disinterested.");
     await refreshPreppedRoles();
   } finally {
     preppedStatusChangeRoleIds.delete(numericRoleId);

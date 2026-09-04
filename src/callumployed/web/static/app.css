@@ -4603,13 +4603,6 @@ a:hover .role-link-icon {
   opacity: 0.48;
 }
 
-.prepped-bulk-status {
-  min-height: 22px;
-  margin-top: 8px;
-  color: #53615b;
-  font-size: 0.84rem;
-}
-
 .autoprep-toolbar {
   display: flex;
   gap: 16px;

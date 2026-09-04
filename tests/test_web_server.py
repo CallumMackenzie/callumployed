@@ -517,7 +517,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "dangerouslySetInnerHTML" not in markup
         assert "dangerouslySetInnerHTML" not in app_javascript
         assert '<div id="root"></div>' not in index_markup
-        assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-9"></script>' in (
+        assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-10"></script>' in (
             index_markup
         )
 
@@ -659,8 +659,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=vanilla-20260903-9" in index_markup
-        assert "/assets/app.js?v=vanilla-20260903-9" in index_markup
+        assert "/assets/app.css?v=vanilla-20260903-10" in index_markup
+        assert "/assets/app.js?v=vanilla-20260903-10" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -679,7 +679,9 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "Preview PDF" not in app_javascript
         assert "data-autoprep-preview" not in app_javascript
         assert 'id="regenerate-all-cover-letters"' in markup
-        assert 'id="prepped-bulk-status"' in markup
+        assert 'id="prepped-bulk-status"' not in markup
+        assert "No cover letters were queued." not in app_javascript
+        assert "Skipped before queueing:" not in app_javascript
         assert "data-autoprep-disinterested" in app_javascript
         assert 'class="review-action danger prepped-disinterested"' in app_javascript
         assert "grid-template-columns: repeat(5, minmax(0, 1fr));" in app_styles
@@ -689,11 +691,6 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'idempotency_key: autoprepActionKey("regenerate-all-cover-letters")' in (
             app_javascript
         )
-        assert "Cover-letter regeneration in progress:" in app_javascript
-        assert "Cover-letter regeneration complete:" in app_javascript
-        assert "Queued regeneration failures:" in app_javascript
-        assert "payload.bulk_cover_letter_regeneration" in app_javascript
-        assert "preppedBulkRegeneration.jobs || preppedJobs" in app_javascript
         assert "movingToDisinterested || autoprepJobIsActive(job)" in app_javascript
         assert 'documentKind === "cover-letter" ? "Optional comments for the next version"' in (
             app_javascript
@@ -731,7 +728,6 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'if (!comments && documentKind !== "cover-letter" && !retryingFailedDocument)' in (
             app_javascript
         )
-        assert '["failed", "interrupted"].includes(job.cover_letter_status)' in (app_javascript)
         bulk_function = app_javascript[
             app_javascript.index(
                 "async function regenerateAllPreppedCoverLetters()"
