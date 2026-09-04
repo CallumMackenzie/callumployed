@@ -1585,7 +1585,7 @@ async function saveSetting(control) {
   const previousValue = control.type === "checkbox" ? !control.checked : settingsData?.settings
     ?.find((setting) => setting.key === key)?.value;
   const nextValue = control.type === "checkbox" ? control.checked : control.value;
-  setSettingsDisabled(true);
+  control.disabled = true;
   settingsStatus.textContent = "saving settings...";
   settingsStatus.classList.remove("is-empty");
   try {
@@ -1595,15 +1595,40 @@ async function saveSetting(control) {
       body: JSON.stringify({ [key]: nextValue }),
     });
     if (!response.ok) throw new Error("Config update failed");
-    renderSettings(await response.json(), "settings saved.");
+    const payload = await response.json();
+    const savedSetting = payload?.settings?.find((setting) => setting.key === key);
+    if (settingsData && savedSetting) {
+      settingsData = {
+        ...settingsData,
+        values: {
+          ...(settingsData.values ?? {}),
+          ...(Object.hasOwn(payload.values ?? {}, key) ? { [key]: payload.values[key] } : {}),
+        },
+        settings: settingsData.settings.map((setting) =>
+          setting.key === key ? savedSetting : setting),
+      };
+    } else {
+      settingsData = payload;
+    }
+    if (savedSetting) {
+      if (control.type === "checkbox") {
+        control.checked = Boolean(savedSetting.value);
+      } else if (control.value === nextValue) {
+        control.value = savedSetting.value ?? "";
+      }
+    }
+    settingsStatus.textContent = "settings saved.";
+    settingsStatus.classList.remove("is-empty");
+    control.disabled = false;
   } catch {
-    if (control.type === "checkbox") {
+    if (control.type === "checkbox" && control.checked === nextValue) {
       control.checked = previousValue;
-    } else if (previousValue !== undefined) {
+    } else if (control.type !== "checkbox" && control.value === nextValue
+      && previousValue !== undefined) {
       control.value = previousValue;
     }
     settingsStatus.textContent = "could not save settings.";
-    setSettingsDisabled(false);
+    control.disabled = false;
   }
 }
 
