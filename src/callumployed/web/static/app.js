@@ -4709,12 +4709,18 @@ async function markPreppedRoleDisinterested(roleId, button) {
     await updateRoleStatusById(roleId, "disinterested");
     discardPreppedPreview(`${roleId}:resume`, {close: true});
     discardPreppedPreview(`${roleId}:cover-letter`, {close: true});
-    if (currentIndex >= 0) preppedJobs.splice(currentIndex, 1);
-    selectedPreppedRoleId = preppedJobs[
+    if (currentIndex < 0) throw new Error("This prepared role is no longer in the queue.");
+    preppedJobs.splice(currentIndex, 1);
+    const nextRoleId = preppedJobs[
       Math.min(currentIndex, preppedJobs.length - 1)
-    ]?.role_id ?? null;
+    ]?.role_id;
     preppedBulkMessage = "Role moved to Disinterested.";
-    renderPreppedRoles();
+    if (nextRoleId == null) {
+      selectedPreppedRoleId = null;
+      renderPreppedRoles();
+    } else {
+      selectPreppedRole(nextRoleId);
+    }
     loadInitialTrackerData();
   } catch (error) {
     preppedBulkMessage = error instanceof Error
@@ -4739,9 +4745,15 @@ async function markPreppedRoleApplied(roleId, button) {
     if (!response.ok) throw new Error("Applied update failed");
     discardPreppedPreview(`${roleId}:resume`, {close: true});
     discardPreppedPreview(`${roleId}:cover-letter`, {close: true});
+    if (currentIndex < 0) throw new Error("This prepared role is no longer in the queue.");
     preppedJobs.splice(currentIndex, 1);
-    selectedPreppedRoleId = preppedJobs[Math.min(currentIndex, preppedJobs.length - 1)]?.role_id ?? null;
-    renderPreppedRoles();
+    const nextRoleId = preppedJobs[Math.min(currentIndex, preppedJobs.length - 1)]?.role_id;
+    if (nextRoleId == null) {
+      selectedPreppedRoleId = null;
+      renderPreppedRoles();
+    } else {
+      selectPreppedRole(nextRoleId);
+    }
     loadInitialTrackerData();
   } catch { await refreshPreppedRoles(); }
 }
