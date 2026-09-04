@@ -57,6 +57,24 @@ def test_prepped_application_questions_workspace_is_persistent_and_safe() -> Non
     assert "updateRoleStatusById" not in submitter
 
 
+def test_prepped_role_description_uses_structured_description_renderer() -> None:
+    source = FRONTEND_SOURCE.read_text()
+    styles = (STATIC_DIRECTORY / "app.css").read_text()
+    renderer = source[
+        source.index("function renderPreppedDetail()") : source.index(
+            "function normalizeApplicationAnswerRecords"
+        )
+    ]
+
+    assert 'renderDescriptionMarkdown(job.description || "No job description was saved.")' in (
+        renderer
+    )
+    assert 'escapeUiText(job.description || "No job description was saved.")' not in renderer
+    assert ".prepped-description-copy h3" in styles
+    assert ".prepped-description-copy ul" in styles
+    assert ".prepped-description-copy li + li" in styles
+
+
 def test_application_questions_styles_and_cache_keys_are_versioned() -> None:
     styles = (STATIC_DIRECTORY / "app.css").read_text()
     index = (STATIC_DIRECTORY / "index.html").read_text()
@@ -70,8 +88,8 @@ def test_application_questions_styles_and_cache_keys_are_versioned() -> None:
     assert "#close-prepped" in styles
     assert "text-transform: none" in styles
     assert ".application-questions-workspace[open]" in styles
-    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260903-11" />' in index
-    assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-11"></script>' in index
+    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260903-12" />' in index
+    assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-12"></script>' in index
 
 
 def test_currently_applying_folder_ui_is_explained_and_selection_driven() -> None:
@@ -89,8 +107,8 @@ def test_currently_applying_folder_ui_is_explained_and_selection_driven() -> Non
     assert "/currently-applying" in source
     assert "/currently-applying/open" in source
     assert ".currently-applying-guide" in styles
-    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260903-11" />' in index
-    assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-11"></script>' in index
+    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260903-12" />' in index
+    assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-12"></script>' in index
 
 
 def test_every_prepped_role_transition_refreshes_currently_applying_folder() -> None:
@@ -123,7 +141,7 @@ def test_frontend_uses_direct_vanilla_assets_without_framework_shell() -> None:
     assert not (REPOSITORY_ROOT / "frontend").exists()
     assert not (STATIC_DIRECTORY / "build").exists()
     assert not (STATIC_DIRECTORY / "shell.html").exists()
-    assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-11"></script>' in index
+    assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-12"></script>' in index
     assert '<div id="root"></div>' not in index
     assert "dangerouslySetInnerHTML" not in index
     assert "dangerouslySetInnerHTML" not in source

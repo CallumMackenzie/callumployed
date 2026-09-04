@@ -4219,7 +4219,7 @@ function renderPreppedDetail() {
     <dl class="prepped-role-facts">${roleFacts.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeUiText(value)}</dd></div>`).join("")}</dl>
     <details class="prepped-role-description" data-prepped-detail-section="description" ${openPreppedDetailSections.has(descriptionKey) ? "open" : ""}>
       <summary>Job description</summary>
-      <div class="prepped-description-copy">${escapeUiText(job.description || "No job description was saved.").replaceAll("\n", "<br>")}</div>
+      <div class="prepped-description-copy">${renderDescriptionMarkdown(job.description || "No job description was saved.")}</div>
     </details>
     ${job.notes ? `<details class="prepped-role-description" data-prepped-detail-section="notes" ${openPreppedDetailSections.has(notesKey) ? "open" : ""}><summary>Role notes</summary><div class="prepped-description-copy">${escapeUiText(job.notes).replaceAll("\n", "<br>")}</div></details>` : ""}
     <div class="prepped-document-grid">

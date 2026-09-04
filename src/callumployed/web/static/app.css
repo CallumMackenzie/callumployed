@@ -5189,12 +5189,40 @@ a:hover .role-link-icon {
 }
 
 .prepped-description-copy {
+  display: grid;
+  gap: 8px;
   max-height: 360px;
   padding: 0 14px 14px;
   overflow: auto;
   color: var(--text);
   font-size: 0.84rem;
   line-height: 1.55;
+}
+
+.prepped-description-copy h3 {
+  margin: 10px 0 0;
+  color: var(--text);
+  font-size: 0.98rem;
+  line-height: 1.25;
+}
+
+.prepped-description-copy h3:first-child {
+  margin-top: 0;
+}
+
+.prepped-description-copy p,
+.prepped-description-copy ul,
+.prepped-description-copy ol {
+  margin: 0;
+}
+
+.prepped-description-copy ul,
+.prepped-description-copy ol {
+  padding-left: 1.2rem;
+}
+
+.prepped-description-copy li + li {
+  margin-top: 2px;
 }
 
 .prepped-document {
