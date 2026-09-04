@@ -4264,21 +4264,23 @@ function renderApplicationQuestionsWorkspace(job) {
   const loading = loadingApplicationAnswerRoleIds.has(roleId);
   const loadError = applicationAnswerLoadErrors.get(roleId);
   const savedCount = records.filter((record) => record?.status === "completed" && record?.answer).length;
-  return `<section class="application-questions-workspace" aria-labelledby="application-questions-heading-${roleId}">
-    <div class="application-questions-heading"><div><p class="eyebrow">Application helper</p><h4 id="application-questions-heading-${roleId}">Application questions</h4></div><span>${savedCount} saved</span></div>
-    <p class="application-questions-intro">Paste a question from an application form to generate and keep a role-specific answer.</p>
-    <div class="application-answer-history" aria-live="polite">
-      ${loading && !records.length ? '<p class="application-answer-empty">Loading saved answers…</p>' : ""}
-      ${loadError ? `<p class="prepped-error">${escapeUiText(loadError)}</p>` : ""}
-      ${!loading && !loadError && !records.length ? '<p class="application-answer-empty">No application questions saved yet.</p>' : ""}
-      ${records.map((record, index) => renderApplicationAnswerRecord(record, index, pending)).join("")}
+  return `<details class="application-questions-workspace" aria-labelledby="application-questions-heading-${roleId}" ${records.length ? "open" : ""}>
+    <summary class="application-questions-heading"><div><p class="eyebrow">Application helper</p><h4 id="application-questions-heading-${roleId}">Application questions</h4></div><span>${savedCount} saved</span></summary>
+    <div class="application-questions-body">
+      <p class="application-questions-intro">Paste a question from an application form to generate and keep a role-specific answer.</p>
+      <div class="application-answer-history" aria-live="polite">
+        ${loading && !records.length ? '<p class="application-answer-empty">Loading saved answers…</p>' : ""}
+        ${loadError ? `<p class="prepped-error">${escapeUiText(loadError)}</p>` : ""}
+        ${!loading && !loadError && !records.length ? '<p class="application-answer-empty">No application questions saved yet.</p>' : ""}
+        ${records.map((record, index) => renderApplicationAnswerRecord(record, index, pending)).join("")}
+      </div>
+      <div class="application-question-composer">
+        <label for="application-question-${roleId}">Question</label>
+        <textarea id="application-question-${roleId}" data-application-question-draft rows="4" placeholder="Paste an application question…" ${pending ? "disabled" : ""}>${escapeHtml(draft)}</textarea>
+        <div><small>Answers are saved to this role. Asking never changes its status.</small><button class="application-question-submit" type="button" data-application-question-submit aria-busy="${pending ? "true" : "false"}" ${pending || !draft.trim() ? "disabled" : ""}>${pending ? "Generating…" : "Generate answer"}</button></div>
+      </div>
     </div>
-    <div class="application-question-composer">
-      <label for="application-question-${roleId}">Question</label>
-      <textarea id="application-question-${roleId}" data-application-question-draft rows="4" placeholder="Paste an application question…" ${pending ? "disabled" : ""}>${escapeHtml(draft)}</textarea>
-      <div><small>Answers are saved to this role. Asking never changes its status.</small><button class="application-question-submit" type="button" data-application-question-submit aria-busy="${pending ? "true" : "false"}" ${pending || !draft.trim() ? "disabled" : ""}>${pending ? "Generating…" : "Generate answer"}</button></div>
-    </div>
-  </section>`;
+  </details>`;
 }
 
 function renderApplicationAnswerRecord(record, index, rolePending) {
@@ -4462,17 +4464,14 @@ function renderPreppedDocument(job, documentKind, label) {
     && (status === "ready" || retryingFailedDocument)
     && (retryingFailedDocument || documentKind === "cover-letter" || String(comments).trim());
   const previewUrl = `/api/autoprep/roles/${encodeURIComponent(job.role_id)}/documents/${documentKind}.pdf?v=${encodeURIComponent(job.updated_at || "")}`;
-  const viewLink = artifactPath
-    ? `<a class="prep-cover-pdf-link" data-autoprep-view="${documentKind}" href="${escapeHtml(previewUrl)}" target="_blank" rel="noreferrer" aria-label="View ${escapeHtml(label.toLowerCase())} PDF in browser">View PDF</a>`
-    : "";
+  const filenameMarkup = artifactPath
+    ? `<a class="prepped-filename-link" data-autoprep-view="${documentKind}" href="${escapeHtml(previewUrl)}" target="_blank" rel="noreferrer" aria-label="Open ${escapeHtml(label.toLowerCase())} PDF in browser">${escapeHtml(filename)}</a>`
+    : escapeHtml(filename);
   return `
     <section class="prepped-document status-${escapeHtml(status)}">
       <div class="prepped-document-heading"><h4>${escapeHtml(label)}</h4><span>${escapeHtml(autoprepStatusLabel(status))}</span></div>
-      <p class="prepped-filename">${escapeHtml(filename)}</p>
+      <p class="prepped-filename">${filenameMarkup}</p>
       ${error ? `<p class="prepped-error">${escapeHtml(error)}</p>` : ""}
-      <div class="prepped-document-actions">
-        ${viewLink}
-      </div>
       <label class="prepped-comments-label" for="prepped-comments-${escapeHtml(key)}">${commentsLabel}</label>
       <textarea id="prepped-comments-${escapeHtml(key)}" data-autoprep-comments="${documentKind}" rows="4" placeholder="${commentsPlaceholder}" ${active ? "disabled" : ""}>${escapeUiText(comments)}</textarea>
       <button class="prepped-regenerate" type="button" data-autoprep-regenerate="${documentKind}" ${canRegenerate ? "" : "disabled"}>${active ? "Regenerating..." : `Regenerate ${escapeHtml(label)}`}</button>

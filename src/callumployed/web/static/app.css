@@ -4859,6 +4859,19 @@ a:hover .role-link-icon {
   overflow-wrap: anywhere;
 }
 
+.prepped-filename-link {
+  color: var(--green);
+  font-weight: 850;
+  text-decoration: underline;
+  text-decoration-color: rgb(0 137 123 / 0.38);
+  text-underline-offset: 3px;
+}
+
+.prepped-filename-link:hover {
+  color: var(--ink);
+  text-decoration-color: currentcolor;
+}
+
 .prepped-error,
 .status-failed,
 .status-interrupted {
@@ -5064,8 +5077,7 @@ a:hover .role-link-icon {
   white-space: normal;
 }
 
-.material-source-actions,
-.prepped-document-actions {
+.material-source-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
@@ -5250,10 +5262,7 @@ a:hover .role-link-icon {
 
 /* Persisted role-specific application Q&A workspace */
 .application-questions-workspace {
-  display: grid;
-  gap: 16px;
   margin-top: 22px;
-  padding: clamp(16px, 3vw, 26px);
   border: 1px solid #cfd9d5;
   border-radius: 18px;
   background: linear-gradient(145deg, #fbfdfc, #f3f8f6);
@@ -5268,6 +5277,33 @@ a:hover .role-link-icon {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.application-questions-heading {
+  padding: clamp(16px, 3vw, 26px);
+  cursor: pointer;
+  list-style: none;
+}
+
+.application-questions-heading::-webkit-details-marker {
+  display: none;
+}
+
+.application-questions-heading::after {
+  content: "+";
+  color: var(--green);
+  font-size: 1.3rem;
+  font-weight: 850;
+}
+
+.application-questions-workspace[open] > .application-questions-heading::after {
+  content: "−";
+}
+
+.application-questions-body {
+  display: grid;
+  gap: 16px;
+  padding: 0 clamp(16px, 3vw, 26px) clamp(16px, 3vw, 26px);
 }
 
 .application-questions-heading h4 {
@@ -5412,11 +5448,17 @@ a:hover .role-link-icon {
 
   .application-questions-workspace {
     margin-inline: -4px;
-    padding: 14px;
     border-radius: 14px;
   }
 
-  .application-questions-heading,
+  .application-questions-heading {
+    padding: 14px;
+  }
+
+  .application-questions-body {
+    padding: 0 14px 14px;
+  }
+
   .application-question-composer > div {
     align-items: stretch;
     flex-direction: column;
