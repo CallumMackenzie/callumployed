@@ -27,6 +27,46 @@ def test_bulk_cover_letter_button_includes_partial_failures() -> None:
     assert "preppedJobs.filter(autoprepCoverLetterIsRegeneratable).length" in source
 
 
+def test_bulk_resume_button_queues_terminal_idle_resumes() -> None:
+    source = FRONTEND_SOURCE.read_text()
+    index = (STATIC_DIRECTORY / "index.html").read_text()
+
+    assert 'id="regenerate-all-resumes"' in index
+    assert (
+        'const regenerateAllResumesButton = document.querySelector("#regenerate-all-resumes")'
+        in source
+    )
+    assert "function autoprepResumeIsRegeneratable(job)" in source
+    assert '["ready", "failed", "interrupted"].includes(job.resume_status)' in source
+    assert "preppedJobs.filter(autoprepResumeIsRegeneratable).length" in source
+    assert 'fetch("/api/autoprep/resumes/regenerate", {' in source
+    assert 'autoprepActionKey("regenerate-all-resumes")' in source
+    assert (
+        'regenerateAllResumesButton.addEventListener("click", regenerateAllPreppedResumes)'
+        in source
+    )
+
+
+def test_bulk_document_regeneration_buttons_share_one_action_group_and_style() -> None:
+    index = (STATIC_DIRECTORY / "index.html").read_text()
+    styles = (STATIC_DIRECTORY / "app.css").read_text()
+
+    action_group = index[
+        index.index('<div class="prepped-regeneration-actions">') : index.index(
+            '<div class="prepped-workspace">'
+        )
+    ]
+    assert 'id="regenerate-all-resumes"' in action_group
+    assert 'id="regenerate-all-cover-letters"' in action_group
+    assert ".prepped-regeneration-actions {" in styles
+    assert "justify-content: flex-end;" in styles
+    assert "#regenerate-all-resumes,\n#regenerate-all-cover-letters {" in styles
+    assert (
+        "#regenerate-all-resumes:disabled,\n#regenerate-all-cover-letters:disabled {"
+        in styles
+    )
+
+
 def test_prepped_application_questions_workspace_is_persistent_and_safe() -> None:
     source = FRONTEND_SOURCE.read_text()
 
@@ -63,6 +103,35 @@ def test_prepped_application_questions_workspace_is_persistent_and_safe() -> Non
         )
     ]
     assert "updateRoleStatusById" not in submitter
+
+
+def test_resume_regeneration_allows_empty_comments() -> None:
+    source = FRONTEND_SOURCE.read_text()
+    handler = source[
+        source.index("async function regenerateAutoprepDocument") : source.index(
+            "async function regenerateAllPreppedCoverLetters"
+        )
+    ]
+
+    assert 'if (!comments && documentKind !== "cover-letter"' not in handler
+    assert "comments," in handler
+    assert 'autoprepActionKey(`regenerate-${documentKind}`)' in handler
+
+    renderer = source[
+        source.index("function renderPreppedDocument") : source.index(
+            "async function regenerateAutoprepDocument"
+        )
+    ]
+    assert "String(comments).trim()" not in renderer
+    assert 'const commentsLabel = "Optional comments for the next version";' in renderer
+    assert (
+        'const commentsPlaceholder = "Optionally describe specific, truthful changes...";'
+        in renderer
+    )
+    assert (
+        'const canRegenerate = !active\n    && (status === "ready" || retryingFailedDocument);'
+        in renderer
+    )
 
 
 def test_prepped_role_description_uses_structured_description_renderer() -> None:
@@ -159,8 +228,8 @@ def test_application_questions_styles_and_cache_keys_are_versioned() -> None:
     assert "#close-prepped" in styles
     assert "text-transform: none" in styles
     assert ".application-questions-workspace[open]" in styles
-    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260903-19" />' in index
-    assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-19"></script>' in index
+    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260904-23" />' in index
+    assert '<script type="module" src="/assets/app.js?v=vanilla-20260904-23"></script>' in index
 
 
 def test_currently_applying_folder_ui_is_explained_and_selection_driven() -> None:
@@ -178,8 +247,8 @@ def test_currently_applying_folder_ui_is_explained_and_selection_driven() -> Non
     assert "/currently-applying" in source
     assert "/currently-applying/open" in source
     assert ".currently-applying-guide" in styles
-    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260903-19" />' in index
-    assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-19"></script>' in index
+    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260904-23" />' in index
+    assert '<script type="module" src="/assets/app.js?v=vanilla-20260904-23"></script>' in index
 
 
 def test_every_prepped_role_transition_refreshes_currently_applying_folder() -> None:
@@ -212,7 +281,7 @@ def test_frontend_uses_direct_vanilla_assets_without_framework_shell() -> None:
     assert not (REPOSITORY_ROOT / "frontend").exists()
     assert not (STATIC_DIRECTORY / "build").exists()
     assert not (STATIC_DIRECTORY / "shell.html").exists()
-    assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-19"></script>' in index
+    assert '<script type="module" src="/assets/app.js?v=vanilla-20260904-23"></script>' in index
     assert '<div id="root"></div>' not in index
     assert "dangerouslySetInnerHTML" not in index
     assert "dangerouslySetInnerHTML" not in source

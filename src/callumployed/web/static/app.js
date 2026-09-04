@@ -49,6 +49,7 @@ const preppedRolesButton = document.querySelector("#prepped-roles");
 const preppedView = document.querySelector("#prepped-view");
 const closePreppedButton = document.querySelector("#close-prepped");
 const preppedSummary = document.querySelector("#prepped-summary");
+const regenerateAllResumesButton = document.querySelector("#regenerate-all-resumes");
 const regenerateAllCoverLettersButton = document.querySelector("#regenerate-all-cover-letters");
 const preppedList = document.querySelector("#prepped-list");
 const preppedDetail = document.querySelector("#prepped-detail");
@@ -273,6 +274,7 @@ let prepCoverLetterSaveStateByRoleId = new Map();
 let preppedJobs = [];
 let selectedPreppedRoleId = null;
 let preppedPoll = null;
+let bulkResumeRegenerationPending = false;
 let bulkCoverLetterRegenerationPending = false;
 let currentlyApplyingGuideOpen = false;
 let currentlyApplyingStatus = "Select a prepared role to update this folder.";
@@ -4194,12 +4196,30 @@ function autoprepCoverLetterIsRegeneratable(job) {
   );
 }
 
+function autoprepResumeIsRegeneratable(job) {
+  return (
+    job.worker_state === "idle"
+    && ["ready", "failed", "interrupted"].includes(job.resume_status)
+  );
+}
+
 function renderPreppedRoles() {
   const activeCount = preppedJobs.filter(autoprepJobIsActive).length;
+  const regeneratableResumeCount = preppedJobs.filter(autoprepResumeIsRegeneratable).length;
   const regeneratableCount = preppedJobs.filter(autoprepCoverLetterIsRegeneratable).length;
   preppedSummary.textContent = preppedJobs.length
     ? `${preppedJobs.length} prepped ${preppedJobs.length === 1 ? "role" : "roles"}${activeCount ? ` · ${activeCount} in progress` : ""}`
     : "No queued or prepared roles.";
+  regenerateAllResumesButton.disabled = (
+    bulkResumeRegenerationPending || regeneratableResumeCount === 0
+  );
+  regenerateAllResumesButton.setAttribute(
+    "aria-busy",
+    bulkResumeRegenerationPending ? "true" : "false",
+  );
+  regenerateAllResumesButton.textContent = bulkResumeRegenerationPending
+    ? "queuing resumes..."
+    : "regenerate all resumes";
   regenerateAllCoverLettersButton.disabled = (
     bulkCoverLetterRegenerationPending || regeneratableCount === 0
   );
@@ -4573,15 +4593,12 @@ function renderPreppedDocument(job, documentKind, label) {
   const instruction = job[`${fieldKind}_instruction`] || "";
   const key = `${job.role_id}:${documentKind}`;
   const comments = preppedCommentsByDocument.get(key) ?? instruction;
-  const commentsLabel = documentKind === "cover-letter" ? "Optional comments for the next version" : "Comments for the next version";
-  const commentsPlaceholder = documentKind === "cover-letter"
-    ? "Optionally describe specific, truthful changes..."
-    : "Describe specific, truthful changes...";
+  const commentsLabel = "Optional comments for the next version";
+  const commentsPlaceholder = "Optionally describe specific, truthful changes...";
   const retryingFailedDocument = ["failed", "interrupted"].includes(status);
   const active = job.worker_state !== "idle" || ["queued", "generating", "generating_tweaks", "regenerating"].includes(status);
   const canRegenerate = !active
-    && (status === "ready" || retryingFailedDocument)
-    && (retryingFailedDocument || documentKind === "cover-letter" || String(comments).trim());
+    && (status === "ready" || retryingFailedDocument);
   const previewUrl = `/api/autoprep/roles/${encodeURIComponent(job.role_id)}/documents/${documentKind}.pdf?v=${encodeURIComponent(job.updated_at || "")}`;
   const filenameMarkup = artifactPath
     ? `<a class="prepped-filename-link" data-autoprep-view="${documentKind}" href="${escapeHtml(previewUrl)}" target="_blank" rel="noreferrer" aria-label="Open ${escapeHtml(label.toLowerCase())} PDF in browser">${escapeHtml(filename)}</a>`
@@ -4605,10 +4622,6 @@ async function regenerateAutoprepDocument(job, documentKind, button) {
   const retryingFailedDocument = ["failed", "interrupted"].includes(status);
   const textarea = preppedDetail.querySelector(`[data-autoprep-comments="${documentKind}"]`);
   const comments = String(textarea?.value || preppedCommentsByDocument.get(key) || "").trim();
-  if (!comments && documentKind !== "cover-letter" && !retryingFailedDocument) {
-    textarea?.focus();
-    return;
-  }
   button.disabled = true;
   button.textContent = "Queuing regeneration...";
   try {
@@ -4663,6 +4676,36 @@ async function regenerateAllPreppedCoverLetters() {
     window.alert(error instanceof Error ? error.message : "Bulk regeneration request failed");
   } finally {
     bulkCoverLetterRegenerationPending = false;
+    renderPreppedRoles();
+  }
+}
+
+async function regenerateAllPreppedResumes() {
+  if (bulkResumeRegenerationPending) return;
+  bulkResumeRegenerationPending = true;
+  renderPreppedRoles();
+  try {
+    const response = await fetch("/api/autoprep/resumes/regenerate", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        idempotency_key: autoprepActionKey("regenerate-all-resumes"),
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Bulk regeneration request failed");
+    (payload.jobs || []).forEach((updatedJob) => {
+      const index = preppedJobs.findIndex(
+        (job) => Number(job.role_id) === Number(updatedJob.role_id),
+      );
+      if (index >= 0) preppedJobs[index] = updatedJob;
+    });
+    await refreshPreppedRoles();
+    startPreppedPolling();
+  } catch (error) {
+    window.alert(error instanceof Error ? error.message : "Bulk regeneration request failed");
+  } finally {
+    bulkResumeRegenerationPending = false;
     renderPreppedRoles();
   }
 }
@@ -4733,6 +4776,7 @@ preppedRolesButton.addEventListener("click", () => openPreppedView());
 closePreppedButton.addEventListener("click", closePreppedView);
 
 regenerateAllCoverLettersButton.addEventListener("click", regenerateAllPreppedCoverLetters);
+regenerateAllResumesButton.addEventListener("click", regenerateAllPreppedResumes);
 
 preppedList.addEventListener("click", (event) => {
   const roleButton = event.target.closest("[data-prepped-role]");

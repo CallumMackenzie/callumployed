@@ -243,6 +243,35 @@ def test_partial_failure_preserves_resume_and_retries_only_cover_letter(tmp_path
         assert replay["cover_letter_attempt"] == retried["cover_letter_attempt"] == 2
 
 
+def test_resume_regeneration_uses_default_instruction_when_comments_are_empty(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "autoprep-empty-resume-comments.sqlite3"
+    with db.connect(database) as connection:
+        db.run_migrations(connection)
+        ensure_autoprep_schema(connection)
+        role_id = _interested_role(connection)
+        [job] = enqueue_autoprep_jobs(connection, [role_id], idempotency_key="initial")
+        assert claim_next_autoprep_job(connection) is not None
+        mark_autoprep_document(connection, job["id"], "resume", "ready")
+        mark_autoprep_document(connection, job["id"], "cover_letter", "ready")
+        finish_autoprep_worker(connection, job["id"])
+
+        regenerated = queue_autoprep_regeneration(
+            connection,
+            role_id,
+            "resume",
+            instruction="",
+            idempotency_key="empty-resume-comments",
+        )
+
+        assert regenerated["resume_status"] == "queued"
+        assert regenerated["resume_instruction"] == (
+            autoprep_service.DEFAULT_RESUME_REGENERATION_INSTRUCTION
+        )
+        assert regenerated["cover_letter_status"] == "ready"
+
+
 def test_failed_sibling_documents_can_join_one_queued_retry(tmp_path: Path) -> None:
     database = tmp_path / "autoprep-transition-retry.sqlite3"
     with db.connect(database) as connection:
@@ -600,6 +629,34 @@ def test_autoprep_api_lists_only_interested_and_returns_accepted_jobs_immediatel
             )
             finish_autoprep_worker(connection, accepted["jobs"][0]["id"])
 
+        empty_regenerate_request = Request(
+            f"{base_url}/api/autoprep/roles/{interested_id}/regenerate/resume",
+            data=json.dumps(
+                {
+                    "comments": "",
+                    "idempotency_key": "regenerate-resume-api-empty",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(empty_regenerate_request, timeout=5) as response:
+            assert response.status == 202
+            empty_regeneration = json.loads(response.read())["job"]
+        assert empty_regeneration["resume_status"] == "queued"
+        assert empty_regeneration["resume_instruction"] == (
+            autoprep_service.DEFAULT_RESUME_REGENERATION_INSTRUCTION
+        )
+        with db.connect() as connection:
+            mark_autoprep_document(
+                connection,
+                accepted["jobs"][0]["id"],
+                "resume",
+                status="ready",
+                artifact_path=str(resume_pdf),
+            )
+            finish_autoprep_worker(connection, accepted["jobs"][0]["id"])
+
         opened: list[list[str]] = []
         monkeypatch.setattr(
             web_server.subprocess,
@@ -806,6 +863,158 @@ def test_bulk_cover_letter_regeneration_queues_ready_roles_and_reports_skips(
         assert unchanged_busy["cover_letter_status"] == "ready"
 
 
+def test_bulk_resume_regeneration_queues_resumes_without_touching_cover_letters(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "autoprep-bulk-resume.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    with db.connect() as connection:
+        ensure_autoprep_schema(connection)
+        ready_role_id = _interested_role(connection, company="Alpha", title="Ready Engineer")
+        failed_role_id = _interested_role(connection, company="Beta", title="Failed Engineer")
+        ready_job, failed_job = enqueue_autoprep_jobs(
+            connection,
+            [ready_role_id, failed_role_id],
+            idempotency_key="bulk-resume-setup",
+        )
+        for job, resume_status in ((ready_job, "ready"), (failed_job, "failed")):
+            claimed = claim_next_autoprep_job(connection)
+            assert claimed is not None
+            assert claimed["id"] == job["id"]
+            mark_autoprep_document(
+                connection,
+                job["id"],
+                "resume",
+                resume_status,
+                artifact_path=(
+                    str(tmp_path / f"resume-{job['id']}.pdf")
+                    if resume_status == "ready"
+                    else None
+                ),
+                error="Resume generation failed." if resume_status == "failed" else None,
+            )
+            mark_autoprep_document(
+                connection,
+                job["id"],
+                "cover_letter",
+                "ready",
+                artifact_path=str(tmp_path / f"cover-letter-{job['id']}.pdf"),
+            )
+            finish_autoprep_worker(connection, job["id"])
+
+        result = autoprep_service.queue_all_prepped_resume_regenerations(
+            connection,
+            idempotency_key="bulk-resume-click",
+        )
+
+        assert result["requested_count"] == 2
+        assert result["queued_count"] == 2
+        assert [job["role_id"] for job in result["jobs"]] == [
+            ready_role_id,
+            failed_role_id,
+        ]
+        assert all(job["resume_status"] == "queued" for job in result["jobs"])
+        assert all(job["cover_letter_status"] == "ready" for job in result["jobs"])
+        assert all(
+            job["resume_instruction"] == autoprep_service.BULK_RESUME_REGENERATION_INSTRUCTION
+            for job in result["jobs"]
+        )
+
+        replay = autoprep_service.queue_all_prepped_resume_regenerations(
+            connection,
+            idempotency_key="bulk-resume-click",
+        )
+        assert replay["queued_count"] == 2
+        assert [job["role_id"] for job in replay["jobs"]] == [
+            ready_role_id,
+            failed_role_id,
+        ]
+
+
+def test_bulk_resume_regeneration_rolls_back_jobs_and_request_ledger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "autoprep-bulk-resume-rollback.sqlite3"
+    with db.connect(database) as connection:
+        db.run_migrations(connection)
+        ensure_autoprep_schema(connection)
+        role_ids = [
+            _interested_role(connection, company="Acme", title="First Engineer"),
+            _interested_role(connection, company="Beta", title="Second Engineer"),
+        ]
+        jobs = enqueue_autoprep_jobs(connection, role_ids, idempotency_key="initial")
+        for _job in jobs:
+            claimed = claim_next_autoprep_job(connection)
+            assert claimed is not None
+            mark_autoprep_document(connection, claimed["id"], "resume", "ready")
+            mark_autoprep_document(connection, claimed["id"], "cover_letter", "ready")
+            finish_autoprep_worker(connection, claimed["id"])
+
+        original_queue = autoprep_service._queue_autoprep_regeneration_in_transaction
+        retry_count = 0
+
+        def fail_second_retry(*args, **kwargs):
+            nonlocal retry_count
+            retry_count += 1
+            if retry_count == 2:
+                raise RuntimeError("forced second retry failure")
+            return original_queue(*args, **kwargs)
+
+        monkeypatch.setattr(
+            autoprep_service,
+            "_queue_autoprep_regeneration_in_transaction",
+            fail_second_retry,
+        )
+        with pytest.raises(RuntimeError, match="forced second retry failure"):
+            autoprep_service.queue_all_prepped_resume_regenerations(
+                connection,
+                idempotency_key="bulk-resume-rollback",
+            )
+
+        restored = [get_autoprep_job(connection, job["id"]) for job in jobs]
+        assert [job["resume_status"] for job in restored] == ["ready", "ready"]
+        ledger_count = connection.execute(
+            "SELECT COUNT(*) FROM autoprep_bulk_resume_requests"
+        ).fetchone()[0]
+        assert ledger_count == 0
+
+
+def test_bulk_document_regeneration_namespaces_per_role_idempotency_keys(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "autoprep-bulk-document-key-namespace.sqlite3"
+    with db.connect(database) as connection:
+        db.run_migrations(connection)
+        ensure_autoprep_schema(connection)
+        role_id = _interested_role(connection)
+        [job] = enqueue_autoprep_jobs(connection, [role_id], idempotency_key="initial")
+        assert claim_next_autoprep_job(connection) is not None
+        mark_autoprep_document(connection, job["id"], "resume", "ready")
+        mark_autoprep_document(connection, job["id"], "cover_letter", "ready")
+        finish_autoprep_worker(connection, job["id"])
+
+        cover_result = autoprep_service.queue_all_prepped_cover_letter_regenerations(
+            connection,
+            idempotency_key="shared-client-key",
+        )
+        assert cover_result["queued_count"] == 1
+        mark_autoprep_document(connection, job["id"], "cover_letter", "ready")
+        finish_autoprep_worker(connection, job["id"])
+
+        resume_result = autoprep_service.queue_all_prepped_resume_regenerations(
+            connection,
+            idempotency_key="shared-client-key",
+        )
+
+        assert resume_result["queued_count"] == 1
+        assert resume_result["skipped"] == []
+        assert resume_result["jobs"][0]["resume_status"] == "queued"
+        assert resume_result["jobs"][0]["cover_letter_status"] == "ready"
+
+
 def test_bulk_cover_letter_regeneration_api_queues_prepped_cover_letters(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -887,6 +1096,59 @@ def test_bulk_cover_letter_regeneration_api_queues_prepped_cover_letters(
         with urlopen(request, timeout=5) as response:
             replay = json.loads(response.read())
         assert replay["jobs"][0]["id"] == payload["jobs"][0]["id"]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_bulk_resume_regeneration_api_queues_only_resumes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "autoprep-bulk-resume-api.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    with db.connect() as connection:
+        ensure_autoprep_schema(connection)
+        role_id = _interested_role(connection, title="Platform Engineer")
+        [job] = enqueue_autoprep_jobs(connection, [role_id], idempotency_key="resume-api-setup")
+        assert claim_next_autoprep_job(connection) is not None
+        mark_autoprep_document(
+            connection,
+            job["id"],
+            "resume",
+            "ready",
+            artifact_path=str(tmp_path / "resume.pdf"),
+        )
+        mark_autoprep_document(
+            connection,
+            job["id"],
+            "cover_letter",
+            "ready",
+            artifact_path=str(tmp_path / "cover-letter.pdf"),
+        )
+        finish_autoprep_worker(connection, job["id"])
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/autoprep/resumes/regenerate",
+            data=json.dumps({"idempotency_key": "bulk-resume-api-click"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=5) as response:
+            assert response.status == 202
+            payload = json.loads(response.read())
+
+        assert payload["accepted"] is True
+        assert payload["queued_count"] == 1
+        assert payload["jobs"][0]["role_id"] == role_id
+        assert payload["jobs"][0]["resume_status"] == "queued"
+        assert payload["jobs"][0]["cover_letter_status"] == "ready"
     finally:
         server.shutdown()
         thread.join(timeout=5)

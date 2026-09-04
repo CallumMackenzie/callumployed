@@ -519,7 +519,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "dangerouslySetInnerHTML" not in markup
         assert "dangerouslySetInnerHTML" not in app_javascript
         assert '<div id="root"></div>' not in index_markup
-        assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-19"></script>' in (
+        assert '<script type="module" src="/assets/app.js?v=vanilla-20260904-23"></script>' in (
             index_markup
         )
 
@@ -661,8 +661,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=vanilla-20260903-19" in index_markup
-        assert "/assets/app.js?v=vanilla-20260903-19" in index_markup
+        assert "/assets/app.css?v=vanilla-20260904-23" in index_markup
+        assert "/assets/app.js?v=vanilla-20260904-23" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -681,6 +681,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert ">View PDF</a>" not in app_javascript
         assert "Preview PDF" not in app_javascript
         assert "data-autoprep-preview" not in app_javascript
+        assert 'id="regenerate-all-resumes"' in markup
         assert 'id="regenerate-all-cover-letters"' in markup
         assert 'id="prepped-bulk-status"' not in markup
         assert "No cover letters were queued." not in app_javascript
@@ -695,7 +696,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
             app_javascript
         )
         assert "movingToDisinterested || autoprepJobIsActive(job)" in app_javascript
-        assert 'documentKind === "cover-letter" ? "Optional comments for the next version"' in (
+        assert 'const commentsLabel = "Optional comments for the next version";' in (
             app_javascript
         )
         assert "autoprepJobHasGenerationFailure(job)" in app_javascript
@@ -728,9 +729,10 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
             app_javascript
         )
         assert 'retryingFailedDocument ? "retry" : "regenerate"' in app_javascript
-        assert 'if (!comments && documentKind !== "cover-letter" && !retryingFailedDocument)' in (
-            app_javascript
+        empty_resume_guard = (
+            'if (!comments && documentKind !== "cover-letter" && !retryingFailedDocument)'
         )
+        assert empty_resume_guard not in app_javascript
         bulk_function = app_javascript[
             app_javascript.index(
                 "async function regenerateAllPreppedCoverLetters()"

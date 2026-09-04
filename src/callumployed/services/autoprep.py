@@ -17,6 +17,11 @@ from callumployed.services.app_settings import APPLICANT_PROFILE_REPREP_DUE_CONF
 
 DocumentKind = Literal["resume", "cover_letter"]
 LOGGER = logging.getLogger(__name__)
+DEFAULT_RESUME_REGENERATION_INSTRUCTION = (
+    "Refresh this resume using the current role description and approved application "
+    "materials. Preserve source fidelity and professional one-page formatting."
+)
+BULK_RESUME_REGENERATION_INSTRUCTION = DEFAULT_RESUME_REGENERATION_INSTRUCTION
 DEFAULT_COVER_LETTER_REGENERATION_INSTRUCTION = (
     "Refresh this cover letter using the current role description and approved application "
     "materials. Preserve source fidelity and professional one-page formatting."
@@ -217,6 +222,12 @@ def _ensure_autoprep_schema(connection: sqlite3.Connection) -> None:
         );
 
         CREATE TABLE IF NOT EXISTS autoprep_bulk_cover_letter_requests (
+            idempotency_key TEXT PRIMARY KEY,
+            result_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS autoprep_bulk_resume_requests (
             idempotency_key TEXT PRIMARY KEY,
             result_json TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -989,10 +1000,11 @@ def queue_autoprep_regeneration(
     if not clean_key:
         raise ValueError("An idempotency key is required.")
     if not clean_instruction:
-        if document_kind == "cover_letter":
-            clean_instruction = DEFAULT_COVER_LETTER_REGENERATION_INSTRUCTION
-        else:
-            raise ValueError("Add comments before regenerating the document.")
+        clean_instruction = (
+            DEFAULT_COVER_LETTER_REGENERATION_INSTRUCTION
+            if document_kind == "cover_letter"
+            else DEFAULT_RESUME_REGENERATION_INSTRUCTION
+        )
     if len(clean_instruction) > 4000:
         raise ValueError("Regeneration comments must be 4000 characters or fewer.")
     try:
@@ -1014,7 +1026,7 @@ def queue_autoprep_regeneration(
     return get_autoprep_job(connection, job_id)
 
 
-def _bulk_cover_letter_result(
+def _bulk_document_result(
     connection: sqlite3.Connection,
     saved: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1042,7 +1054,7 @@ def get_latest_bulk_cover_letter_regeneration(
     ).fetchone()
     if row is None:
         return None
-    result = _bulk_cover_letter_result(connection, json.loads(str(row["result_json"])))
+    result = _bulk_document_result(connection, json.loads(str(row["result_json"])))
     result["idempotency_key"] = str(row["idempotency_key"])
     result["created_at"] = str(row["created_at"])
     return result
@@ -1053,23 +1065,58 @@ def queue_all_prepped_cover_letter_regenerations(
     *,
     idempotency_key: str,
 ) -> dict[str, Any]:
+    return _queue_all_prepped_document_regenerations(
+        connection,
+        document_kind="cover_letter",
+        idempotency_key=idempotency_key,
+    )
+
+
+def queue_all_prepped_resume_regenerations(
+    connection: sqlite3.Connection,
+    *,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    return _queue_all_prepped_document_regenerations(
+        connection,
+        document_kind="resume",
+        idempotency_key=idempotency_key,
+    )
+
+
+def _queue_all_prepped_document_regenerations(
+    connection: sqlite3.Connection,
+    *,
+    document_kind: DocumentKind,
+    idempotency_key: str,
+) -> dict[str, Any]:
     clean_key = idempotency_key.strip()
     if not clean_key:
         raise ValueError("An idempotency key is required.")
+    request_table = (
+        "autoprep_bulk_resume_requests"
+        if document_kind == "resume"
+        else "autoprep_bulk_cover_letter_requests"
+    )
+    instruction = (
+        BULK_RESUME_REGENERATION_INSTRUCTION
+        if document_kind == "resume"
+        else BULK_COVER_LETTER_REGENERATION_INSTRUCTION
+    )
     try:
         connection.execute("BEGIN IMMEDIATE")
         existing = connection.execute(
-            """
+            f"""
             SELECT result_json
-            FROM autoprep_bulk_cover_letter_requests
+            FROM {request_table}
             WHERE idempotency_key = ?
-            """,
+            """,  # noqa: S608 - table is selected from two internal constants.
             (clean_key,),
         ).fetchone()
         if existing is not None:
             saved = json.loads(str(existing["result_json"]))
             connection.commit()
-            return _bulk_cover_letter_result(connection, saved)
+            return _bulk_document_result(connection, saved)
 
         prepped_jobs = list_autoprep_jobs(connection)
         queued_role_ids: list[int] = []
@@ -1079,9 +1126,9 @@ def queue_all_prepped_cover_letter_regenerations(
                 _queue_autoprep_regeneration_in_transaction(
                     connection,
                     job,
-                    "cover_letter",
-                    clean_instruction=BULK_COVER_LETTER_REGENERATION_INSTRUCTION,
-                    clean_key=f"{clean_key}-role-{job['role_id']}",
+                    document_kind,
+                    clean_instruction=instruction,
+                    clean_key=f"{clean_key}-{document_kind}-role-{job['role_id']}",
                 )
                 queued_role_ids.append(int(job["role_id"]))
             except (AutoprepConflictError, ValueError) as error:
@@ -1099,17 +1146,17 @@ def queue_all_prepped_cover_letter_regenerations(
             "skipped": skipped,
         }
         connection.execute(
-            """
-            INSERT INTO autoprep_bulk_cover_letter_requests (idempotency_key, result_json)
+            f"""
+            INSERT INTO {request_table} (idempotency_key, result_json)
             VALUES (?, ?)
-            """,
+            """,  # noqa: S608 - table is selected from two internal constants.
             (clean_key, json.dumps(saved, separators=(",", ":"))),
         )
         connection.commit()
     except Exception:
         connection.rollback()
         raise
-    return _bulk_cover_letter_result(connection, saved)
+    return _bulk_document_result(connection, saved)
 
 
 def _queue_due_applicant_profile_reprep(connection: sqlite3.Connection) -> bool:

@@ -4615,12 +4615,21 @@ a:hover .role-link-icon {
   justify-content: space-between;
 }
 
+.prepped-regeneration-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+#regenerate-all-resumes,
 #regenerate-all-cover-letters {
   border-color: rgb(95 43 216 / 0.28);
   background: linear-gradient(135deg, #fff, rgb(95 43 216 / 0.1));
   color: #3f228d;
 }
 
+#regenerate-all-resumes:disabled,
 #regenerate-all-cover-letters:disabled {
   cursor: not-allowed;
   opacity: 0.48;
@@ -5014,6 +5023,10 @@ a:hover .role-link-icon {
   .prepped-toolbar {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .prepped-regeneration-actions {
+    justify-content: flex-start;
   }
 }
 

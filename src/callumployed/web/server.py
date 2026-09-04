@@ -156,6 +156,7 @@ from callumployed.services.autoprep import (
     list_interested_autoprep_roles,
     mark_autoprep_document,
     queue_all_prepped_cover_letter_regenerations,
+    queue_all_prepped_resume_regenerations,
     queue_application_answer_regeneration,
     queue_autoprep_regeneration,
     recover_interrupted_application_answers,
@@ -843,7 +844,10 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             parsed_url = urlparse(self.path)
             path_parts = [part for part in PurePosixPath(parsed_url.path).parts if part != "/"]
             if path_parts == ["api", "autoprep", "cover-letters", "regenerate"]:
-                self._regenerate_all_prepped_cover_letters()
+                self._regenerate_all_prepped_documents("cover_letter")
+                return
+            if path_parts == ["api", "autoprep", "resumes", "regenerate"]:
+                self._regenerate_all_prepped_documents("resume")
                 return
             if path_parts == ["api", "autoprep", "jobs"]:
                 self._enqueue_autoprep()
@@ -1227,7 +1231,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             _wake_autoprep_coordinator()
             self._send_json_with_status({"accepted": True, "jobs": jobs}, HTTPStatus.ACCEPTED)
 
-        def _regenerate_all_prepped_cover_letters(self) -> None:
+        def _regenerate_all_prepped_documents(self, document_kind: str) -> None:
             payload = self._read_json_body()
             if payload is None:
                 return
@@ -1239,7 +1243,12 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             try:
                 with db.connect() as connection:
                     ensure_autoprep_schema(connection)
-                    result = queue_all_prepped_cover_letter_regenerations(
+                    queue_all = (
+                        queue_all_prepped_resume_regenerations
+                        if document_kind == "resume"
+                        else queue_all_prepped_cover_letter_regenerations
+                    )
+                    result = queue_all(
                         connection,
                         idempotency_key=idempotency_key,
                     )
