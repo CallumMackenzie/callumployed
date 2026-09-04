@@ -83,6 +83,69 @@ def test_prepped_role_description_uses_structured_description_renderer() -> None
     assert ".prepped-description-copy li + li" in styles
 
 
+def test_description_renderer_highlights_curated_technical_terms_safely() -> None:
+    source = FRONTEND_SOURCE.read_text()
+    styles = (STATIC_DIRECTORY / "app.css").read_text()
+
+    assert "DESCRIPTION_TECHNOLOGY_GROUPS" in source
+    assert 'language: [' in source
+    assert 'library: [' in source
+    assert 'concept: [' in source
+    for technology in ("Python", "TypeScript", "TensorFlow", "PyTorch", "JAX", "CUDA"):
+        assert f'"{technology}"' in source
+    for technology in ("Android", "iOS", "compiler", "TensorRT", "protobuf", "Wireshark"):
+        assert f'"{technology}"' in source
+    for concept in ("machine learning", "distributed systems", "model serving", "NLP"):
+        assert f'"{concept}"' in source
+    assert "DESCRIPTION_CASE_SENSITIVE_TECHNOLOGIES" in source
+    assert "exactCaseRequired && technology !== entry.canonical" in source
+    assert "DESCRIPTION_TECHNOLOGY_NEGATIVE_PREFIXES" in source
+    assert '["authorization", [/\\bwork\\s+$/i]]' in source
+    assert "excludedByContext = isExcludedDescriptionTechnology" in source
+    assert "!entry || excludedByContext ||" in source
+    assert 'if (technology !== "Go") return true;' in source
+    assert "beforeWords.slice(-3)" in source
+    assert "afterWords.slice(0, 3)" in source
+    assert "!hasRequiredContext" in source
+    assert "DESCRIPTION_COMPANY_ABOUT_HEADING_PATTERN" in source
+    for heading in ("required qualifications", "role overview", "you will", "we prefer"):
+        assert heading in source
+    assert 'escapeUiText(technology)' in source
+    assert 'description-tech-${entry.category}' in source
+    assert 'if (/:$/.test(text)) return true;' not in source
+    assert ".description-tech-language" in styles
+    assert ".description-tech-library" in styles
+    assert ".description-tech-concept" in styles
+
+
+def test_prepped_role_added_date_uses_role_creation_timestamp() -> None:
+    source = FRONTEND_SOURCE.read_text()
+    renderer = source[
+        source.index("function renderPreppedDetail()") : source.index(
+            "function normalizeApplicationAnswerRecords"
+        )
+    ]
+
+    assert 'formatCompactDate(job.role_created_at || job.date_added || job.created_at)' in renderer
+
+
+def test_prepped_role_secondary_metadata_is_compact_and_above_description() -> None:
+    source = FRONTEND_SOURCE.read_text()
+    styles = (STATIC_DIRECTORY / "app.css").read_text()
+    renderer = source[
+        source.index("function renderPreppedDetail()") : source.index(
+            "function normalizeApplicationAnswerRecords"
+        )
+    ]
+
+    assert '["Posting ID",' not in renderer
+    assert renderer.index('<dl class="prepped-role-facts">') < renderer.index(
+        'data-prepped-detail-section="description"'
+    )
+    assert "grid-template-columns: repeat(3, minmax(0, 1fr));" in styles
+    assert "min-height: 42px;" in styles
+
+
 def test_application_questions_styles_and_cache_keys_are_versioned() -> None:
     styles = (STATIC_DIRECTORY / "app.css").read_text()
     index = (STATIC_DIRECTORY / "index.html").read_text()
@@ -92,12 +155,12 @@ def test_application_questions_styles_and_cache_keys_are_versioned() -> None:
     assert ".application-question-composer" in styles
     assert ".application-question-composer textarea" in styles
     assert ".application-question-submit" in styles
-    assert "padding-top: 20px" in styles
+    assert "padding-top: 14px" in styles
     assert "#close-prepped" in styles
     assert "text-transform: none" in styles
     assert ".application-questions-workspace[open]" in styles
-    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260903-13" />' in index
-    assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-13"></script>' in index
+    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260903-19" />' in index
+    assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-19"></script>' in index
 
 
 def test_currently_applying_folder_ui_is_explained_and_selection_driven() -> None:
@@ -115,8 +178,8 @@ def test_currently_applying_folder_ui_is_explained_and_selection_driven() -> Non
     assert "/currently-applying" in source
     assert "/currently-applying/open" in source
     assert ".currently-applying-guide" in styles
-    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260903-13" />' in index
-    assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-13"></script>' in index
+    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260903-19" />' in index
+    assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-19"></script>' in index
 
 
 def test_every_prepped_role_transition_refreshes_currently_applying_folder() -> None:
@@ -149,7 +212,7 @@ def test_frontend_uses_direct_vanilla_assets_without_framework_shell() -> None:
     assert not (REPOSITORY_ROOT / "frontend").exists()
     assert not (STATIC_DIRECTORY / "build").exists()
     assert not (STATIC_DIRECTORY / "shell.html").exists()
-    assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-13"></script>' in index
+    assert '<script type="module" src="/assets/app.js?v=vanilla-20260903-19"></script>' in index
     assert '<div id="root"></div>' not in index
     assert "dangerouslySetInnerHTML" not in index
     assert "dangerouslySetInnerHTML" not in source
