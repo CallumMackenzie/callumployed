@@ -1182,6 +1182,121 @@ def test_clean_job_description_formats_known_line_start_section_labels() -> None
     )
 
 
+def test_clean_job_description_formats_conservative_cohere_style_headings() -> None:
+    description = clean_job_description(
+        "\n".join(
+            [
+                "Who are we?",
+                "Cohere builds enterprise AI systems.",
+                "Why this role?",
+                "Ship state of the art models to production.",
+                "As a Machine Learning Intern, you will:",
+                "Design and improve cutting-edge models.",
+                "You may be a good fit if you have:",
+                "Proficiency in Python and JAX.",
+                "Full-Time Employees at Cohere enjoy these Perks:",
+                "A weekly lunch stipend.",
+            ]
+        )
+    )
+
+    assert description == "\n".join(
+        [
+            "## Who are we?",
+            "Cohere builds enterprise AI systems.",
+            "## Why this role?",
+            "Ship state of the art models to production.",
+            "## As a Machine Learning Intern, you will",
+            "Design and improve cutting-edge models.",
+            "## You may be a good fit if you have",
+            "Proficiency in Python and JAX.",
+        ]
+    )
+
+
+def test_clean_job_description_does_not_promote_heading_like_sentences() -> None:
+    description = clean_job_description(
+        "\n".join(
+            [
+                "We explain why this role matters to customers.",
+                "Candidates sometimes ask who we are competing with?",
+                "The engineer will own APIs:",
+            ]
+        )
+    )
+
+    assert description is not None
+    assert "##" not in description
+
+
+def test_clean_job_description_formats_sampled_company_heading_families() -> None:
+    description = clean_job_description(
+        """
+About Zoox
+Company overview copy.
+Role Overview
+Role overview copy.
+Required Qualifications
+Required qualification copy.
+Bonus Qualifications
+Bonus qualification copy.
+Program Requirements
+Program requirement copy.
+At Applied Intuition, you will:
+Build production software.
+We're looking for someone who has:
+Strong software fundamentals.
+You will:
+Develop tooling.
+You have:
+Experience testing software.
+We prefer:
+Experience with distributed systems.
+Why Join Cerebras
+Work on advanced systems.
+Assets
+Linux experience.
+Nice to have:
+Compiler experience.
+"""
+    )
+
+    assert description is not None
+    for heading in (
+        "About Zoox",
+        "Role Overview",
+        "Required Qualifications",
+        "Bonus Qualifications",
+        "Program Requirements",
+        "At Applied Intuition, you will",
+        "We're looking for someone who has",
+        "You will",
+        "You have",
+        "We prefer",
+        "Why Join Cerebras",
+        "Assets",
+        "Nice to have",
+    ):
+        assert f"## {heading}" in description
+
+
+def test_clean_job_description_keeps_about_prose_out_of_headings() -> None:
+    description = clean_job_description(
+        """
+About Zoox
+About working with the team and its day-to-day responsibilities.
+Why joining a startup can accelerate your career.
+You will be supported by an experienced mentor.
+"""
+    )
+
+    assert description is not None
+    assert "## About Zoox" in description
+    assert "## About working with the team" not in description
+    assert "## Why joining a startup" not in description
+    assert "## You will be supported" not in description
+
+
 def test_assess_role_page_cleans_tesla_style_description() -> None:
     page = RenderedPageState(
         url="https://www.tesla.com/careers/search/job/internship-software-engineer-it-apps",

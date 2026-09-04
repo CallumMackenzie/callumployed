@@ -6,6 +6,8 @@ from collections.abc import Iterable
 from bs4 import BeautifulSoup, Tag
 
 CORE_SECTION_HEADINGS = (
+    "who are we",
+    "why this role",
     "about the role",
     "about this role",
     "about the team",
@@ -21,13 +23,25 @@ CORE_SECTION_HEADINGS = (
     "responsibilities",
     "requirements",
     "minimum qualifications",
+    "minimum requirements",
     "preferred qualifications",
+    "required qualifications",
+    "bonus qualifications",
+    "program requirements",
     "qualifications",
     "what you'll bring",
     "what you’ll bring",
     "what you will bring",
     "what's in it for you",
     "who you are",
+    "who we are",
+    "your role",
+    "role overview",
+    "you will",
+    "you have",
+    "we prefer",
+    "nice to have",
+    "assets",
     "your objectives",
     "your skills & talents",
 )
@@ -85,11 +99,28 @@ INLINE_SECTION_PATTERN = re.compile(
 )
 KNOWN_LINE_HEADING_PATTERN = re.compile(
     r"^(?:"
+    r"who are we|why (?:this|the) (?:role|team|position)|"
     r"about (?:the )?(?:role|team|job)|about this role|job description|job responsibilities|"
-    r"minimum qualifications|preferred qualifications|qualifications|requirements|"
+    r"minimum (?:qualifications|requirements)|preferred qualifications|"
+    r"required qualifications|bonus qualifications|program requirements|"
+    r"qualifications|requirements|"
     r"responsibilities|what to expect|what (?:you'll|you’ll|you will) (?:bring|do)|"
-    r"what'?s in it for you|who you are|your objectives|your skills & talents"
-    r"):?$",
+    r"what'?s in it for you|who (?:you|we) are|your role|role overview|"
+    r"you will|you have|we prefer|nice to have|assets|your objectives|your skills & talents|"
+    r"why join [a-z0-9 .&'-]{2,50}|"
+    r"at [a-z0-9 .&'-]{2,50}, you will|"
+    r"we(?:'|’)re looking for someone who has|"
+    r"about (?:our|the) [a-z0-9 /&+().'-]{2,60} program|"
+    r"as an? [a-z][a-z0-9 /&+().'-]{1,60}, you will|"
+    r"you (?:may|might|would) be (?:a )?good fit if you (?:have|are)"
+    r")[:?]?$",
+    re.I,
+)
+COMPANY_ABOUT_HEADING_PATTERN = re.compile(
+    r"^About (?:[A-Z][A-Za-z0-9&.'-]*)(?: [A-Z][A-Za-z0-9&.'-]*){0,4}:?$"
+)
+PERKS_HEADING_PATTERN = re.compile(
+    r"^(?:full[- ]time )?employees at [a-z0-9 .&'-]{2,50} enjoy (?:these )?perks:?$",
     re.I,
 )
 
@@ -280,15 +311,28 @@ def _description_start_index(lines: list[str]) -> int:
 def _is_core_heading(line: str) -> bool:
     if not _has_heading_structure(line):
         return False
+    if COMPANY_ABOUT_HEADING_PATTERN.fullmatch(_strip_heading_structure(line).strip()):
+        return True
     normalized = _heading_key(line)
-    return any(
-        normalized == heading or normalized.startswith(f"{heading}:")
-        for heading in CORE_SECTION_HEADINGS
+    return bool(
+        re.fullmatch(r"as an? .{2,60}, you will", normalized)
+        or re.fullmatch(r"why join .{2,50}", normalized)
+        or re.fullmatch(r"at .{2,50}, you will", normalized)
+        or re.fullmatch(r"we(?:'|’)re looking for someone who has", normalized)
+        or re.fullmatch(r"about (?:our|the) .{2,60} program", normalized)
+        or re.fullmatch(
+            r"you (?:may|might|would) be (?:a )?good fit if you (?:have|are)",
+            normalized,
+        )
+        or any(
+            normalized == heading or normalized.startswith(f"{heading}:")
+            for heading in CORE_SECTION_HEADINGS
+        )
     )
 
 
 def _format_markdown_heading(line: str) -> str:
-    if _is_core_heading(line):
+    if line.startswith(HEADING_MARKER) or _is_core_heading(line):
         return f"## {_strip_heading_structure(line).strip(': ')}"
     if _has_heading_structure(line):
         return _strip_heading_structure(line)
@@ -296,6 +340,8 @@ def _format_markdown_heading(line: str) -> str:
 
 
 def _is_stop_heading(line: str) -> bool:
+    if PERKS_HEADING_PATTERN.fullmatch(_strip_heading_structure(line).strip()):
+        return True
     if not _has_heading_structure(line):
         return False
     normalized = _heading_key(line)
@@ -309,7 +355,7 @@ def _is_stop_heading(line: str) -> bool:
 
 def _heading_key(line: str) -> str:
     line = _strip_heading_structure(line)
-    return re.sub(r"\s+", " ", line).strip(": ").lower()
+    return re.sub(r"\s+", " ", line).strip(":? ").lower()
 
 
 def _has_heading_structure(line: str) -> bool:
@@ -317,6 +363,7 @@ def _has_heading_structure(line: str) -> bool:
         line.startswith(HEADING_MARKER)
         or line.lstrip().startswith("##")
         or bool(KNOWN_LINE_HEADING_PATTERN.fullmatch(line.strip()))
+        or bool(COMPANY_ABOUT_HEADING_PATTERN.fullmatch(line.strip()))
     )
 
 

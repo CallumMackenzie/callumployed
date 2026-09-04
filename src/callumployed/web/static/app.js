@@ -189,7 +189,70 @@ const COMPANY_TIER_DEFINITIONS = [
     examples: [],
   },
 ];
-const DESCRIPTION_SECTION_HEADING_PATTERN = /^(?:about (?:the )?(?:role|team|job)|about this role|job description|job responsibilities|minimum qualifications|preferred qualifications|qualifications|requirements|responsibilities|what to expect|what (?:you'll|you’ll|you will) (?:bring|do)|what'?s in it for you|who you are|your objectives|your skills & talents):?$/i;
+const DESCRIPTION_SECTION_HEADING_PATTERN = /^(?:who are we|why (?:this|the) (?:role|team|position)|about (?:the )?(?:role|team|job)|about this role|job description|job responsibilities|minimum (?:qualifications|requirements)|preferred qualifications|required qualifications|bonus qualifications|program requirements|qualifications|requirements|responsibilities|what to expect|what (?:you'll|you’ll|you will) (?:bring|do)|what'?s in it for you|who (?:you|we) are|your role|role overview|you will|you have|we prefer|nice to have|assets|your objectives|your skills & talents|why join [a-z0-9 .&'-]{2,50}|at [a-z0-9 .&'-]{2,50}, you will|we(?:'|’)re looking for someone who has|about (?:our|the) [a-z0-9 /&+().'-]{2,60} program|as an? [a-z][a-z0-9 /&+().'-]{1,60}, you will|you (?:may|might|would) be (?:a )?good fit if you (?:have|are))[:?]?$/i;
+const DESCRIPTION_COMPANY_ABOUT_HEADING_PATTERN = /^About (?:[A-Z][A-Za-z0-9&.'-]*)(?: [A-Z][A-Za-z0-9&.'-]*){0,4}:?$/;
+const DESCRIPTION_TECHNOLOGY_GROUPS = {
+  language: [
+    "Bash", "C", "C#", "C++", "C++17", "C++20", "Clojure", "COBOL", "CSS", "Dart",
+    "Elixir", "Erlang", "Fortran", "Go", "Groovy", "Haskell", "HTML", "Java", "JavaScript",
+    "Julia", "Kotlin", "Lua", "MATLAB", "Objective-C", "OCaml", "Perl", "PHP", "PowerShell",
+    "Python", "R", "Ruby", "Rust", "Scala", "Solidity", "SQL", "Swift", "TypeScript",
+    "Verilog", "VHDL", "WebAssembly", "Zig",
+  ],
+  library: [
+    ".NET", "Android", "Angular", "Ansible", "Apache Airflow", "Apache Arrow", "Apache Beam",
+    "Apache Flink", "Apache Kafka", "Apache Spark", "AWS", "Azure", "BigQuery", "Bootstrap",
+    "Celery", "CMake", "CUDA", "cuDNN", "Cypress", "Databricks", "Django", "Docker",
+    "DynamoDB", "Elasticsearch", "Express.js", "FastAPI", "Fastify", "Flask", "GCP", "Git",
+    "GitHub Actions", "GitLab CI", "Gradle", "Grafana", "gRPC", "Hadoop", "Helm",
+    "Hugging Face", "Hugging Face Transformers", "JAX", "Jenkins", "Jest", "Keras",
+    "iOS", "Kubernetes", "LangChain", "Linux", "LLVM", "MLflow", "MLIR", "MongoDB", "MySQL",
+    "Next.js", "Node.js", "NumPy", "ONNX", "OpenAI API", "OpenCV", "OpenTelemetry", "Oracle",
+    "Pallas", "Pandas", "PJRT", "Playwright", "PostgreSQL", "Prometheus", "Protocol Buffers",
+    "protobuf", "PySpark", "pytest", "PyTorch",
+    "RabbitMQ", "React", "Redis", "Redshift", "Ruby on Rails", "Scikit-learn", "SciPy",
+    "Selenium", "Snowflake", "Spring Boot", "Svelte", "TensorFlow", "TensorFlow Serving",
+    "TensorRT", "TF-Serving", "Terraform", "Triton", "Unity", "Unreal Engine", "Vite",
+    "Vue.js", "Webpack", "Wireshark", "XGBoost", "XLA", "cuTile",
+  ],
+  concept: [
+    "active learning", "AI", "algorithms", "APIs", "artificial intelligence", "authentication",
+    "authorization", "autonomous vehicles", "Bayesian methods", "batch processing", "causal inference",
+    "CI/CD", "cloud computing", "compiler", "compilers", "computer vision", "concurrency",
+    "containerization", "continual learning", "cryptography",
+    "cybersecurity", "data lakes", "data pipelines", "data structures", "data warehouses",
+    "databases", "deep learning", "DevOps", "distributed systems", "distributed training",
+    "device drivers", "domain-specific languages", "DSL", "DSLs", "edge computing", "embeddings",
+    "embedded systems", "ETL", "event-driven architecture", "firmware",
+    "fine-tuning", "foundation models", "generative AI", "GPU", "GPUs", "high-performance computing",
+    "HPC", "HTTP", "kernels", "language models", "large language models", "LLM", "LLMs", "machine learning",
+    "hardware-in-the-loop", "HIL", "integration testing", "low-latency systems", "microservices",
+    "ML", "MLOps", "model inference", "model serving", "model training",
+    "multithreading", "natural language processing", "networking", "neural networks", "NLP",
+    "observability", "operating systems", "orchestration", "parallel computing", "RAG",
+    "RDMA", "real-time systems", "regression testing", "reinforcement learning", "reliability modeling",
+    "REST APIs", "retrieval-augmented generation", "risk modeling", "robotics", "RPC", "RPCs",
+    "runtime systems", "serverless", "simulation", "site reliability engineering", "socket programming",
+    "SRE", "streaming", "survival analysis", "test automation", "test infrastructure",
+    "supervised learning", "system design", "TCP/IP", "TPU", "TPUs", "transfer learning",
+    "transformers", "unit testing", "unsupervised learning", "vector databases", "WebSockets",
+  ],
+};
+const DESCRIPTION_CASE_SENSITIVE_TECHNOLOGIES = new Set([
+  "AI", "C", "DSL", "DSLs", "Go", "GPU", "GPUs", "HIL", "HPC", "LLM", "LLMs", "ML",
+  "NLP", "R", "RAG", "RDMA", "React", "RPC", "RPCs", "Rust", "SRE", "Swift", "TPU", "TPUs",
+]);
+const DESCRIPTION_TECHNOLOGY_NEGATIVE_PREFIXES = new Map([
+  ["authorization", [/\bwork\s+$/i]],
+]);
+const DESCRIPTION_TECHNOLOGY_BY_NAME = new Map(
+  Object.entries(DESCRIPTION_TECHNOLOGY_GROUPS).flatMap(([category, terms]) =>
+    terms.map((term) => [term.toLowerCase(), {category, canonical: term}]),
+  ),
+);
+const DESCRIPTION_TECHNOLOGY_TERMS = [...DESCRIPTION_TECHNOLOGY_BY_NAME.values()]
+  .map((entry) => entry.canonical)
+  .sort((left, right) => right.length - left.length);
 let hideEmpty = true;
 let trackerData = null;
 let masterResume = null;
@@ -2922,27 +2985,78 @@ function renderDescriptionMarkdown(value) {
     const heading = line.match(/^#{2,3}\s+(.+)$/);
     if (heading) {
       flushList();
-      blocks.push(`<h3>${escapeUiText(heading[1])}</h3>`);
+      blocks.push(`<h3>${renderDescriptionInline(heading[1])}</h3>`);
       return;
     }
 
     if (isKnownDescriptionHeading(line)) {
       flushList();
-      blocks.push(`<h3>${escapeUiText(line.replace(/:$/, ""))}</h3>`);
+      blocks.push(`<h3>${renderDescriptionInline(line.replace(/:$/, ""))}</h3>`);
       return;
     }
 
     const bullet = line.match(/^[-*]\s+(.+)$/);
     if (bullet) {
-      listItems.push(escapeUiText(bullet[1]));
+      listItems.push(renderDescriptionInline(bullet[1]));
       return;
     }
 
     flushList();
-    blocks.push(`<p>${escapeUiText(line)}</p>`);
+    blocks.push(`<p>${renderDescriptionInline(line)}</p>`);
   });
   flushList();
   return blocks.join("");
+}
+
+function descriptionTechnologyPattern() {
+  const alternatives = DESCRIPTION_TECHNOLOGY_TERMS
+    .map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
+  return new RegExp(`(^|[^A-Za-z0-9_])(${alternatives})(?=$|[^A-Za-z0-9_])`, "gi");
+}
+
+function isExcludedDescriptionTechnology(text, start, technology) {
+  const negativePrefixes = DESCRIPTION_TECHNOLOGY_NEGATIVE_PREFIXES.get(technology.toLowerCase());
+  return negativePrefixes?.some((pattern) => pattern.test(text.slice(0, start))) ?? false;
+}
+
+function hasRequiredDescriptionTechnologyContext(text, start, end, technology) {
+  if (technology !== "Go") return true;
+  const beforeWords = text.slice(0, start).match(/[A-Za-z]+/g) ?? [];
+  const afterWords = text.slice(end).match(/[A-Za-z]+/g) ?? [];
+  return [...beforeWords.slice(-3), ...afterWords.slice(0, 3)]
+    .some((word) => /^(?:programming|coding)$/i.test(word));
+}
+
+function renderDescriptionInline(value) {
+  const text = String(value ?? "");
+  const matches = text.matchAll(descriptionTechnologyPattern());
+  let cursor = 0;
+  let rendered = "";
+  for (const match of matches) {
+    const prefix = match[1] ?? "";
+    const technology = match[2] ?? "";
+    const start = Number(match.index) + prefix.length;
+    if (start < cursor) continue;
+    rendered += escapeUiText(text.slice(cursor, start));
+    const entry = DESCRIPTION_TECHNOLOGY_BY_NAME.get(technology.toLowerCase());
+    const exactCaseRequired = entry
+      && DESCRIPTION_CASE_SENSITIVE_TECHNOLOGIES.has(entry.canonical);
+    const excludedByContext = isExcludedDescriptionTechnology(text, start, technology);
+    const hasRequiredContext = hasRequiredDescriptionTechnologyContext(
+      text,
+      start,
+      start + technology.length,
+      technology,
+    );
+    if (!entry || excludedByContext || !hasRequiredContext || (exactCaseRequired && technology !== entry.canonical)) {
+      rendered += escapeUiText(technology);
+    } else {
+      rendered += `<span class="description-tech description-tech-${entry.category}">${escapeUiText(technology)}</span>`;
+    }
+    cursor = start + technology.length;
+  }
+  return rendered + escapeUiText(text.slice(cursor));
 }
 
 function decodeHtmlEntities(value) {
@@ -2967,7 +3081,7 @@ function renderDescriptionNodes(nodes, blocks) {
   nodes.forEach((node) => {
     if (node.nodeType === Node.TEXT_NODE) {
       const text = normalizeDescriptionText(node.textContent);
-      if (text) blocks.push(`<p>${escapeUiText(text)}</p>`);
+      if (text) blocks.push(`<p>${renderDescriptionInline(text)}</p>`);
       return;
     }
 
@@ -3009,7 +3123,7 @@ function renderDescriptionNodes(nodes, blocks) {
       if (isDescriptionHeading(text, element)) {
         appendDescriptionHeading(blocks, text);
       } else {
-        blocks.push(`<p>${escapeUiText(text)}</p>`);
+        blocks.push(`<p>${renderDescriptionInline(text)}</p>`);
       }
     }
 
@@ -3034,7 +3148,7 @@ function renderDescriptionParagraph(element, blocks) {
     if (isDescriptionHeading(text, element)) {
       appendDescriptionHeading(blocks, text);
     } else {
-      blocks.push(`<p>${escapeUiText(text)}</p>`);
+      blocks.push(`<p>${renderDescriptionInline(text)}</p>`);
     }
     return;
   }
@@ -3063,7 +3177,7 @@ function renderDescriptionParagraph(element, blocks) {
 
 function appendDescriptionHeading(blocks, value) {
   const text = normalizeDescriptionText(value).replace(/:$/, "");
-  if (text) blocks.push(`<h3>${escapeUiText(text)}</h3>`);
+  if (text) blocks.push(`<h3>${renderDescriptionInline(text)}</h3>`);
 }
 
 function renderDescriptionList(listElement) {
@@ -3076,7 +3190,7 @@ function renderDescriptionList(listElement) {
         .map((childList) => renderDescriptionList(childList))
         .filter(Boolean)
         .join("");
-      return text || nestedLists ? `<li>${escapeUiText(text)}${nestedLists}</li>` : "";
+      return text || nestedLists ? `<li>${renderDescriptionInline(text)}${nestedLists}</li>` : "";
     })
     .filter(Boolean);
   return items.length > 0 ? `<ul>${items.join("")}</ul>` : "";
@@ -3098,7 +3212,6 @@ function isDescriptionHeading(text, element) {
   const normalized = text.replace(/:$/, "").trim();
   if (!normalized || normalized.length > 90) return false;
   if (isKnownDescriptionHeading(normalized)) return true;
-  if (/:$/.test(text)) return true;
   if (/[.!?]$/.test(normalized)) return false;
   if (normalized.split(/\s+/).length > 10) return false;
   if (element.querySelector("strong, b, u")) return true;
@@ -3106,7 +3219,9 @@ function isDescriptionHeading(text, element) {
 }
 
 function isKnownDescriptionHeading(value) {
-  return DESCRIPTION_SECTION_HEADING_PATTERN.test(String(value).trim());
+  const text = String(value).trim();
+  return DESCRIPTION_SECTION_HEADING_PATTERN.test(text)
+    || DESCRIPTION_COMPANY_ABOUT_HEADING_PATTERN.test(text);
 }
 
 async function handleReviewAction(action) {
@@ -4203,9 +4318,8 @@ function renderPreppedDetail() {
     : jobTitle;
   const roleFacts = [
     ["Location", job.location || "Unavailable"],
-    ["Added", formatCompactDate(job.date_added || job.created_at) || "Unavailable"],
+    ["Added", formatCompactDate(job.role_created_at || job.date_added || job.created_at) || "Unavailable"],
     ["Last seen", formatCompactDate(job.last_seen_at) || "Unavailable"],
-    ["Posting ID", job.posting_id || "Unavailable"],
   ];
   const movingToDisinterested = preppedStatusChangeRoleIds.has(Number(job.role_id));
   const disinterestedUnavailable = movingToDisinterested || autoprepJobIsActive(job);
