@@ -219,15 +219,36 @@ def test_application_answer_can_be_regenerated_and_deleted_through_role_scoped_a
             answer="The previous valid answer.",
         )
 
-    monkeypatch.setattr(
-        web_server,
-        "generate_saved_application_answer",
-        lambda role_id, *, question, llm_settings: {
+    captured_generation: dict[str, object] = {}
+
+    def fake_generate_saved_application_answer(
+        role_id: int,
+        *,
+        question: str,
+        llm_settings: object,
+        changes: str | None = None,
+        previous_answer: str | None = None,
+    ) -> dict[str, object]:
+        captured_generation.update(
+            {
+                "role_id": role_id,
+                "question": question,
+                "llm_settings": llm_settings,
+                "changes": changes,
+                "previous_answer": previous_answer,
+            }
+        )
+        return {
             "answer": "Acme Builds Reliable Products.",
             "session_id": None,
             "sources": [{"kind": "saved_material", "title": "Resume"}],
             "research": {"used_web": False},
-        },
+        }
+
+    monkeypatch.setattr(
+        web_server,
+        "generate_saved_application_answer",
+        fake_generate_saved_application_answer,
     )
     server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -238,7 +259,33 @@ def test_application_answer_can_be_regenerated_and_deleted_through_role_scoped_a
             f"http://127.0.0.1:{port}/api/autoprep/roles/{role.id}"
             f"/application-answers/{saved['id']}"
         )
-        request = Request(f"{endpoint}/regenerate", data=b"", method="POST")
+        oversized_request = Request(
+            f"{endpoint}/regenerate",
+            data=json.dumps({"changes": " " * 4_001}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(HTTPError) as oversized_error:
+            urlopen(oversized_request, timeout=5)
+        assert oversized_error.value.code == 400
+        assert b"4,000 characters or fewer" in oversized_error.value.read()
+        assert captured_generation == {}
+        with db.connect() as connection:
+            unchanged = connection.execute(
+                "SELECT answer, status FROM application_answers WHERE id = ?",
+                (int(saved["id"]),),
+            ).fetchone()
+        assert unchanged is not None
+        assert unchanged["answer"] == "The previous valid answer."
+        assert unchanged["status"] == "completed"
+
+        maximum_length_changes = "Make the teamwork outcome more specific.".ljust(4_000, "x")
+        request = Request(
+            f"{endpoint}/regenerate",
+            data=json.dumps({"changes": maximum_length_changes}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
         with urlopen(request, timeout=5) as response:
             regenerated = json.loads(response.read())["answer"]
 
@@ -247,6 +294,8 @@ def test_application_answer_can_be_regenerated_and_deleted_through_role_scoped_a
         assert regenerated["backend"] == "codex"
         assert "session_id" not in regenerated
         assert regenerated["status"] == "completed"
+        assert captured_generation["changes"] == maximum_length_changes
+        assert captured_generation["previous_answer"] == "The previous valid answer."
 
         with urlopen(Request(endpoint, method="DELETE"), timeout=5) as response:
             deleted = json.loads(response.read())
@@ -305,7 +354,7 @@ def test_application_answer_regeneration_rejects_provenance_leak_and_preserves_p
     monkeypatch.setattr(
         web_server,
         "generate_saved_application_answer",
-        lambda role_id, *, question, llm_settings: {
+        lambda role_id, *, question, llm_settings, changes=None, previous_answer=None: {
             "answer": (
                 "Saved materials document that I attended nwHacks 2025. "
                 "They do not identify any other conferences."
@@ -589,7 +638,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "dangerouslySetInnerHTML" not in markup
         assert "dangerouslySetInnerHTML" not in app_javascript
         assert '<div id="root"></div>' not in index_markup
-        assert '<script type="module" src="/assets/app.js?v=vanilla-20260904-23"></script>' in (
+        assert '<script type="module" src="/assets/app.js?v=vanilla-20260904-24"></script>' in (
             index_markup
         )
 
@@ -731,8 +780,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=vanilla-20260904-23" in index_markup
-        assert "/assets/app.js?v=vanilla-20260904-23" in index_markup
+        assert "/assets/app.css?v=vanilla-20260904-24" in index_markup
+        assert "/assets/app.js?v=vanilla-20260904-24" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -4136,11 +4185,16 @@ def test_saved_application_answers_use_configured_llm_provider(
         web_server.set_config_value(connection, "llm_provider", "codex")
 
     observed_providers: list[str] = []
+    captured_prompt = ""
 
     async def fake_generate_role_chat(**kwargs: object) -> SimpleNamespace:
+        nonlocal captured_prompt
         settings = kwargs["settings"]
         assert isinstance(settings, web_server.LlmSettings)
         observed_providers.append(str(settings.provider))
+        messages = kwargs["messages"]
+        assert isinstance(messages, list)
+        captured_prompt = messages[-1].content
         return SimpleNamespace(answer="I use grounded AI tooling.")
 
     monkeypatch.setattr(web_server, "generate_role_chat", fake_generate_role_chat)
@@ -4151,10 +4205,14 @@ def test_saved_application_answers_use_configured_llm_provider(
     result = web_server.generate_saved_application_answer(
         role.id,
         question="What AI technologies are you comfortable with?",
+        changes="Emphasize production use and keep it concise.",
+        previous_answer="I use AI tools.",
     )
 
     assert observed_providers == ["codex"]
     assert result["answer"] == "I use grounded AI tooling."
+    assert "Emphasize production use and keep it concise." in captured_prompt
+    assert "I use AI tools." in captured_prompt
 
 
 def test_profile_extraction_fills_only_blank_settings(

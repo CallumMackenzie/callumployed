@@ -191,6 +191,7 @@ INSTALLER_SCRIPT_URL = (
     "https://raw.githubusercontent.com/CallumMackenzie/callumployed/master/scripts/install.sh"
 )
 LOGGER = logging.getLogger(__name__)
+MAX_APPLICATION_ANSWER_CHANGES_CHARS = 4_000
 SCAN_ALL_COMPANY_TIMEOUT_SECONDS = 5 * 60
 COMPANY_TIER_GUIDE_OPEN_CONFIG_KEY = "ui_company_tier_guide_open"
 APPLICANT_FIRST_NAME_CONFIG_KEY = "applicant_first_name"
@@ -1394,9 +1395,20 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
         def _regenerate_application_answer(
             self, role_id_text: str, answer_id_text: str
         ) -> None:
+            payload = self._read_json_body()
+            if payload is None:
+                return
             try:
                 role_id = int(role_id_text)
                 answer_id = int(answer_id_text)
+                changes = payload.get("changes", "")
+                if not isinstance(changes, str):
+                    raise ValueError("Application answer changes must be text.")
+                if len(changes) > MAX_APPLICATION_ANSWER_CHANGES_CHARS:
+                    raise ValueError(
+                        "Application answer changes must be 4,000 characters or fewer."
+                    )
+                changes = changes.strip()
                 with db.connect() as connection:
                     db.run_migrations(connection)
                     ensure_autoprep_schema(connection)
@@ -1420,6 +1432,8 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                     role_id,
                     question=str(pending["question"]).strip(),
                     llm_settings=llm_settings,
+                    changes=changes or None,
+                    previous_answer=str(pending.get("answer") or "").strip() or None,
                 )
                 with db.connect() as connection:
                     answer = complete_application_answer(
@@ -3967,6 +3981,8 @@ def generate_saved_application_answer(
     *,
     question: str,
     llm_settings: LlmSettings | None = None,
+    changes: str | None = None,
+    previous_answer: str | None = None,
 ) -> dict[str, Any]:
     role: dict[str, Any] = {}
     with db.connect() as connection:
@@ -4015,6 +4031,8 @@ def generate_saved_application_answer(
         cover_letter_examples=[example.model_dump(mode="json") for example in examples],
         experience_sections=experience_sections,
         role_context=role_context,
+        deterministic_instructions=changes,
+        previous_output=previous_answer,
     )
     response = asyncio.run(
         generate_role_chat(

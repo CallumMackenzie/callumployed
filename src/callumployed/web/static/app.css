@@ -5451,11 +5451,13 @@ a:hover .role-link-icon {
   min-width: 0;
 }
 
-.application-question-composer label {
+.application-question-composer label,
+.application-answer-tweaks-label {
   font-weight: 750;
 }
 
-.application-question-composer textarea {
+.application-question-composer textarea,
+.application-answer-tweaks {
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
@@ -5473,11 +5475,13 @@ a:hover .role-link-icon {
   transition: border-color 150ms ease, box-shadow 150ms ease, background 150ms ease;
 }
 
-.application-question-composer textarea::placeholder {
+.application-question-composer textarea::placeholder,
+.application-answer-tweaks::placeholder {
   color: #8b9691;
 }
 
-.application-question-composer textarea:focus {
+.application-question-composer textarea:focus,
+.application-answer-tweaks:focus {
   border-color: var(--green);
   background: #fff;
   box-shadow: 0 0 0 4px rgb(0 137 123 / 0.11);

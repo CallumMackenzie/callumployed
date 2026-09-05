@@ -105,6 +105,35 @@ def test_prepped_application_questions_workspace_is_persistent_and_safe() -> Non
     assert "updateRoleStatusById" not in submitter
 
 
+def test_application_answer_regeneration_supports_per_answer_tweak_drafts() -> None:
+    source = FRONTEND_SOURCE.read_text()
+    styles = (STATIC_DIRECTORY / "app.css").read_text()
+    index = (STATIC_DIRECTORY / "index.html").read_text()
+
+    assert "const applicationAnswerTweakDrafts = new Map();" in source
+    assert 'data-application-answer-tweaks="${answerId}"' in source
+    assert "Optional comments for the next answer" in source
+    assert "applicationAnswerTweakDrafts.set(numericAnswerId, tweakDraft.value);" in source
+    regeneration = source[
+        source.index("async function regenerateApplicationAnswer") : source.index(
+            "async function deleteApplicationAnswer"
+        )
+    ]
+    assert (
+        "const changes = String(applicationAnswerTweakDrafts.get(numericAnswerId)"
+        in regeneration
+    )
+    assert 'headers: {"Content-Type": "application/json"}' in regeneration
+    assert "body: JSON.stringify({changes})" in regeneration
+    assert "applicationAnswerTweakDrafts.delete(numericAnswerId);" in regeneration
+    assert regeneration.index("applicationAnswerTweakDrafts.delete(numericAnswerId);") < (
+        regeneration.index("} catch (error)")
+    )
+    assert ".application-answer-tweaks" in styles
+    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260904-24" />' in index
+    assert '<script type="module" src="/assets/app.js?v=vanilla-20260904-24"></script>' in index
+
+
 def test_resume_regeneration_allows_empty_comments() -> None:
     source = FRONTEND_SOURCE.read_text()
     handler = source[
@@ -228,8 +257,8 @@ def test_application_questions_styles_and_cache_keys_are_versioned() -> None:
     assert "#close-prepped" in styles
     assert "text-transform: none" in styles
     assert ".application-questions-workspace[open]" in styles
-    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260904-23" />' in index
-    assert '<script type="module" src="/assets/app.js?v=vanilla-20260904-23"></script>' in index
+    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260904-24" />' in index
+    assert '<script type="module" src="/assets/app.js?v=vanilla-20260904-24"></script>' in index
 
 
 def test_currently_applying_folder_ui_is_explained_and_selection_driven() -> None:
@@ -247,8 +276,8 @@ def test_currently_applying_folder_ui_is_explained_and_selection_driven() -> Non
     assert "/currently-applying" in source
     assert "/currently-applying/open" in source
     assert ".currently-applying-guide" in styles
-    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260904-23" />' in index
-    assert '<script type="module" src="/assets/app.js?v=vanilla-20260904-23"></script>' in index
+    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260904-24" />' in index
+    assert '<script type="module" src="/assets/app.js?v=vanilla-20260904-24"></script>' in index
 
 
 def test_every_prepped_role_transition_refreshes_currently_applying_folder() -> None:
@@ -281,7 +310,7 @@ def test_frontend_uses_direct_vanilla_assets_without_framework_shell() -> None:
     assert not (REPOSITORY_ROOT / "frontend").exists()
     assert not (STATIC_DIRECTORY / "build").exists()
     assert not (STATIC_DIRECTORY / "shell.html").exists()
-    assert '<script type="module" src="/assets/app.js?v=vanilla-20260904-23"></script>' in index
+    assert '<script type="module" src="/assets/app.js?v=vanilla-20260904-24"></script>' in index
     assert '<div id="root"></div>' not in index
     assert "dangerouslySetInnerHTML" not in index
     assert "dangerouslySetInnerHTML" not in source

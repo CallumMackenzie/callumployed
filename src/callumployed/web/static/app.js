@@ -289,6 +289,7 @@ const preppedCommentsByDocument = new Map();
 const openPreppedDetailSections = new Set();
 const preppedApplicationAnswersByRoleId = new Map();
 const preppedApplicationQuestionDrafts = new Map();
+const applicationAnswerTweakDrafts = new Map();
 const loadedApplicationAnswerRoleIds = new Set();
 const loadingApplicationAnswerRoleIds = new Set();
 const pendingApplicationAnswerRoleIds = new Set();
@@ -4427,6 +4428,7 @@ function renderApplicationAnswerRecord(record, index, rolePending) {
   const timestamp = record?.created_at ?? record?.updated_at ?? record?.timestamp;
   const backend = record?.backend ?? record?.generation_backend;
   const answerId = Number(record?.id);
+  const tweakDraft = applicationAnswerTweakDrafts.get(answerId) ?? "";
   const canMutate = Number.isFinite(answerId) && status !== "pending" && !rolePending;
   const confirmingDelete = confirmingApplicationAnswerDeleteIds.has(answerId);
   const regenerating = regeneratingApplicationAnswerIds.has(answerId);
@@ -4436,6 +4438,7 @@ function renderApplicationAnswerRecord(record, index, rolePending) {
     <h5>${escapeHtml(record.question ?? "Question unavailable")}</h5>
     ${record.answer ? `<p class="application-answer-copy">${escapeHtml(record.answer).replaceAll("\n", "<br>")}</p>` : ""}
     ${record.error ? `<p class="prepped-error">${escapeUiText(record.error)}</p>` : ""}
+    ${Number.isFinite(answerId) ? `<label class="application-answer-tweaks-label" for="application-answer-tweaks-${answerId}">Optional comments for the next answer</label><textarea class="application-answer-tweaks" id="application-answer-tweaks-${answerId}" data-application-answer-tweaks="${answerId}" rows="3" maxlength="4000" placeholder="Optionally describe specific, truthful changes..." ${canMutate ? "" : "disabled"}>${escapeHtml(tweakDraft)}</textarea>` : ""}
     <div class="application-answer-actions">
       ${record.answer ? `<button type="button" data-application-answer-copy="${index}">Copy answer</button>` : ""}
       ${Number.isFinite(answerId) ? `<button type="button" data-application-answer-regenerate="${answerId}" ${canMutate ? "" : "disabled"}>${regenerating || status === "pending" ? "Regenerating…" : "Regenerate"}</button><button class="danger" type="button" data-application-answer-delete="${answerId}" ${canMutate ? "" : "disabled"}>${deleting ? "Deleting…" : confirmingDelete ? "Confirm delete" : "Delete question"}</button>` : ""}
@@ -4531,22 +4534,29 @@ function replaceApplicationAnswerRecord(roleId, record) {
 
 async function regenerateApplicationAnswer(roleId, answerId) {
   const numericRoleId = Number(roleId);
+  const numericAnswerId = Number(answerId);
   if (pendingApplicationAnswerRoleIds.has(numericRoleId)) return;
+  const changes = String(applicationAnswerTweakDrafts.get(numericAnswerId) ?? "").trim();
   pendingApplicationAnswerRoleIds.add(numericRoleId);
-  regeneratingApplicationAnswerIds.add(Number(answerId));
-  confirmingApplicationAnswerDeleteIds.delete(Number(answerId));
+  regeneratingApplicationAnswerIds.add(numericAnswerId);
+  confirmingApplicationAnswerDeleteIds.delete(numericAnswerId);
   applicationAnswerLoadErrors.delete(numericRoleId);
   renderPreppedDetail();
   try {
-    const response = await fetch(`/api/autoprep/roles/${encodeURIComponent(roleId)}/application-answers/${encodeURIComponent(answerId)}/regenerate`, {method: "POST"});
+    const response = await fetch(`/api/autoprep/roles/${encodeURIComponent(roleId)}/application-answers/${encodeURIComponent(answerId)}/regenerate`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({changes}),
+    });
     const payload = await response.json();
     const [returnedRecord] = normalizeApplicationAnswerRecords(payload);
     if (returnedRecord) replaceApplicationAnswerRecord(numericRoleId, returnedRecord);
     if (!response.ok) throw new Error(payload?.error || returnedRecord?.error || "Could not regenerate the answer.");
+    applicationAnswerTweakDrafts.delete(numericAnswerId);
   } catch (error) {
     applicationAnswerLoadErrors.set(numericRoleId, error instanceof Error ? error.message : "Could not regenerate the answer.");
   } finally {
-    regeneratingApplicationAnswerIds.delete(Number(answerId));
+    regeneratingApplicationAnswerIds.delete(numericAnswerId);
     pendingApplicationAnswerRoleIds.delete(numericRoleId);
     if (Number(selectedPreppedRoleId) === numericRoleId) renderPreppedDetail();
   }
@@ -4570,6 +4580,7 @@ async function deleteApplicationAnswer(roleId, answerId) {
     const response = await fetch(`/api/autoprep/roles/${encodeURIComponent(roleId)}/application-answers/${encodeURIComponent(answerId)}`, {method: "DELETE"});
     const payload = await response.json();
     if (!response.ok) throw new Error(payload?.error || "Could not delete the question.");
+    applicationAnswerTweakDrafts.delete(numericAnswerId);
     const records = preppedApplicationAnswersByRoleId.get(numericRoleId) ?? [];
     preppedApplicationAnswersByRoleId.set(
       numericRoleId,
@@ -4791,6 +4802,12 @@ preppedDetail.addEventListener("input", (event) => {
     preppedApplicationQuestionDrafts.set(roleId, questionDraft.value);
     const submitButton = preppedDetail.querySelector("[data-application-question-submit]");
     if (submitButton) submitButton.disabled = !questionDraft.value.trim() || pendingApplicationAnswerRoleIds.has(roleId);
+    return;
+  }
+  const tweakDraft = event.target.closest("[data-application-answer-tweaks]");
+  if (tweakDraft) {
+    const numericAnswerId = Number(tweakDraft.dataset.applicationAnswerTweaks);
+    applicationAnswerTweakDrafts.set(numericAnswerId, tweakDraft.value);
     return;
   }
   const comments = event.target.closest("[data-autoprep-comments]");
