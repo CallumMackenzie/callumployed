@@ -28,6 +28,7 @@ export async function buildDashboardMetrics(db: Firestore, requestedDays: unknow
     field,
     records.reduce((sum, record) => sum + numberValue(record[field]), 0),
   ]));
+  const agentAssistedScans = records.filter(isAgentAssistedScan).length;
 
   return {
     generated_at: new Date().toISOString(),
@@ -41,6 +42,7 @@ export async function buildDashboardMetrics(db: Firestore, requestedDays: unknow
       success_rate: records.length ? succeeded / records.length : 0,
       median_duration_ms: percentile(durations, 0.5),
       p95_duration_ms: percentile(durations, 0.95),
+      agent_assisted_scans: agentAssistedScans,
       agent_trace_scans: records.filter((record) => record.agent_trace_present === true).length,
       ...totals,
     },
@@ -63,6 +65,18 @@ export async function buildDashboardMetrics(db: Firestore, requestedDays: unknow
       rejection_reason: aggregateBreakdown(records, "rejection_reason_counts"),
     },
   };
+}
+
+export function isAgentAssistedScan(record: MetricRecord): boolean {
+  if (record.agent_trace_present === true) return true;
+  return breakdownCount(record.candidate_discovery_method_counts, "agent") > 0 ||
+    breakdownCount(record.candidate_discovery_method_counts, "heuristic+agent") > 0 ||
+    breakdownCount(record.extraction_method_counts, "llm") > 0;
+}
+
+function breakdownCount(value: unknown, category: string): number {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return 0;
+  return numberValue((value as Record<string, unknown>)[category]);
 }
 
 function latestByClient(records: MetricRecord[]): MetricRecord[] {
