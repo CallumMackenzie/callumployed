@@ -4471,8 +4471,8 @@ def test_config_payload_returns_current_settings(
             "label": "cover letter model",
             "description": "model used only for cover letter generation",
             "control": "select",
-            "value": "gpt-4.1-mini",
-            "default": "gpt-4.1-mini",
+            "value": "gpt-5.6-sol",
+            "default": "gpt-5.6-sol",
             "editable": True,
             "options": [
                 {"value": "gpt-5.6-terra", "label": "Terra"},

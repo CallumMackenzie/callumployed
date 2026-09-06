@@ -215,7 +215,7 @@ AUTOPREP_COVER_LETTER_PROMPT_CONFIG_KEY = "autoprep_cover_letter_prompt"
 LLM_PROVIDER_CONFIG_KEY = "llm_provider"
 SCAN_HEADLESS_CONFIG_KEY = "scan_headless"
 DEFAULT_LLM_PROVIDER = "openai"
-DEFAULT_COVER_LETTER_MODEL = "gpt-4.1-mini"
+DEFAULT_COVER_LETTER_MODEL = "gpt-5.6-sol"
 DEFAULT_AUTOPREP_TAILOR_RESUME = True
 DEFAULT_AUTOPREP_RESUME_PROMPT = (
     "Tailor this resume truthfully for the saved role context. Preserve every employer, "
