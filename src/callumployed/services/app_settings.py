@@ -58,7 +58,7 @@ TEXT_KEYS = (
 )
 SETTING_KEYS = (*TEXT_KEYS, *BOOL_KEYS)
 
-DEFAULT_COVER_LETTER_MODEL = "gpt-4.1-mini"
+DEFAULT_COVER_LETTER_MODEL = "gpt-5.6-sol"
 DEFAULT_AUTOPREP_RESUME_PROMPT = (
     "Tailor this resume truthfully for the saved role context. Preserve every employer, "
     "project, education entry, date, and link while actively improving the wording. "
