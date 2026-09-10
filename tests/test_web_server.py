@@ -638,7 +638,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "dangerouslySetInnerHTML" not in markup
         assert "dangerouslySetInnerHTML" not in app_javascript
         assert '<div id="root"></div>' not in index_markup
-        assert '<script type="module" src="/assets/app.js?v=vanilla-20260904-24"></script>' in (
+        assert '<script type="module" src="/assets/app.js?v=vanilla-20260909-25"></script>' in (
             index_markup
         )
 
@@ -780,8 +780,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=vanilla-20260904-24" in index_markup
-        assert "/assets/app.js?v=vanilla-20260904-24" in index_markup
+        assert "/assets/app.css?v=vanilla-20260909-25" in index_markup
+        assert "/assets/app.js?v=vanilla-20260909-25" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -807,7 +807,30 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "Skipped before queueing:" not in app_javascript
         assert "data-autoprep-disinterested" in app_javascript
         assert 'class="review-action danger prepped-disinterested"' in app_javascript
-        assert "grid-template-columns: repeat(5, minmax(0, 1fr));" in app_styles
+        assert "data-autoprep-return-interested" in app_javascript
+        assert "Return to Interested" in app_javascript
+        assert "Confirm return to Interested" in app_javascript
+        assert "async function returnPreppedRoleToInterested" in app_javascript
+        assert "/return-to-interested`" in app_javascript
+        assert "window.confirm" not in app_javascript[
+            app_javascript.index("async function returnPreppedRoleToInterested") :
+            app_javascript.index("async function markPreppedRoleDisinterested")
+        ]
+        assert "const preppedRoleMutationIds = new Set();" in app_javascript
+        assert "function beginPreppedRoleMutation" in app_javascript
+        assert "[data-autoprep-lifecycle-action]" in app_javascript
+        for function_name, next_function_name in (
+            ("returnPreppedRoleToInterested", "markPreppedRoleApplied"),
+            ("markPreppedRoleDisinterested", "returnPreppedRoleToInterested"),
+            ("markPreppedRoleApplied", "reviewDiscoveredButton.addEventListener"),
+        ):
+            mutation = app_javascript[
+                app_javascript.index(f"async function {function_name}") :
+                app_javascript.index(next_function_name)
+            ]
+            assert "beginPreppedRoleMutation" in mutation
+            assert "finishPreppedRoleMutation" in mutation
+        assert "grid-template-columns: repeat(6, minmax(0, 1fr));" in app_styles
         assert ".prepped-detail-actions > button:last-child" in app_styles
         assert 'updateRoleStatusById(roleId, "disinterested")' in app_javascript
         assert 'fetch("/api/autoprep/cover-letters/regenerate", {' in app_javascript

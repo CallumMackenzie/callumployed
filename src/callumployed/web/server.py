@@ -117,7 +117,6 @@ from callumployed.data.repositories import (
     set_location_filter,
     set_require_software_keywords,
     set_role_status,
-    set_role_status_if_changed,
     should_include_graduate_degree_roles,
     should_include_hardware_roles,
     should_require_software_keywords,
@@ -162,6 +161,7 @@ from callumployed.services.autoprep import (
     recover_interrupted_application_answers,
     recover_interrupted_autoprep_jobs,
     retry_autoprep_document,
+    return_prepped_role_to_interested,
 )
 from callumployed.services.material_index import (
     build_material_index,
@@ -912,6 +912,13 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 self._mark_autoprep_applied(path_parts[3])
                 return
             if (
+                len(path_parts) == 5
+                and path_parts[:3] == ["api", "autoprep", "roles"]
+                and path_parts[4] == "return-to-interested"
+            ):
+                self._return_prepped_role_to_interested(path_parts[3])
+                return
+            if (
                 len(path_parts) == 4
                 and path_parts[0] == "api"
                 and path_parts[1] == "roles"
@@ -1611,25 +1618,79 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             try:
                 with db.connect() as connection:
                     ensure_autoprep_schema(connection)
+                    connection.execute("BEGIN IMMEDIATE")
                     job = get_role_autoprep_job(connection, role_id)
                     if job is None:
+                        connection.rollback()
                         raise LookupError
                     if job["overall_status"] != "ready":
+                        connection.rollback()
                         self._send_json_with_status(
                             {"error": "Both documents must be ready before marking Applied."},
                             HTTPStatus.CONFLICT,
                         )
                         return
-                    role = set_role_status_if_changed(
-                        connection,
-                        role_id,
-                        RoleStatus.APPLIED,
-                        summary="Marked Applied from Prepped Roles.",
-                    )
+                    role = get_role(connection, role_id)
+                    if role.role_status is not RoleStatus.APPLIED:
+                        connection.execute(
+                            """
+                            UPDATE roles
+                            SET role_status = ?, updated_at = datetime('now')
+                            WHERE id = ?
+                            """,
+                            (RoleStatus.APPLIED.value, role_id),
+                        )
+                        connection.execute(
+                            """
+                            INSERT INTO events (
+                                company_id,
+                                role_id,
+                                event_type,
+                                old_status,
+                                new_status,
+                                source,
+                                summary
+                            )
+                            VALUES (?, ?, 'status_changed', ?, ?, 'manual', ?)
+                            """,
+                            (
+                                role.company_id,
+                                role_id,
+                                role.role_status.value,
+                                RoleStatus.APPLIED.value,
+                                "Marked Applied from Prepped Roles.",
+                            ),
+                        )
+                    connection.commit()
+                    role = get_role(connection, role_id)
             except LookupError:
                 self.send_error(HTTPStatus.NOT_FOUND, "Autoprep role not found")
                 return
             self._send_json({"applied": True, "role": _role_payload(role)})
+
+        def _return_prepped_role_to_interested(self, role_id_text: str) -> None:
+            try:
+                role_id = int(role_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
+                return
+            try:
+                with db.connect() as connection:
+                    ensure_autoprep_schema(connection)
+                    result = return_prepped_role_to_interested(connection, role_id)
+            except AutoprepConflictError as error:
+                self._send_json_with_status({"error": str(error)}, HTTPStatus.CONFLICT)
+                return
+            except ValueError:
+                self.send_error(HTTPStatus.NOT_FOUND, "Prepped role not found")
+                return
+            self._send_json(
+                {
+                    "returned_to_interested": True,
+                    "role_id": result["role_id"],
+                    "archived_job_id": result["archived_job_id"],
+                }
+            )
 
         def _update_role_status(self, role_id_text: str) -> None:
             try:

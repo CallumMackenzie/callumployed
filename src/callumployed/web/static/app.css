@@ -4920,7 +4920,7 @@ a:hover .role-link-icon {
 
 .prepped-detail-actions {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 7px;
   align-items: center;
   margin-top: 18px;
@@ -4961,6 +4961,17 @@ a:hover .role-link-icon {
 .prepped-detail-actions .success:disabled {
   cursor: not-allowed;
   opacity: 0.42;
+}
+
+.prepped-detail-actions .prepped-return-interested {
+  border-color: rgb(159 117 16 / 0.32);
+  background: linear-gradient(135deg, #fff, #fff4d6);
+  color: #765500;
+}
+
+.prepped-detail-actions .prepped-return-interested:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
 }
 
 .prepped-detail-actions .prepped-disinterested {

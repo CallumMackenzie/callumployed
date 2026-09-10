@@ -700,6 +700,138 @@ def test_autoprep_api_lists_only_interested_and_returns_accepted_jobs_immediatel
         server.server_close()
 
 
+def test_return_prepped_role_to_interested_api_restores_interested_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "autoprep-return-api.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    with db.connect() as connection:
+        ensure_autoprep_schema(connection)
+        role_id = _interested_role(connection, title="Return API Engineer")
+        [job] = enqueue_autoprep_jobs(connection, [role_id], idempotency_key="return-api-role")
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        request = Request(
+            f"{base_url}/api/autoprep/roles/{role_id}/return-to-interested",
+            data=b"",
+            method="POST",
+        )
+        with urlopen(request, timeout=5) as response:
+            assert response.status == 200
+            result = json.loads(response.read())
+        assert result == {
+            "returned_to_interested": True,
+            "role_id": role_id,
+            "archived_job_id": job["id"],
+        }
+
+        with urlopen(f"{base_url}/api/autoprep/jobs", timeout=5) as response:
+            assert json.loads(response.read())["jobs"] == []
+        with urlopen(f"{base_url}/api/autoprep/interested", timeout=5) as response:
+            interested_roles = json.loads(response.read())["roles"]
+        [interested] = [role for role in interested_roles if role["id"] == role_id]
+        assert interested["preparation_status"] is None
+        assert interested["selectable"] is True
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+def test_applied_and_return_to_interested_are_serialized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "autoprep-applied-return-race.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    with db.connect() as connection:
+        ensure_autoprep_schema(connection)
+        role_id = _interested_role(connection, title="Serialized Lifecycle Engineer")
+        [job] = enqueue_autoprep_jobs(connection, [role_id], idempotency_key="serialized-role")
+        connection.execute(
+            """
+            UPDATE autoprep_jobs
+            SET overall_status = 'ready', worker_state = 'idle',
+                resume_status = 'ready', cover_letter_status = 'ready'
+            WHERE id = ?
+            """,
+            (job["id"],),
+        )
+
+    applied_validated = Event()
+    release_applied = Event()
+    return_started = Event()
+    original_get_job = web_server.get_role_autoprep_job
+
+    def pause_after_applied_validation(connection, target_role_id):
+        prepared_job = original_get_job(connection, target_role_id)
+        applied_validated.set()
+        assert release_applied.wait(timeout=5)
+        return prepared_job
+
+    monkeypatch.setattr(web_server, "get_role_autoprep_job", pause_after_applied_validation)
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    responses: dict[str, int] = {}
+
+    def post(name: str, path: str) -> None:
+        if name == "return":
+            return_started.set()
+        request = Request(
+            f"http://127.0.0.1:{server.server_address[1]}{path}",
+            data=b"",
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=5) as response:
+                responses[name] = response.status
+        except HTTPError as error:
+            responses[name] = error.code
+
+    applied_thread = Thread(
+        target=post,
+        args=("applied", f"/api/autoprep/roles/{role_id}/applied"),
+        daemon=True,
+    )
+    return_thread = Thread(
+        target=post,
+        args=("return", f"/api/autoprep/roles/{role_id}/return-to-interested"),
+        daemon=True,
+    )
+    try:
+        applied_thread.start()
+        assert applied_validated.wait(timeout=5)
+        return_thread.start()
+        assert return_started.wait(timeout=5)
+        time.sleep(0.1)
+        release_applied.set()
+        applied_thread.join(timeout=5)
+        return_thread.join(timeout=5)
+
+        assert responses == {"applied": 200, "return": 409}
+        with db.connect() as connection:
+            assert web_server.get_role(connection, role_id).role_status is RoleStatus.APPLIED
+            assert autoprep_service.get_role_autoprep_job(connection, role_id) is not None
+            assert connection.execute(
+                "SELECT COUNT(*) FROM autoprep_job_archives WHERE job_id = ?",
+                (job["id"],),
+            ).fetchone()[0] == 0
+    finally:
+        release_applied.set()
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_prepped_jobs_stop_listing_a_role_after_it_moves_to_disinterested(
     tmp_path: Path,
 ) -> None:
@@ -721,6 +853,91 @@ def test_prepped_jobs_stop_listing_a_role_after_it_moves_to_disinterested(
         assert [job["role_id"] for job in list_autoprep_jobs(connection, include_applied=True)] == [
             role_id
         ]
+
+
+def test_return_prepped_role_to_interested_archives_prep_and_preserves_role_data(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "autoprep-return-interested.sqlite3"
+    resume = tmp_path / "resume.pdf"
+    cover_letter = tmp_path / "cover-letter.pdf"
+    resume.write_bytes(b"saved resume")
+    cover_letter.write_bytes(b"saved cover letter")
+    with db.connect(database) as connection:
+        db.run_migrations(connection)
+        ensure_autoprep_schema(connection)
+        role_id = _interested_role(connection, title="Returnable Engineer")
+        [job] = enqueue_autoprep_jobs(connection, [role_id], idempotency_key="returnable-role")
+        connection.execute(
+            """
+            UPDATE autoprep_jobs
+            SET overall_status = 'ready', worker_state = 'idle',
+                resume_status = 'ready', cover_letter_status = 'ready',
+                resume_artifact_path = ?, cover_letter_artifact_path = ?,
+                resume_latex = ?
+            WHERE id = ?
+            """,
+            (str(resume), str(cover_letter), "saved latex", job["id"]),
+        )
+        answer = autoprep_service.create_application_answer(
+            connection,
+            role_id=role_id,
+            question="Why this role?",
+            backend="codex",
+        )
+
+        result = autoprep_service.return_prepped_role_to_interested(connection, role_id)
+
+        assert result == {
+            "archived_job_id": job["id"],
+            "role_id": role_id,
+            "role_status": "interested",
+        }
+        assert autoprep_service.get_role_autoprep_job(connection, role_id) is None
+        [interested] = autoprep_service.list_interested_autoprep_roles(connection)
+        assert interested["id"] == role_id
+        assert interested["preparation_status"] is None
+        [archive] = connection.execute(
+            "SELECT job_id, role_id, snapshot_json FROM autoprep_job_archives"
+        ).fetchall()
+        snapshot = json.loads(archive["snapshot_json"])
+        assert archive["job_id"] == job["id"]
+        assert archive["role_id"] == role_id
+        assert snapshot["job"]["resume_latex"] == "saved latex"
+        assert connection.execute(
+            "SELECT COUNT(*) FROM application_answers WHERE id = ?",
+            (answer["id"],),
+        ).fetchone()[0] == 1
+        assert resume.read_bytes() == b"saved resume"
+        assert cover_letter.read_bytes() == b"saved cover letter"
+
+        [requeued] = enqueue_autoprep_jobs(
+            connection,
+            [role_id],
+            idempotency_key="returnable-role-again",
+        )
+        assert requeued["id"] != job["id"]
+        assert requeued["worker_state"] == "queued"
+
+
+def test_return_prepped_role_to_interested_rejects_active_worker(tmp_path: Path) -> None:
+    database = tmp_path / "autoprep-return-active.sqlite3"
+    with db.connect(database) as connection:
+        db.run_migrations(connection)
+        ensure_autoprep_schema(connection)
+        role_id = _interested_role(connection, title="Busy Engineer")
+        [job] = enqueue_autoprep_jobs(connection, [role_id], idempotency_key="busy-role")
+        assert claim_next_autoprep_job(connection) is not None
+
+        with pytest.raises(AutoprepConflictError, match="active preparation"):
+            autoprep_service.return_prepped_role_to_interested(connection, role_id)
+
+        retained = autoprep_service.get_role_autoprep_job(connection, role_id)
+        assert retained is not None
+        assert retained["id"] == job["id"]
+        assert connection.execute(
+            "SELECT COUNT(*) FROM autoprep_job_archives"
+        ).fetchone()[0] == 0
 
 
 def test_bulk_cover_letter_regeneration_queues_ready_roles_and_reports_skips(

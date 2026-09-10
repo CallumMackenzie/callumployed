@@ -284,7 +284,10 @@ let currentlyApplyingSyncChain = Promise.resolve();
 let currentlyApplyingPendingSignature = null;
 let currentlyApplyingSyncedSignature = null;
 const queuingAutoprepRoleIds = new Set();
+const preppedRoleMutationIds = new Set();
 const preppedStatusChangeRoleIds = new Set();
+const returningPreppedRoleIds = new Set();
+const confirmingPreppedReturnRoleIds = new Set();
 const preppedCommentsByDocument = new Map();
 const openPreppedDetailSections = new Set();
 const preppedApplicationAnswersByRoleId = new Map();
@@ -4348,7 +4351,13 @@ function renderPreppedDetail() {
     ["Last seen", formatCompactDate(job.last_seen_at) || "Unavailable"],
   ];
   const movingToDisinterested = preppedStatusChangeRoleIds.has(Number(job.role_id));
-  const disinterestedUnavailable = movingToDisinterested || autoprepJobIsActive(job);
+  const roleMutationPending = preppedRoleMutationIds.has(Number(job.role_id));
+  const disinterestedUnavailable = (
+    roleMutationPending || movingToDisinterested || autoprepJobIsActive(job)
+  );
+  const returningToInterested = returningPreppedRoleIds.has(Number(job.role_id));
+  const confirmingReturn = confirmingPreppedReturnRoleIds.has(Number(job.role_id));
+  const returnUnavailable = roleMutationPending || job.worker_state === "running";
   const descriptionKey = `${job.role_id}:description`;
   const notesKey = `${job.role_id}:notes`;
   preppedDetail.innerHTML = `
@@ -4371,8 +4380,9 @@ function renderPreppedDetail() {
       <button class="review-action prepped-nav-action" type="button" data-prepped-nav="previous" ${currentIndex <= 0 ? "disabled" : ""}>Previous</button>
       <button class="review-action prepped-nav-action" type="button" data-prepped-nav="next" ${currentIndex >= preppedJobs.length - 1 ? "disabled" : ""}>Next</button>
       <button class="review-action prepped-folder-action" type="button" data-autoprep-open-folder ${job.artifact_directory ? "" : "disabled"}>Open Documents Folder</button>
-      <button class="review-action danger prepped-disinterested" type="button" data-autoprep-disinterested aria-busy="${movingToDisinterested ? "true" : "false"}" ${disinterestedUnavailable ? "disabled" : ""} title="${autoprepJobIsActive(job) ? "Wait for preparation to finish before moving this role" : "Move this role out of Prepped"}">${movingToDisinterested ? "Moving to Disinterested..." : "Move to Disinterested"}</button>
-      <button class="review-action success" type="button" data-autoprep-applied ${job.overall_status === "ready" ? "" : "disabled"}>Applied</button>
+      <button class="review-action prepped-return-interested" type="button" data-autoprep-return-interested data-autoprep-lifecycle-action aria-label="${confirmingReturn ? "Confirm return to Interested" : "Return to Interested"}: ${escapeHtml(job.company_name)} — ${escapeHtml(job.title)}" aria-busy="${returningToInterested ? "true" : "false"}" ${returnUnavailable ? "disabled" : ""} title="${job.worker_state === "running" ? "Wait for active preparation to finish before returning this role" : "Remove this role from Prepped and make it selectable in Interested"}">${returningToInterested ? "Returning..." : confirmingReturn ? "Confirm return to Interested" : "Return to Interested"}</button>
+      <button class="review-action danger prepped-disinterested" type="button" data-autoprep-disinterested data-autoprep-lifecycle-action aria-busy="${movingToDisinterested ? "true" : "false"}" ${disinterestedUnavailable ? "disabled" : ""} title="${autoprepJobIsActive(job) ? "Wait for preparation to finish before moving this role" : "Move this role out of Prepped"}">${movingToDisinterested ? "Moving to Disinterested..." : "Move to Disinterested"}</button>
+      <button class="review-action success" type="button" data-autoprep-applied data-autoprep-lifecycle-action ${job.overall_status === "ready" && !roleMutationPending ? "" : "disabled"}>Applied</button>
     </div>
     <p class="prepped-safety-note">Autoprep prepares files only. It never submits an application.</p>
     <details class="currently-applying-guide" data-currently-applying-guide ${currentlyApplyingGuideOpen ? "open" : ""}>
@@ -4721,9 +4731,25 @@ async function regenerateAllPreppedResumes() {
   }
 }
 
+function beginPreppedRoleMutation(roleId) {
+  const numericRoleId = Number(roleId);
+  if (preppedRoleMutationIds.has(numericRoleId)) return false;
+  preppedRoleMutationIds.add(numericRoleId);
+  preppedDetail.querySelectorAll("[data-autoprep-lifecycle-action]").forEach((action) => {
+    action.disabled = true;
+  });
+  return true;
+}
+
+function finishPreppedRoleMutation(roleId) {
+  const numericRoleId = Number(roleId);
+  preppedRoleMutationIds.delete(numericRoleId);
+  if (Number(selectedPreppedRoleId) === numericRoleId) renderPreppedDetail();
+}
+
 async function markPreppedRoleDisinterested(roleId, button) {
   const numericRoleId = Number(roleId);
-  if (preppedStatusChangeRoleIds.has(numericRoleId)) return;
+  if (!beginPreppedRoleMutation(numericRoleId)) return;
   preppedStatusChangeRoleIds.add(numericRoleId);
   button.disabled = true;
   button.setAttribute("aria-busy", "true");
@@ -4750,14 +4776,56 @@ async function markPreppedRoleDisinterested(roleId, button) {
     await refreshPreppedRoles();
   } finally {
     preppedStatusChangeRoleIds.delete(numericRoleId);
+    finishPreppedRoleMutation(numericRoleId);
     if (preppedJobs.some((job) => Number(job.role_id) === numericRoleId)) {
       renderPreppedRoles();
     }
   }
 }
 
+async function returnPreppedRoleToInterested(roleId, button) {
+  const numericRoleId = Number(roleId);
+  if (preppedRoleMutationIds.has(numericRoleId)) return;
+  if (!confirmingPreppedReturnRoleIds.has(numericRoleId)) {
+    confirmingPreppedReturnRoleIds.add(numericRoleId);
+    renderPreppedDetail();
+    window.setTimeout(() => {
+      if (!confirmingPreppedReturnRoleIds.delete(numericRoleId)) return;
+      if (Number(selectedPreppedRoleId) === numericRoleId) renderPreppedDetail();
+    }, 5000);
+    return;
+  }
+
+  confirmingPreppedReturnRoleIds.delete(numericRoleId);
+  if (!beginPreppedRoleMutation(numericRoleId)) return;
+  returningPreppedRoleIds.add(numericRoleId);
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  button.textContent = "Returning...";
+  try {
+    const response = await fetch(
+      `/api/autoprep/roles/${encodeURIComponent(numericRoleId)}/return-to-interested`,
+      {method: "POST"},
+    );
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "Could not return this role to Interested.");
+    preppedApplicationAnswersByRoleId.delete(numericRoleId);
+    preppedApplicationQuestionDrafts.delete(numericRoleId);
+    loadedApplicationAnswerRoleIds.delete(numericRoleId);
+    applicationAnswerLoadErrors.delete(numericRoleId);
+    await refreshPreppedRoles();
+    loadInitialTrackerData();
+  } catch (error) {
+    window.alert(error instanceof Error ? error.message : "Could not return this role to Interested.");
+    await refreshPreppedRoles();
+  } finally {
+    returningPreppedRoleIds.delete(numericRoleId);
+    finishPreppedRoleMutation(numericRoleId);
+  }
+}
+
 async function markPreppedRoleApplied(roleId, button) {
-  if (button.disabled) return;
+  if (button.disabled || !beginPreppedRoleMutation(roleId)) return;
   button.disabled = true;
   button.textContent = "Moving to Applied...";
   const currentIndex = preppedJobs.findIndex((job) => Number(job.role_id) === Number(roleId));
@@ -4774,7 +4842,11 @@ async function markPreppedRoleApplied(roleId, button) {
       selectPreppedRole(nextRoleId);
     }
     loadInitialTrackerData();
-  } catch { await refreshPreppedRoles(); }
+  } catch {
+    await refreshPreppedRoles();
+  } finally {
+    finishPreppedRoleMutation(roleId);
+  }
 }
 
 reviewDiscoveredButton.addEventListener("click", openReviewView);
@@ -4910,6 +4982,11 @@ preppedDetail.addEventListener("click", async (event) => {
       folderButton.textContent = error instanceof Error ? error.message : "Could not open folder";
       folderButton.disabled = false;
     }
+    return;
+  }
+  const returnInterestedButton = event.target.closest("[data-autoprep-return-interested]");
+  if (returnInterestedButton) {
+    returnPreppedRoleToInterested(job.role_id, returnInterestedButton);
     return;
   }
   const disinterestedButton = event.target.closest("[data-autoprep-disinterested]");

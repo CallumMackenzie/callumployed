@@ -223,6 +223,18 @@ def _ensure_autoprep_schema(connection: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_autoprep_jobs_worker
             ON autoprep_jobs(worker_state, queued_at, id);
 
+        CREATE TABLE IF NOT EXISTS autoprep_job_archives (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER NOT NULL UNIQUE,
+            role_id INTEGER NOT NULL,
+            snapshot_json TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            archived_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_autoprep_job_archives_role
+            ON autoprep_job_archives(role_id, archived_at DESC, id DESC);
+
         CREATE TABLE IF NOT EXISTS autoprep_retries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             idempotency_key TEXT NOT NULL UNIQUE,
@@ -748,6 +760,72 @@ def get_role_autoprep_job(connection: sqlite3.Connection, role_id: int) -> dict[
         (role_id,),
     ).fetchone()
     return get_autoprep_job(connection, int(row["id"])) if row is not None else None
+
+
+def return_prepped_role_to_interested(
+    connection: sqlite3.Connection, role_id: int
+) -> dict[str, Any]:
+    """Retire a prepped job while preserving its history and role-owned data."""
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            """
+            SELECT j.*, r.role_status
+            FROM autoprep_jobs AS j
+            JOIN roles AS r ON r.id = j.role_id
+            WHERE j.role_id = ?
+            """,
+            (role_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Prepped role {role_id} was not found.")
+        if str(row["role_status"]) != "interested":
+            raise AutoprepConflictError("Only an Interested role can be returned from Prepped.")
+        if str(row["worker_state"]) == "running":
+            raise AutoprepConflictError(
+                "Wait for this role's active preparation to finish before returning it "
+                "to Interested."
+            )
+
+        job_id = int(row["id"])
+        retries = connection.execute(
+            "SELECT * FROM autoprep_retries WHERE job_id = ? ORDER BY id",
+            (job_id,),
+        ).fetchall()
+        regenerations = connection.execute(
+            "SELECT * FROM autoprep_regenerations WHERE job_id = ? ORDER BY id",
+            (job_id,),
+        ).fetchall()
+        snapshot = {
+            "job": dict(row),
+            "retries": [dict(retry) for retry in retries],
+            "regenerations": [dict(regeneration) for regeneration in regenerations],
+        }
+        connection.execute(
+            """
+            INSERT INTO autoprep_job_archives (job_id, role_id, snapshot_json, reason)
+            VALUES (?, ?, ?, 'returned_to_interested')
+            """,
+            (job_id, role_id, json.dumps(snapshot, sort_keys=True)),
+        )
+        deleted = connection.execute(
+            "DELETE FROM autoprep_jobs WHERE id = ? AND worker_state != 'running'",
+            (job_id,),
+        )
+        if deleted.rowcount != 1:
+            raise AutoprepConflictError(
+                "Wait for this role's active preparation to finish before returning it "
+                "to Interested."
+            )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return {
+        "archived_job_id": job_id,
+        "role_id": role_id,
+        "role_status": "interested",
+    }
 
 
 def get_autoprep_resume_latex(connection: sqlite3.Connection, job_id: int) -> str | None:
