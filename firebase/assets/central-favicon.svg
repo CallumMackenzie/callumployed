@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+  <title id="title">Callumployed Central CE monogram</title>
+  <rect x="8" y="8" width="240" height="240" rx="54" fill="#07110f" stroke="#29423b" stroke-width="8" />
+  <g fill="none" stroke="#4ed2a6" stroke-width="28" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M110 78 A56 56 0 1 0 110 178" />
+    <path d="M120 72 V184 M120 72 H190 M120 128 H178 M120 184 H190" />
+  </g>
+  <circle cx="210" cy="48" r="20" fill="#82d173" />
+  <circle cx="210" cy="48" r="8" fill="#07110f" />
+</svg>

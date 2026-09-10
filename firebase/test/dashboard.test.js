@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const {compareCompanyRows, dashboardPage} = require("../lib/dashboard.js");
+const {compareCompanyRows, dashboardLoginPage, dashboardPage} = require("../lib/dashboard.js");
 const {isAgentAssistedScan} = require("../lib/dashboardMetrics.js");
 
 test("agent-assisted scans include every supported agent signal", () => {
@@ -60,4 +60,13 @@ test("company table uses one shared sort state and clears inactive headers", () 
   const script = page.match(/<script>([\s\S]*?)<\/script>/)?.[1];
   assert.ok(script);
   assert.doesNotThrow(() => new Function(script));
+});
+
+test("Central pages explicitly use Central-only favicon assets", () => {
+  for (const page of [dashboardLoginPage(), dashboardPage()]) {
+    assert.match(page, /href="dashboard\/favicon\.svg\?v=20260910-1"/);
+    assert.match(page, /href="dashboard\/favicon-32\.png\?v=20260910-1"/);
+    assert.match(page, /href="dashboard\/apple-touch-icon\.png\?v=20260910-1"/);
+    assert.doesNotMatch(page, /camackenzie-logo|\/assets\/icon-/);
+  }
 });
