@@ -581,7 +581,8 @@ def test_static_svg_assets_are_served_with_svg_content_type() -> None:
             assert response.headers["Content-Type"] == "image/svg+xml; charset=utf-8"
             body = response.read()
             assert body.startswith(b'<?xml version="1.0" encoding="UTF-8"?>')
-            assert b"path { fill: #00897b; }" in body
+            assert b"Callumployed CE monogram" in body
+            assert b"stroke: #00897b" in body
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -644,12 +645,13 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
 
         assert 'id="toggle-all"' in markup
         assert (
-            '<link rel="icon" href="/assets/camackenzie-logo.svg?v=20260827-2" '
+            '<link rel="icon" href="/assets/camackenzie-logo.svg?v=20260910-1" '
             'type="image/svg+xml" />' in index_markup
         )
         assert 'rel="apple-touch-icon"' in index_markup
         assert 'sizes="180x180"' in index_markup
-        assert 'href="/assets/apple-touch-icon.png?v=20260827-2"' in index_markup
+        assert 'href="/assets/apple-touch-icon.png?v=20260910-1"' in index_markup
+        assert 'alt="callumployed CE monogram"' in index_markup
         assert '<link rel="manifest" href="/assets/manifest.webmanifest" />' in index_markup
         assert '<meta name="apple-mobile-web-app-capable" content="yes" />' in index_markup
         assert '<meta name="apple-mobile-web-app-title" content="callumployed" />' in index_markup
