@@ -1,4 +1,5 @@
 import express from "express";
+import path from "node:path";
 import {initializeApp} from "firebase-admin/app";
 import {getFirestore} from "firebase-admin/firestore";
 import {onRequest} from "firebase-functions/v2/https";
@@ -25,6 +26,20 @@ initializeApp();
 const app = express();
 app.use(express.json({limit: "1mb"}));
 app.use(express.urlencoded({extended: false, limit: "16kb"}));
+
+const dashboardAssetDirectory = path.join(__dirname, "..", "assets");
+
+app.get("/dashboard/favicon.svg", (_req, res) => {
+  sendDashboardAsset(res, "central-favicon.svg", "image/svg+xml");
+});
+
+app.get("/dashboard/favicon-32.png", (_req, res) => {
+  sendDashboardAsset(res, "central-favicon-32.png", "image/png");
+});
+
+app.get("/dashboard/apple-touch-icon.png", (_req, res) => {
+  sendDashboardAsset(res, "central-apple-touch-icon.png", "image/png");
+});
 
 app.get("/dashboard", (req, res) => {
   setDashboardHeaders(res);
@@ -105,7 +120,17 @@ function setDashboardHeaders(res: express.Response): void {
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader(
     "Content-Security-Policy",
-    "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; " +
+    "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; " +
       "connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
   );
+}
+
+function sendDashboardAsset(
+  res: express.Response,
+  filename: string,
+  contentType: string,
+): void {
+  res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.type(contentType).sendFile(path.join(dashboardAssetDirectory, filename));
 }
