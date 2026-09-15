@@ -3275,9 +3275,13 @@ a:hover .role-link-icon {
   color: var(--text);
 }
 
+.company-create-form input,
+.company-create-form select {
+  height: 41px;
+}
+
 .company-create-form select {
   width: 100%;
-  height: 41px;
   cursor: pointer;
 }
 

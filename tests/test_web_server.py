@@ -639,7 +639,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "dangerouslySetInnerHTML" not in markup
         assert "dangerouslySetInnerHTML" not in app_javascript
         assert '<div id="root"></div>' not in index_markup
-        assert '<script type="module" src="/assets/app.js?v=vanilla-20260915-27"></script>' in (
+        assert '<script type="module" src="/assets/app.js?v=vanilla-20260915-28"></script>' in (
             index_markup
         )
 
@@ -782,8 +782,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=vanilla-20260915-27" in index_markup
-        assert "/assets/app.js?v=vanilla-20260915-27" in index_markup
+        assert "/assets/app.css?v=vanilla-20260915-28" in index_markup
+        assert "/assets/app.js?v=vanilla-20260915-28" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
