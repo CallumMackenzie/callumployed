@@ -240,6 +240,52 @@ def test_pull_companies_imports_remote_companies_and_links_existing() -> None:
     assert second_result.companies_existing == 2
 
 
+def test_pull_companies_reassigns_role_to_unique_central_ats_owner() -> None:
+    connection = db.connect(":memory:")
+    db.run_migrations(connection)
+    ramp = add_company(
+        connection,
+        Company(name="Ramp", central_company_id="co_ramp", central_sync_status="linked"),
+    )
+    cohere = add_company(
+        connection,
+        Company(name="Cohere", central_company_id="co_cohere", central_sync_status="linked"),
+    )
+    assert ramp.id is not None and cohere.id is not None
+    misplaced = add_role(
+        connection,
+        Role(
+            company_id=ramp.id,
+            title="Software Intern",
+            role_url="https://jobs.ashbyhq.com/cohere/job-123",
+        ),
+    )
+    assert misplaced.id is not None
+
+    class OwnershipClient:
+        def list_companies(self) -> CentralCompaniesResponse:
+            return CentralCompaniesResponse(
+                companies=[
+                    CentralCompany(
+                        global_company_id="co_ramp",
+                        display_name="Ramp",
+                        ats_slugs=["ashby:ramp"],
+                        career_page_urls=["https://jobs.ashbyhq.com/ramp"],
+                    ),
+                    CentralCompany(
+                        global_company_id="co_cohere",
+                        display_name="Cohere",
+                        ats_slugs=["ashby:cohere"],
+                        career_page_urls=["https://jobs.ashbyhq.com/cohere"],
+                    ),
+                ]
+            )
+
+    pull_companies(connection, OwnershipClient())  # type: ignore[arg-type]
+
+    assert list_roles(connection)[0].company_id == cohere.id
+
+
 def test_central_client_resolves_company_without_passkey() -> None:
     seen_headers: dict[str, str] = {}
     seen_payload: dict[str, object] = {}
@@ -433,10 +479,7 @@ def test_build_scan_metrics_aggregates_persisted_scan_data() -> None:
 
 def test_scan_metric_rejection_reasons_are_privacy_safe_categories() -> None:
     assert _rejection_reason_category(None) == "unspecified"
-    assert (
-        _rejection_reason_category("location filtered by app config")
-        == "location_filter"
-    )
+    assert _rejection_reason_category("location filtered by app config") == "location_filter"
     assert (
         _rejection_reason_category(
             "Rejected because jane@example.com appeared in the source posting"

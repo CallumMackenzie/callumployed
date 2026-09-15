@@ -10,7 +10,8 @@
     "test": "npm run build && node --test test/*.test.js",
     "serve": "npm run build && firebase emulators:start --only functions,firestore",
     "deploy": "firebase deploy --only functions",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "repair:ats-ownership": "npm run build && node scripts/repair-ats-ownership.js"
   },
   "dependencies": {
     "express": "^4.19.2",

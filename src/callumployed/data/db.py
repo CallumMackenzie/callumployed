@@ -61,6 +61,9 @@ def run_migrations(connection: sqlite3.Connection) -> None:
     _ensure_role_discovery_assessment_columns(connection)
     _remove_prepared_role_status(connection)
     _backfill_legacy_company_career_pages(connection)
+    from callumployed.data.integrity import repair_local_integrity
+
+    repair_local_integrity(connection)
     connection.commit()
 
 

@@ -6,6 +6,7 @@ import sqlite3
 from pathlib import PurePath
 from typing import TypedDict
 
+from callumployed.central.normalization import role_identity
 from callumployed.data.models import (
     Company,
     CompanyCareerPage,
@@ -36,6 +37,8 @@ class TrackingStats(TypedDict):
     applications_total: int
     jobs_by_status: dict[str, int]
     applications_by_status: dict[str, int]
+
+
 INCLUDE_HARDWARE_ROLES_CONFIG_KEY = "include_hardware_roles"
 REQUIRE_SOFTWARE_KEYWORDS_CONFIG_KEY = "require_software_keywords"
 INTERNSHIP_MODE_CONFIG_KEY = "internship_mode"
@@ -1262,6 +1265,34 @@ def _career_page_from_row(row: sqlite3.Row) -> CompanyCareerPage:
 
 
 def add_role(connection: sqlite3.Connection, role: Role, *, commit: bool = True) -> Role:
+    manage_transaction = commit and not connection.in_transaction
+    if manage_transaction:
+        connection.execute("BEGIN IMMEDIATE")
+    try:
+        stored = _add_or_get_role_without_commit(connection, role)
+    except Exception:
+        if manage_transaction:
+            connection.rollback()
+        raise
+    if commit:
+        connection.commit()
+    return stored
+
+
+def _add_or_get_role_without_commit(connection: sqlite3.Connection, role: Role) -> Role:
+    identity = role_identity(role.role_url, role.posting_id)
+    if identity is not None:
+        existing = connection.execute(
+            """
+            SELECT roles.id
+            FROM role_identities
+            JOIN roles ON roles.id = role_identities.role_id
+            WHERE role_identities.identity = ?
+            """,
+            (identity,),
+        ).fetchone()
+        if existing is not None:
+            return get_role(connection, int(existing["id"]))
     cursor = connection.execute(
         """
         INSERT INTO roles (
@@ -1293,9 +1324,13 @@ def add_role(connection: sqlite3.Connection, role: Role, *, commit: bool = True)
             role.central_synced_at.isoformat() if role.central_synced_at is not None else None,
         ),
     )
-    if commit:
-        connection.commit()
-    return get_role(connection, _lastrowid(cursor))
+    role_id = _lastrowid(cursor)
+    if identity is not None:
+        connection.execute(
+            "INSERT INTO role_identities (identity, role_id) VALUES (?, ?)",
+            (identity, role_id),
+        )
+    return get_role(connection, role_id)
 
 
 def get_role(connection: sqlite3.Connection, role_id: int) -> Role:
@@ -1393,6 +1428,21 @@ def get_role_by_central_id(connection: sqlite3.Connection, central_role_id: str)
     return Role.model_validate(dict(row))
 
 
+def get_role_by_identity(
+    connection: sqlite3.Connection,
+    role_url: str,
+    posting_id: str | None = None,
+) -> Role | None:
+    identity = role_identity(role_url, posting_id)
+    if identity is None:
+        return None
+    row = connection.execute(
+        "SELECT role_id FROM role_identities WHERE identity = ?",
+        (identity,),
+    ).fetchone()
+    return get_role(connection, int(row["role_id"])) if row is not None else None
+
+
 def upsert_central_role(
     connection: sqlite3.Connection,
     role: Role,
@@ -1405,6 +1455,21 @@ def upsert_central_role(
         updated = update_central_role_fields(
             connection,
             existing_by_central_id.id or 0,
+            title=role.title,
+            role_url=role.role_url,
+            location=role.location,
+            description=role.description,
+            posting_id=role.posting_id,
+            central_role_id=role.central_role_id,
+            central_source=role.central_source,
+        )
+        return updated, False
+
+    existing_by_identity = get_role_by_identity(connection, role.role_url, role.posting_id)
+    if existing_by_identity is not None:
+        updated = update_central_role_fields(
+            connection,
+            existing_by_identity.id or 0,
             title=role.title,
             role_url=role.role_url,
             location=role.location,
@@ -1947,8 +2012,7 @@ def get_latest_scan_role_presence(
     ).fetchall()
     scan_id_to_company = {int(row["id"]): int(row["company_id"]) for row in latest_rows}
     presence: dict[int, tuple[int, set[int], set[str]]] = {
-        company_id: (scan_id, set(), set())
-        for scan_id, company_id in scan_id_to_company.items()
+        company_id: (scan_id, set(), set()) for scan_id, company_id in scan_id_to_company.items()
     }
     if not scan_id_to_company:
         return presence

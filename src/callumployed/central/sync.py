@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from callumployed.central.client import CentralStoreClient, CentralStoreError
 from callumployed.central.config import get_central_client_id
 from callumployed.central.models import CentralCompany, CentralRole, ResolveCompanyRequest
+from callumployed.central.normalization import ats_slug
+from callumployed.data.integrity import reassign_role_to_company
 from callumployed.data.models import Company, CompanyCareerPage, Role
 from callumployed.data.repositories import (
     add_company,
@@ -113,10 +115,7 @@ def pull_companies(
         for company in local_companies
         if company.central_company_id is not None
     }
-    local_by_name = {
-        _normalize_local_name(company.name): company
-        for company in local_companies
-    }
+    local_by_name = {_normalize_local_name(company.name): company for company in local_companies}
     result = PullCompaniesResult()
 
     for central_company in central_companies:
@@ -174,6 +173,7 @@ def pull_companies(
             companies_existing=result.companies_existing,
         )
 
+    _reconcile_role_company_ownership(connection, central_companies)
     return result
 
 
@@ -262,9 +262,7 @@ def _create_company_from_central_company(
             central_company_id=central_company.global_company_id,
             canonical_domain=central_company.domains[0] if central_company.domains else None,
             normalized_name=(
-                central_company.normalized_names[0]
-                if central_company.normalized_names
-                else None
+                central_company.normalized_names[0] if central_company.normalized_names else None
             ),
             central_sync_status="linked",
         ),
@@ -280,9 +278,18 @@ def _sync_central_company_career_pages(
 ) -> None:
     if company.id is None:
         return
+    remote_urls = set(central_company.career_page_urls)
+    central_pages = [
+        page
+        for page in list_company_career_pages(connection, company.id)
+        if (page.label or "").casefold() == "central"
+    ]
+    for page in central_pages:
+        if page.url not in remote_urls and page.id is not None:
+            connection.execute("DELETE FROM company_career_pages WHERE id = ?", (page.id,))
+            connection.commit()
     existing_urls = {
-        career_page.url
-        for career_page in list_company_career_pages(connection, company.id)
+        career_page.url for career_page in list_company_career_pages(connection, company.id)
     }
     for url in central_company.career_page_urls:
         if url in existing_urls:
@@ -292,6 +299,56 @@ def _sync_central_company_career_pages(
             CompanyCareerPage(company_id=company.id, url=url, label="Central"),
         )
         existing_urls.add(url)
+
+
+def _reconcile_role_company_ownership(
+    connection: sqlite3.Connection,
+    central_companies: list[CentralCompany],
+) -> None:
+    owner_sets: dict[str, set[str]] = {}
+    for central_company in central_companies:
+        for slug in central_company.ats_slugs:
+            owner_sets.setdefault(slug, set()).add(central_company.global_company_id)
+    owners = {
+        slug: next(iter(company_ids))
+        for slug, company_ids in owner_sets.items()
+        if len(company_ids) == 1
+    }
+    local_companies = list_companies(connection, include_inactive=True)
+    local_by_central_id = {
+        company.central_company_id: company
+        for company in local_companies
+        if company.central_company_id is not None and company.id is not None
+    }
+    company_by_local_id = {
+        company.id: company for company in local_companies if company.id is not None
+    }
+    roles = connection.execute("SELECT id, company_id, role_url FROM roles ORDER BY id").fetchall()
+    connection.execute("SAVEPOINT central_role_ownership")
+    try:
+        for role in roles:
+            role_slug = ats_slug(str(role["role_url"]))
+            expected_central_id = owners.get(role_slug) if role_slug is not None else None
+            target = (
+                local_by_central_id.get(expected_central_id)
+                if expected_central_id is not None
+                else None
+            )
+            current = company_by_local_id.get(int(role["company_id"]))
+            if (
+                target is None
+                or target.id is None
+                or current is None
+                or current.central_company_id == expected_central_id
+            ):
+                continue
+            reassign_role_to_company(connection, int(role["id"]), target.id)
+    except Exception:
+        connection.execute("ROLLBACK TO central_role_ownership")
+        connection.execute("RELEASE central_role_ownership")
+        raise
+    connection.execute("RELEASE central_role_ownership")
+    connection.commit()
 
 
 def _normalize_local_name(value: str) -> str:

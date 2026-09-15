@@ -35,6 +35,7 @@ export async function resolveCompany(
   const tierSourceId = sourceId(request.tier_source_id);
   const candidateIds = await candidateCompanyIds(db, normalizedName, domains, atsSlugs);
   const candidates = await loadCandidates(db, candidateIds);
+  const atsOwners = await loadAtsOwners(db, atsSlugs);
   const scored = candidates
     .map((candidate) => ({
       candidate,
@@ -43,6 +44,29 @@ export async function resolveCompany(
     .sort((left, right) => right.score.confidence - left.score.confidence);
 
   const best = scored[0];
+  const ownerIds = new Set([...atsOwners.values()]);
+  const hasUnownedAtsSlug = atsSlugs.some((slug) => !atsOwners.has(slug));
+  const tiedBest = best !== undefined && scored.some(
+    (entry, index) => index > 0 && entry.score.confidence === best.score.confidence,
+  );
+  const ambiguousAtsEvidence =
+    (atsSlugs.length > 1 && (ownerIds.size !== 1 || hasUnownedAtsSlug)) ||
+    (best !== undefined && ownerIds.size > 0 && !ownerIds.has(best.candidate.id)) ||
+    (best !== undefined && hasUnownedAtsSlug && !best.score.matched_on.includes("ats_slug"));
+  if (tiedBest || ambiguousAtsEvidence) {
+    const response: ResolveCompanyResponse = {
+      action: "needs_review",
+      global_company_id: null,
+      confidence: best?.score.confidence ?? 0,
+      matched_on: best?.score.matched_on ?? [],
+      canonical_domain: domains[0] ?? null,
+      normalized_name: normalizedName,
+      default_tier: null,
+      career_page_urls: [],
+      candidates: scored.slice(0, 5).map(toCandidateResponse),
+    };
+    return includeMetadata ? response : redactResolveResponse(response);
+  }
   if (best && best.score.confidence >= AUTO_MATCH_THRESHOLD) {
     const defaultTier = await recordCompanyTier(
       db,
@@ -68,8 +92,8 @@ export async function resolveCompany(
     };
     return includeMetadata ? response : redactResolveResponse(response);
   }
-  if (includeMetadata && best && best.score.confidence >= REVIEW_THRESHOLD) {
-    return {
+  if (best && best.score.confidence >= REVIEW_THRESHOLD) {
+    const response: ResolveCompanyResponse = {
       action: "needs_review",
       global_company_id: null,
       confidence: best.score.confidence,
@@ -80,12 +104,21 @@ export async function resolveCompany(
       career_page_urls: [],
       candidates: scored.slice(0, 5).map(toCandidateResponse),
     };
+    return includeMetadata ? response : redactResolveResponse(response);
   }
 
-  const globalCompanyId = stableId("co", domains[0] ?? normalizedName);
+  const globalCompanyId = stableId("co", atsSlugs[0] ?? domains[0] ?? normalizedName);
   await db.runTransaction(async (transaction) => {
     const companyRef = db.collection("companies").doc(globalCompanyId);
+    const atsRefs = atsSlugs.map((slug) => db.collection("companyAtsSlugs").doc(slug));
     const company = await transaction.get(companyRef);
+    const atsOwnerDocs = await Promise.all(atsRefs.map((ref) => transaction.get(ref)));
+    for (const owner of atsOwnerDocs) {
+      const existingOwner = owner.get("global_company_id");
+      if (typeof existingOwner === "string" && existingOwner !== globalCompanyId) {
+        throw new Error("ATS board is already owned by another company");
+      }
+    }
     if (!company.exists) {
       transaction.set(companyRef, {
         display_name: name,
@@ -182,6 +215,18 @@ async function candidateCompanyIds(
     }
   }
   return [...ids];
+}
+
+async function loadAtsOwners(db: Firestore, atsSlugs: string[]): Promise<Map<string, string>> {
+  const owners = new Map<string, string>();
+  for (const slug of atsSlugs) {
+    const doc = await db.collection("companyAtsSlugs").doc(slug).get();
+    const id = doc.get("global_company_id");
+    if (typeof id === "string") {
+      owners.set(slug, id);
+    }
+  }
+  return owners;
 }
 
 async function loadCandidates(db: Firestore, ids: string[]): Promise<CompanyCandidate[]> {
