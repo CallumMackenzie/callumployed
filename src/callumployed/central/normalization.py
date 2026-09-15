@@ -29,7 +29,8 @@ def ats_slug(raw_url: str) -> str | None:
     host = (parsed.hostname or "").lower().removeprefix("www.")
     segments = [segment.lower() for segment in parsed.path.split("/") if segment]
     if host in {"boards.greenhouse.io", "job-boards.greenhouse.io"} and segments:
-        return f"greenhouse:{segments[0]}"
+        board = _unique_query_value(parsed.query, "for") if segments[0] == "embed" else segments[0]
+        return f"greenhouse:{board.lower()}" if board else None
     if host == "jobs.ashbyhq.com" and segments:
         return f"ashby:{segments[0]}"
     if host.endswith(".ashbyhq.com") and host != "jobs.ashbyhq.com":
@@ -62,10 +63,23 @@ def role_identity(raw_url: str, posting_id: str | None = None) -> str | None:
     if host in {"boards.greenhouse.io", "job-boards.greenhouse.io"}:
         lowered = [segment.lower() for segment in segments]
         jobs_index = lowered.index("jobs") if "jobs" in lowered else -1
-        url_posting_id = segments[jobs_index + 1] if jobs_index + 1 < len(segments) else None
-        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-        greenhouse_id = url_posting_id or query.get("gh_jid") or posting_id
-        return f"{board}:job:{greenhouse_id}" if board and greenhouse_id else None
+        url_posting_id = (
+            segments[jobs_index + 1]
+            if jobs_index >= 0 and jobs_index + 1 < len(segments)
+            else None
+        )
+        query_has_greenhouse_id = _query_parameter_present(parsed.query, "gh_jid")
+        query_greenhouse_id = _unique_query_value(parsed.query, "gh_jid")
+        if query_has_greenhouse_id and query_greenhouse_id is None:
+            return None
+        greenhouse_ids = {
+            value.strip().casefold()
+            for value in (url_posting_id, query_greenhouse_id, posting_id)
+            if value and value.strip()
+        }
+        if not board or len(greenhouse_ids) != 1:
+            return None
+        return f"{board}:job:{next(iter(greenhouse_ids))}"
 
     if host == "jobs.ashbyhq.com" or host.endswith(".ashbyhq.com"):
         posting_segment = (
@@ -83,7 +97,7 @@ def role_identity(raw_url: str, posting_id: str | None = None) -> str | None:
         return f"{board}:job:{lever_id.lower()}" if board and lever_id else None
 
     if posting_id and host:
-        return f"posting:{host}:{posting_id.lower()}"
+        return f"posting:{host}:{posting_id.lower()}:{canonical_role_url(raw_url)}"
 
     normalized_path = parsed.path.rstrip("/").lower()
     if not normalized_path or normalized_path in {"/career", "/careers", "/job", "/jobs"}:
@@ -96,3 +110,22 @@ def _hostname(raw_url: str) -> str | None:
         return (urlsplit(raw_url).hostname or "").lower().removeprefix("www.") or None
     except ValueError:
         return None
+
+
+def _query_parameter_present(query: str, key: str) -> bool:
+    return any(
+        candidate.casefold() == key.casefold()
+        for candidate, _value in parse_qsl(query, keep_blank_values=True)
+    )
+
+
+def _unique_query_value(query: str, key: str) -> str | None:
+    values = {
+        value.strip().casefold()
+        for candidate, value in parse_qsl(query, keep_blank_values=True)
+        if candidate.casefold() == key.casefold()
+    }
+    if len(values) != 1:
+        return None
+    value = next(iter(values))
+    return value or None

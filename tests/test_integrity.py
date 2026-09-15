@@ -5,7 +5,11 @@ from callumployed.central.normalization import (
     role_identity,
 )
 from callumployed.data import db
-from callumployed.data.integrity import CENTRAL_LINK_REPAIR_KEY, repair_local_integrity
+from callumployed.data.integrity import (
+    CENTRAL_LINK_REPAIR_KEY,
+    reassign_role_to_company,
+    repair_local_integrity,
+)
 from callumployed.data.models import Company, CompanyCareerPage, Role, RoleStatus
 from callumployed.data.repositories import (
     add_company,
@@ -27,6 +31,32 @@ def test_shared_ats_normalization_and_role_identity() -> None:
     assert canonical_company_domain("https://example.com/careers") == "example.com"
     assert role_identity("https://jobs.ashbyhq.com/cohere/job-123") == ("ashby:cohere:job:job-123")
     assert role_identity("https://jobs.ashbyhq.com/cohere") is None
+    assert ats_slug("https://boards.greenhouse.io/embed/job_app?for=Cohere") == "greenhouse:cohere"
+    assert ats_slug("https://boards.greenhouse.io/embed/job_app") is None
+    assert (
+        role_identity("https://boards.greenhouse.io/embed/job_app?for=Cohere&GH_JID=123")
+        == "greenhouse:cohere:job:123"
+    )
+    assert (
+        role_identity(
+            "https://boards.greenhouse.io/embed/job_app?for=Cohere&FOR=cohere&gh_jid=ABC&GH_JID=abc"
+        )
+        == "greenhouse:cohere:job:abc"
+    )
+    assert (
+        role_identity(
+            "https://boards.greenhouse.io/embed/job_app?for=Cohere&gh_jid=123&GH_JID=456",
+            "789",
+        )
+        is None
+    )
+    assert (
+        role_identity("https://boards.greenhouse.io/cohere/jobs/123?gh_jid=456") is None
+    )
+    assert ats_slug("https://boards.greenhouse.io/embed/job_app?for=Cohere&FOR=Ramp") is None
+    assert role_identity("https://example.com/tenant-a/jobs", "123") != role_identity(
+        "https://example.com/tenant-b/jobs", "123"
+    )
 
 
 def test_canonical_role_url_retains_gh_jid_and_sorts_parameters() -> None:
@@ -115,7 +145,7 @@ def test_add_role_deduplicates_specific_postings_globally_but_not_board_roots() 
     assert len(list_roles(connection)) == 3
 
 
-def test_repair_merges_owned_data_into_application_stage_survivor() -> None:
+def test_repair_indexes_terminal_stage_owner_without_deleting_history() -> None:
     connection = db.connect(":memory:")
     db.run_migrations(connection)
     ensure_autoprep_schema(connection)
@@ -144,6 +174,18 @@ def test_repair_merges_owned_data_into_application_stage_survivor() -> None:
         (right_company.id,),
     )
     second_id = int(cursor.lastrowid)
+    rejected_cursor = connection.execute(
+        """
+        INSERT INTO roles (company_id, title, role_url, role_status, notes)
+        VALUES (
+            ?, 'Intern', 'https://jobs.ashbyhq.com/cohere/job-123?utm_source=y',
+            'rejected', 'rejection history'
+        )
+        """,
+        (wrong_company.id,),
+    )
+    assert rejected_cursor.lastrowid is not None
+    rejected_id = int(rejected_cursor.lastrowid)
     connection.execute(
         """
         INSERT INTO events (company_id, role_id, event_type, source, summary)
@@ -162,23 +204,84 @@ def test_repair_merges_owned_data_into_application_stage_survivor() -> None:
     repair_local_integrity(connection)
 
     roles = list_roles(connection)
-    assert len(roles) == 1
-    survivor = roles[0]
-    assert survivor.id == second_id
+    assert {role.id for role in roles} == {first.id, second_id, rejected_id}
+    survivor = next(role for role in roles if role.id == second_id)
+    duplicate = next(role for role in roles if role.id == first.id)
     assert survivor.role_status is RoleStatus.APPLIED
-    assert survivor.notes and "wrong-company note" in survivor.notes
-    assert survivor.notes and "application note" in survivor.notes
-    assert connection.execute("SELECT role_id FROM events").fetchone()["role_id"] == second_id
+    assert survivor.notes == "application note"
+    assert duplicate.notes == "wrong-company note"
+    assert connection.execute("SELECT role_id FROM events").fetchone()["role_id"] == first.id
     assert (
         connection.execute("SELECT role_id FROM application_answers").fetchone()["role_id"]
-        == second_id
+        == first.id
     )
     assert (
-        connection.execute("SELECT COUNT(*) AS count FROM autoprep_jobs").fetchone()["count"] == 1
+        connection.execute("SELECT COUNT(*) AS count FROM autoprep_jobs").fetchone()["count"] == 2
     )
     assert (
         connection.execute("SELECT COUNT(*) AS count FROM autoprep_job_archives").fetchone()[
             "count"
         ]
-        == 1
+        == 0
+    )
+    assert (
+        connection.execute(
+            "SELECT role_id FROM role_identities WHERE identity = ?",
+            (role_identity("https://jobs.ashbyhq.com/cohere/job-123"),),
+        ).fetchone()["role_id"]
+        == rejected_id
+    )
+
+
+def test_reassign_role_collision_preserves_both_roles_and_history() -> None:
+    connection = db.connect(":memory:")
+    db.run_migrations(connection)
+    ensure_autoprep_schema(connection)
+    wrong_company = add_company(connection, Company(name="Wrong"))
+    right_company = add_company(connection, Company(name="Right"))
+    assert wrong_company.id is not None and right_company.id is not None
+    role_url = "https://jobs.ashbyhq.com/right/job-123"
+    source = add_role(
+        connection,
+        Role(
+            company_id=wrong_company.id,
+            title="Applied role",
+            role_url=role_url,
+            role_status=RoleStatus.APPLIED,
+            notes="source history",
+        ),
+    )
+    assert source.id is not None
+    connection.execute("DELETE FROM role_identities")
+    target_cursor = connection.execute(
+        """
+        INSERT INTO roles (company_id, title, role_url, role_status, notes)
+        VALUES (?, 'Existing target', ?, 'discovered', 'target history')
+        """,
+        (right_company.id, role_url),
+    )
+    assert target_cursor.lastrowid is not None
+    target_id = int(target_cursor.lastrowid)
+    connection.execute(
+        "INSERT INTO application_answers (role_id, question, backend) VALUES (?, 'Why?', 'openai')",
+        (source.id,),
+    )
+    connection.execute("INSERT INTO autoprep_jobs (role_id) VALUES (?)", (source.id,))
+    connection.commit()
+
+    resolved_id, merged = reassign_role_to_company(connection, source.id, right_company.id)
+
+    assert (resolved_id, merged) == (source.id, False)
+    assert {role.id for role in list_roles(connection)} == {source.id, target_id}
+    preserved = connection.execute("SELECT * FROM roles WHERE id = ?", (source.id,)).fetchone()
+    assert preserved["company_id"] == wrong_company.id
+    assert preserved["role_status"] == "applied"
+    assert preserved["notes"] == "source history"
+    assert (
+        connection.execute("SELECT role_id FROM application_answers").fetchone()["role_id"]
+        == source.id
+    )
+    assert (
+        connection.execute("SELECT role_id FROM autoprep_jobs").fetchone()["role_id"]
+        == source.id
     )
