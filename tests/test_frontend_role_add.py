@@ -90,3 +90,46 @@ def test_role_form_suggests_saved_companies_but_accepts_and_creates_a_new_one(
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+@pytest.mark.browser
+def test_company_form_allows_selecting_a_tier_during_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "CALLUMPLOYED_DATABASE_PATH",
+        str(tmp_path / "frontend-company-tier.sqlite3"),
+    )
+    db.ensure_initialized()
+    monkeypatch.setattr(
+        web_server,
+        "_try_resolve_company_with_central_store",
+        lambda *_args, **_kwargs: None,
+    )
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto(f"http://127.0.0.1:{server.server_address[1]}")
+            page.locator("#manage-companies-button").click()
+            page.locator("#company-name-input").fill("Rivian")
+            page.locator("#company-url-input").fill("jobs.ashbyhq.com/rivianvw.tech")
+            page.locator("#company-tier-input").select_option("3")
+            page.locator('#company-create-form button[type="submit"]').click()
+
+            expect(page.locator("#company-create-status")).to_have_text("company added.")
+            browser.close()
+
+        with db.connect() as connection:
+            [company] = list_companies(connection)
+        assert company.name == "Rivian"
+        assert company.prestige_tier == "3"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()

@@ -2067,6 +2067,7 @@ async function createCompany(form) {
   const payload = {
     name: String(formData.get("name") ?? "").trim(),
     career_url: normalizeCompanyCareerUrl(formData.get("career_url")),
+    prestige_tier: String(formData.get("prestige_tier") ?? ""),
     notes: String(formData.get("notes") ?? ""),
   };
   submitButton.disabled = true;
