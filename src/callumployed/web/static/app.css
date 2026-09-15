@@ -3218,7 +3218,12 @@ a:hover .role-link-icon {
 
 .company-create-form {
   display: grid;
-  grid-template-columns: minmax(160px, 0.9fr) minmax(220px, 1.1fr) minmax(180px, 1fr) auto;
+  grid-template-columns:
+    minmax(150px, 0.9fr)
+    minmax(200px, 1.1fr)
+    minmax(120px, 0.55fr)
+    minmax(150px, 0.9fr)
+    auto;
   gap: 8px;
   align-items: end;
 }
@@ -3258,6 +3263,7 @@ a:hover .role-link-icon {
 }
 
 .company-create-form input,
+.company-create-form select,
 .company-link-form input,
 .company-info textarea,
 .company-info select {
@@ -3267,6 +3273,12 @@ a:hover .role-link-icon {
   padding: 10px 11px;
   background: var(--surface-solid);
   color: var(--text);
+}
+
+.company-create-form select {
+  width: 100%;
+  height: 41px;
+  cursor: pointer;
 }
 
 .company-info textarea {
@@ -4424,7 +4436,7 @@ a:hover .role-link-icon {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .company-create-form label:nth-child(3),
+  .company-create-form label:nth-child(4),
   .company-create-form button {
     grid-column: 1 / -1;
   }

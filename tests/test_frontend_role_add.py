@@ -117,9 +117,33 @@ def test_company_form_allows_selecting_a_tier_during_creation(
             page = browser.new_page()
             page.goto(f"http://127.0.0.1:{server.server_address[1]}")
             page.locator("#manage-companies-button").click()
-            page.locator("#company-name-input").fill("Rivian")
+
+            style_script = """
+                element => {
+                    const style = getComputedStyle(element);
+                    return {
+                        height: element.getBoundingClientRect().height,
+                        border: style.border,
+                        borderRadius: style.borderRadius,
+                        padding: style.padding,
+                        backgroundColor: style.backgroundColor,
+                        color: style.color,
+                    };
+                }
+            """
+            company_input = page.locator("#company-name-input")
+            tier_input = page.locator("#company-tier-input")
+            assert tier_input.evaluate(style_script) == company_input.evaluate(style_script)
+            company_box = company_input.bounding_box()
+            tier_box = tier_input.bounding_box()
+            button_box = page.locator('#company-create-form button[type="submit"]').bounding_box()
+            assert company_box is not None and tier_box is not None and button_box is not None
+            assert abs(tier_box["y"] - company_box["y"]) < 1
+            assert abs(button_box["y"] - company_box["y"]) < 1
+
+            company_input.fill("Rivian")
             page.locator("#company-url-input").fill("jobs.ashbyhq.com/rivianvw.tech")
-            page.locator("#company-tier-input").select_option("3")
+            tier_input.select_option("3")
             page.locator('#company-create-form button[type="submit"]').click()
 
             expect(page.locator("#company-create-status")).to_have_text("company added.")
