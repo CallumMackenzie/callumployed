@@ -3365,7 +3365,7 @@ a:hover .role-link-icon {
 }
 
 .company-create-form button {
-  min-height: 39px;
+  height: 41px;
   border-color: transparent;
   background: linear-gradient(135deg, var(--ink), var(--green) 46%, var(--purple));
   color: #fff;
