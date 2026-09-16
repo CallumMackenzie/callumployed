@@ -6458,6 +6458,323 @@ def test_roles_create_endpoint_promotes_existing_discovered_role_into_autoprep(
         server.server_close()
 
 
+def test_roles_create_endpoint_reuses_existing_careerpuck_role_with_ready_autoprep(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-role-create-careerpuck-existing.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    role_url = "https://app.careerpuck.com/job-board/lyft/job/8797837002"
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Lyft"))
+        discovered = add_role(
+            connection,
+            Role(
+                company_id=company.id or 0,
+                title="Software Engineer Intern, Fullstack (Summer 2027)",
+                role_url=role_url,
+                role_status=RoleStatus.DISCOVERED,
+                posting_id="uired",
+            ),
+        )
+        cursor = connection.execute(
+            """
+            INSERT INTO roles (
+                company_id, title, role_url, role_status, posting_id
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                company.id,
+                "Software Engineer Intern, Fullstack (Summer 2027)",
+                f"{role_url}?utm_source=northerndev",
+                RoleStatus.INTERESTED.value,
+                "uired",
+            ),
+        )
+        existing = get_role(connection, cursor.lastrowid or 0)
+        autoprep_service.ensure_autoprep_schema(connection)
+        [existing_job] = autoprep_service.enqueue_autoprep_jobs(
+            connection,
+            [existing.id or 0],
+            idempotency_key="existing-lyft-role",
+        )
+        connection.execute(
+            """
+            UPDATE autoprep_jobs
+            SET overall_status = 'ready',
+                worker_state = 'idle',
+                resume_status = 'ready',
+                cover_letter_status = 'ready',
+                resume_artifact_path = '/tmp/lyft-resume.pdf',
+                cover_letter_artifact_path = '/tmp/lyft-cover-letter.pdf',
+                completed_at = datetime('now')
+            WHERE id = ?
+            """,
+            (existing_job["id"],),
+        )
+        connection.commit()
+
+    async def fake_run_rescan_role(
+        role_id: int,
+        *,
+        browser_profile_manager: object,
+        update_status: bool,
+    ) -> dict[str, object]:
+        assert role_id == existing.id
+        assert browser_profile_manager is not None
+        assert update_status is False
+        with db.connect() as connection:
+            return {"role": get_role(connection, role_id)}
+
+    monkeypatch.setattr(web_server, "run_rescan_role", fake_run_rescan_role)
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/roles",
+            data=json.dumps(
+                {
+                    "company_id": company.id,
+                    "role_url": f"{role_url}?utm_source=northerndev",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode())
+
+        assert response.status == 200
+        assert payload["role"]["id"] == existing.id
+        assert payload["role"]["role_status"] == "interested"
+        assert payload["autoprep_job"]["id"] == existing_job["id"]
+        assert payload["autoprep_job"]["overall_status"] == "ready"
+        with db.connect() as connection:
+            assert connection.execute("SELECT COUNT(*) FROM roles").fetchone()[0] == 2
+            assert connection.execute("SELECT COUNT(*) FROM autoprep_jobs").fetchone()[0] == 1
+            assert get_role(connection, discovered.id or 0).role_status == RoleStatus.DISCOVERED
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_manual_careerpuck_match_prefers_closed_and_ignores_malformed_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-role-create-careerpuck-closed.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    role_url = "https://app.careerpuck.com/job-board/lyft/job/8797837002"
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Lyft"))
+        add_role(
+            connection,
+            Role(
+                company_id=company.id or 0,
+                title="Software Engineer Intern",
+                role_url=role_url,
+                role_status=RoleStatus.INTERESTED,
+                posting_id="uired",
+            ),
+        )
+        malformed = connection.execute(
+            """
+            INSERT INTO roles (company_id, title, role_url, role_status)
+            VALUES (?, ?, ?, ?)
+            """,
+            (company.id, "Malformed history", "http://[bad", RoleStatus.DISCOVERED.value),
+        )
+        closed = connection.execute(
+            """
+            INSERT INTO roles (company_id, title, role_url, role_status, posting_id)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                company.id,
+                "Software Engineer Intern",
+                f"{role_url}?utm_source=northerndev",
+                RoleStatus.CLOSED.value,
+                "uired",
+            ),
+        )
+        matched = web_server._get_manual_role_by_canonical_url(
+            connection,
+            company_id=company.id or 0,
+            role_url=f"{role_url}?utm_source=example",
+            posting_id="8797837002",
+        )
+
+        assert matched is not None
+        assert matched.id == closed.lastrowid
+        assert matched.role_status == RoleStatus.CLOSED
+        assert malformed.lastrowid != matched.id
+        assert (
+            web_server._get_manual_role_by_canonical_url(
+                connection,
+                company_id=company.id or 0,
+                role_url=(
+                    "https://app.careerpuck.com/job-board/another-board/job/8797837002"
+                ),
+                posting_id="8797837002",
+            )
+            is None
+        )
+        assert web_server._manual_role_posting_id(f"{role_url}/extra") is None
+
+
+def test_roles_create_endpoint_explains_unresolved_database_duplicate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-role-create-database-duplicate.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Lyft"))
+
+    def reject_duplicate(*_args: object, **_kwargs: object) -> Role:
+        raise web_server.sqlite3.IntegrityError("UNIQUE constraint failed: roles.company_id")
+
+    monkeypatch.setattr(web_server, "add_role", reject_duplicate)
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/roles",
+            data=json.dumps(
+                {
+                    "company_id": company.id,
+                    "role_url": (
+                        "https://app.careerpuck.com/job-board/lyft/job/8797837002"
+                        "?utm_source=northerndev"
+                    ),
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with pytest.raises(HTTPError) as error:
+            urlopen(request, timeout=5)
+
+        assert error.value.code == 409
+        assert error.value.headers.get_content_type() == "application/json"
+        assert json.loads(error.value.read().decode()) == {
+            "error": (
+                "The database rejected this as a duplicate role, but Callumployed could not "
+                "identify a matching existing role by this posting's validated identity or URL. "
+                "No role, status, or AutoPrep change was saved."
+            )
+        }
+        with db.connect() as connection:
+            assert connection.execute("SELECT COUNT(*) FROM roles").fetchone()[0] == 0
+            assert connection.execute("SELECT COUNT(*) FROM autoprep_jobs").fetchone()[0] == 0
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_roles_create_endpoint_truthfully_scopes_setup_failure_rollback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-role-create-setup-failure.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+
+    def fail_autoprep_setup(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
+        raise OSError("simulated AutoPrep setup failure")
+
+    monkeypatch.setattr(web_server, "enqueue_autoprep_jobs", fail_autoprep_setup)
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/roles",
+            data=json.dumps(
+                {
+                    "company_name": "New Company",
+                    "role_url": "https://example.com/jobs/software-engineer",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with pytest.raises(HTTPError) as error:
+            urlopen(request, timeout=5)
+
+        assert error.value.code == 500
+        assert error.value.headers.get_content_type() == "application/json"
+        assert json.loads(error.value.read().decode()) == {
+            "error": (
+                "Callumployed could not safely create or reuse this role and queue AutoPrep. "
+                "No role, status, or AutoPrep change was saved. Refresh and try again; if it "
+                "repeats, report this posting URL."
+            )
+        }
+        with db.connect() as connection:
+            assert connection.execute("SELECT COUNT(*) FROM companies").fetchone()[0] == 1
+            assert connection.execute("SELECT COUNT(*) FROM roles").fetchone()[0] == 0
+            assert connection.execute("SELECT COUNT(*) FROM autoprep_jobs").fetchone()[0] == 0
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_roles_create_endpoint_rejects_malformed_job_url_without_writing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-role-create-malformed-url.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/roles",
+            data=json.dumps(
+                {
+                    "company_name": "Malformed URL Company",
+                    "role_url": "http://[bad",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with pytest.raises(HTTPError) as error:
+            urlopen(request, timeout=5)
+
+        assert error.value.code == 400
+        assert error.value.headers.get_content_type() == "application/json"
+        assert json.loads(error.value.read().decode()) == {
+            "error": "Job URL must be a valid HTTP or HTTPS URL"
+        }
+        with db.connect() as connection:
+            assert connection.execute("SELECT COUNT(*) FROM companies").fetchone()[0] == 0
+            assert connection.execute("SELECT COUNT(*) FROM roles").fetchone()[0] == 0
+            autoprep_table_count = connection.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'autoprep_jobs'"
+            ).fetchone()[0]
+            assert autoprep_table_count == 0
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_roles_create_endpoint_requeues_interested_role_after_return_from_prepped(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

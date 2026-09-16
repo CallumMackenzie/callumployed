@@ -57,7 +57,7 @@ from callumployed.central.config import (
     set_central_passkey,
 )
 from callumployed.central.models import ResolveCompanyRequest
-from callumployed.central.normalization import ats_slug
+from callumployed.central.normalization import ats_slug, canonical_role_url
 from callumployed.central.sync import pull_companies, resolve_unlinked_companies
 from callumployed.config import LlmSettings
 from callumployed.data import db
@@ -1844,9 +1844,16 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                     HTTPStatus.BAD_REQUEST,
                 )
                 return
+            if not _is_valid_http_url(role_url):
+                self._send_json_with_status(
+                    {"error": "Job URL must be a valid HTTP or HTTPS URL"},
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
             role: Role | None = None
             autoprep_job: dict[str, Any] | None = None
             scan_error = None
+            posting_id = _manual_role_posting_id(role_url)
             claim_barrier = (
                 AUTOPREP_COORDINATOR.defer_claiming()
                 if AUTOPREP_COORDINATOR is not None
@@ -1856,7 +1863,19 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 try:
                     with db.connect() as connection:
                         if company_id is not None:
-                            company = get_company(connection, company_id)
+                            try:
+                                company = get_company(connection, company_id)
+                            except LookupError:
+                                self._send_json_with_status(
+                                    {
+                                        "error": (
+                                            "The selected company no longer exists. "
+                                            "Refresh and try again."
+                                        )
+                                    },
+                                    HTTPStatus.NOT_FOUND,
+                                )
+                                return
                         else:
                             if company_name is None:
                                 raise RuntimeError("Company is required")
@@ -1903,17 +1922,32 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                         ensure_autoprep_schema(connection)
                         connection.execute("BEGIN IMMEDIATE")
                         try:
-                            existing_role = get_role_by_identity(connection, role_url)
-                            role = add_role(
+                            existing_role = get_role_by_identity(
                                 connection,
-                                Role(
-                                    company_id=company_id,
-                                    title=_role_title_from_url(role_url),
-                                    role_url=role_url,
-                                    role_status=RoleStatus.INTERESTED,
-                                ),
-                                commit=False,
+                                role_url,
+                                posting_id,
                             )
+                            if existing_role is None:
+                                existing_role = _get_manual_role_by_canonical_url(
+                                    connection,
+                                    company_id=company_id,
+                                    role_url=role_url,
+                                    posting_id=posting_id,
+                                )
+                            if existing_role is None:
+                                role = add_role(
+                                    connection,
+                                    Role(
+                                        company_id=company_id,
+                                        title=_role_title_from_url(role_url),
+                                        role_url=role_url,
+                                        role_status=RoleStatus.INTERESTED,
+                                        posting_id=posting_id,
+                                    ),
+                                    commit=False,
+                                )
+                            else:
+                                role = existing_role
                             if role.id is None:
                                 raise RuntimeError("Role was not created")
                             role_id = role.id
@@ -1991,10 +2025,18 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                         except Exception:
                             connection.rollback()
                             raise
-                except LookupError:
+                except sqlite3.IntegrityError:
+                    LOGGER.exception("Add Role hit a database conflict for %s", role_url)
                     self._send_json_with_status(
-                        {"error": "The selected company no longer exists. Refresh and try again."},
-                        HTTPStatus.NOT_FOUND,
+                        {
+                            "error": (
+                                "The database rejected this as a duplicate role, but "
+                                "Callumployed could not identify a matching existing role by "
+                                "this posting's validated identity or URL. No role, status, or "
+                                "AutoPrep change was saved."
+                            )
+                        },
+                        HTTPStatus.CONFLICT,
                     )
                     return
                 except (RuntimeError, ValueError) as error:
@@ -2004,11 +2046,13 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                     )
                     return
                 except Exception:
+                    LOGGER.exception("Add Role setup failed for %s", role_url)
                     self._send_json_with_status(
                         {
                             "error": (
-                                "The role could not be added to AutoPrep because preparation "
-                                "setup failed. No role or status change was saved."
+                                "Callumployed could not safely create or reuse this role and queue "
+                                "AutoPrep. No role, status, or AutoPrep change was saved. Refresh "
+                                "and try again; if it repeats, report this posting URL."
                             )
                         },
                         HTTPStatus.INTERNAL_SERVER_ERROR,
@@ -7742,6 +7786,67 @@ def _role_title_from_url(role_url: str) -> str:
     slug = re.sub(r"[-_]+", " ", unquote(candidate))
     slug = re.sub(r"\s+", " ", slug).strip()
     return slug or "Manually added role"
+
+
+def _manual_role_posting_id(role_url: str) -> str | None:
+    try:
+        parsed = urlparse(role_url)
+        host = (parsed.hostname or "").lower().removeprefix("www.")
+    except ValueError:
+        return None
+    path_parts = [unquote(part).strip() for part in parsed.path.split("/") if part]
+    if (
+        host == "app.careerpuck.com"
+        and len(path_parts) == 4
+        and path_parts[0].casefold() == "job-board"
+        and path_parts[1]
+        and path_parts[2].casefold() == "job"
+        and path_parts[3]
+    ):
+        return path_parts[3]
+    return None
+
+
+_MANUAL_ROLE_STATUS_RANK = {
+    RoleStatus.OFFER: 90,
+    RoleStatus.REJECTED: 85,
+    RoleStatus.INTERVIEW: 80,
+    RoleStatus.OA: 70,
+    RoleStatus.APPLIED: 60,
+    RoleStatus.CLOSED: 40,
+    RoleStatus.INTERESTED: 30,
+    RoleStatus.DISINTERESTED: 20,
+    RoleStatus.ARCHIVED: 10,
+    RoleStatus.DISCOVERED: 0,
+}
+
+
+def _get_manual_role_by_canonical_url(
+    connection: sqlite3.Connection,
+    *,
+    company_id: int,
+    role_url: str,
+    posting_id: str | None,
+) -> Role | None:
+    if posting_id is None:
+        return None
+    canonical_url = canonical_role_url(role_url)
+    candidates = [
+        role
+        for role in list_roles(connection, company_id=company_id)
+        if _manual_role_posting_id(role.role_url) == posting_id
+        and canonical_role_url(role.role_url) == canonical_url
+    ]
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda role: (
+            _MANUAL_ROLE_STATUS_RANK[role.role_status],
+            role.updated_at,
+            role.id or 0,
+        ),
+    )
 
 
 def _latest_datetime(*values: datetime | None) -> datetime | None:
