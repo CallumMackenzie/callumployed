@@ -157,3 +157,49 @@ def test_company_form_allows_selecting_a_tier_during_creation(
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+@pytest.mark.browser
+def test_company_form_shows_existing_company_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "CALLUMPLOYED_DATABASE_PATH",
+        str(tmp_path / "frontend-company-conflict.sqlite3"),
+    )
+    db.ensure_initialized()
+    with db.connect() as connection:
+        add_company(connection, Company(name="Cerebras"))
+    monkeypatch.setattr(
+        web_server,
+        "_try_resolve_company_with_central_store",
+        lambda *_args, **_kwargs: None,
+    )
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto(f"http://127.0.0.1:{server.server_address[1]}")
+            page.locator("#manage-companies-button").click()
+            page.locator("#company-name-input").fill("Cerebras")
+            page.locator("#company-url-input").fill("https://jobs.ashbyhq.com/cerebras/")
+            page.locator('#company-create-form button[type="submit"]').click()
+
+            message = (
+                "Cerebras already exists. Add this career link to the existing company instead."
+            )
+            expect(page.locator("#company-create-status")).to_have_text(message)
+            expect(page.locator("#companies-status")).to_have_text(message)
+            browser.close()
+
+        with db.connect() as connection:
+            assert [company.name for company in list_companies(connection)] == ["Cerebras"]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()

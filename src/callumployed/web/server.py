@@ -5,6 +5,7 @@ import base64
 import binascii
 import ctypes
 import gzip
+import ipaddress
 import json
 import logging
 import mimetypes
@@ -13,6 +14,7 @@ import re
 import shlex
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -55,6 +57,7 @@ from callumployed.central.config import (
     set_central_passkey,
 )
 from callumployed.central.models import ResolveCompanyRequest
+from callumployed.central.normalization import ats_slug
 from callumployed.central.sync import pull_companies, resolve_unlinked_companies
 from callumployed.config import LlmSettings
 from callumployed.data import db
@@ -251,6 +254,7 @@ SUPPORTED_COVER_LETTER_MODELS = frozenset(value for value, _label in COVER_LETTE
 SUPPORTED_COMPANY_TIERS = frozenset(str(tier) for tier in range(8))
 AUTOPREP_COORDINATOR: AutoprepCoordinator | None = None
 CURRENTLY_APPLYING_LOCK = threading.Lock()
+COMPANY_CREATE_LOCK = threading.Lock()
 APPLICANT_PROFILE_TEXT_CONFIG_KEYS = {
     APPLICANT_EMAIL_CONFIG_KEY,
     APPLICANT_PHONE_CONFIG_KEY,
@@ -1969,11 +1973,102 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 return
             career_url = _optional_text(payload.get("career_url"))
             career_label = _optional_text(payload.get("career_label")) or "Main"
-            with db.connect() as connection:
-                company = add_company(
-                    connection,
-                    Company(name=name, notes=notes, prestige_tier=prestige_tier),
+            if career_url is not None and not _is_valid_http_url(career_url):
+                self._send_json_with_status(
+                    {"error": "Career URL must be a valid HTTP or HTTPS URL"},
+                    HTTPStatus.BAD_REQUEST,
                 )
+                return
+            cleaned_name = " ".join(name.split())
+            normalized_name = cleaned_name.casefold()
+            with COMPANY_CREATE_LOCK, db.connect() as connection:
+                companies = list_companies(connection, include_inactive=True)
+                existing_company = next(
+                    (
+                        candidate
+                        for candidate in companies
+                        if " ".join(candidate.name.split()).casefold() == normalized_name
+                    ),
+                    None,
+                )
+                if existing_company is not None:
+                    message = (
+                        f"{existing_company.name} already exists. "
+                        "Add this career link to the existing company instead."
+                    )
+                    self._send_json_with_status(
+                        {"error": message, "company_id": existing_company.id},
+                        HTTPStatus.CONFLICT,
+                    )
+                    return
+                try:
+                    submitted_ats_slug = ats_slug(career_url) if career_url is not None else None
+                except ValueError:
+                    submitted_ats_slug = None
+                if submitted_ats_slug is not None:
+                    def owns_submitted_ats_board(raw_url: str) -> bool:
+                        try:
+                            return ats_slug(raw_url) == submitted_ats_slug
+                        except ValueError:
+                            return False
+
+                    ats_owner_id = next(
+                        (
+                            role.company_id
+                            for role in list_roles(connection)
+                            if owns_submitted_ats_board(role.role_url)
+                        ),
+                        None,
+                    )
+                    if ats_owner_id is None:
+                        ats_owner_id = next(
+                            (
+                                candidate.id
+                                for candidate in companies
+                                if candidate.id is not None
+                                and any(
+                                    owns_submitted_ats_board(page.url)
+                                    for page in list_company_career_pages(
+                                        connection,
+                                        candidate.id,
+                                    )
+                                )
+                            ),
+                            None,
+                        )
+                    if ats_owner_id is not None:
+                        ats_owner = get_company(connection, ats_owner_id)
+                        self._send_json_with_status(
+                            {
+                                "error": (
+                                    f"This career board already belongs to {ats_owner.name}. "
+                                    "Add the link to that existing company instead."
+                                ),
+                                "company_id": ats_owner.id,
+                            },
+                            HTTPStatus.CONFLICT,
+                        )
+                        return
+                try:
+                    company = add_company(
+                        connection,
+                        Company(
+                            name=cleaned_name,
+                            notes=notes,
+                            prestige_tier=prestige_tier,
+                        ),
+                    )
+                except sqlite3.IntegrityError:
+                    self._send_json_with_status(
+                        {
+                            "error": (
+                                f"{cleaned_name} already exists. "
+                                "Add this career link to the existing company instead."
+                            )
+                        },
+                        HTTPStatus.CONFLICT,
+                    )
+                    return
                 if career_url is not None:
                     if company.id is None:
                         raise RuntimeError("created company did not include an id")
@@ -6668,6 +6763,40 @@ def _clean_applicant_profile_text(key: str, value: object) -> str:
 
 def _is_valid_company_tier(value: str | None) -> bool:
     return value is None or value in SUPPORTED_COMPANY_TIERS
+
+
+def _is_valid_http_url(value: str) -> bool:
+    try:
+        parsed_url = urlparse(value)
+        _ = parsed_url.port
+        hostname = parsed_url.hostname
+    except ValueError:
+        return False
+    if (
+        parsed_url.scheme.casefold() not in {"http", "https"}
+        or hostname is None
+        or parsed_url.username is not None
+        or parsed_url.password is not None
+        or "\\" in value
+        or any(character.isspace() for character in value)
+    ):
+        return False
+    try:
+        ipaddress.ip_address(hostname)
+        return True
+    except ValueError:
+        pass
+    try:
+        ascii_hostname = hostname.encode("idna").decode("ascii").removesuffix(".")
+    except UnicodeError:
+        return False
+    if not ascii_hostname or len(ascii_hostname) > 253:
+        return False
+    return all(
+        re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+        is not None
+        for label in ascii_hostname.split(".")
+    )
 
 
 def _optional_cover_letter_tweaks(value: object) -> str | None:

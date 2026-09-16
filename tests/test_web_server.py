@@ -6,9 +6,10 @@ import inspect
 import json
 import os
 import socket
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
-from threading import Event, Thread
+from threading import Barrier, Event, Thread
 from types import SimpleNamespace
 from typing import Any
 from urllib.error import HTTPError
@@ -639,7 +640,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "dangerouslySetInnerHTML" not in markup
         assert "dangerouslySetInnerHTML" not in app_javascript
         assert '<div id="root"></div>' not in index_markup
-        assert '<script type="module" src="/assets/app.js?v=vanilla-20260915-29"></script>' in (
+        assert '<script type="module" src="/assets/app.js?v=vanilla-20260915-31"></script>' in (
             index_markup
         )
 
@@ -783,7 +784,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
         assert "/assets/app.css?v=vanilla-20260915-29" in index_markup
-        assert "/assets/app.js?v=vanilla-20260915-29" in index_markup
+        assert "/assets/app.js?v=vanilla-20260915-31" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -5196,6 +5197,222 @@ def test_company_management_endpoints_create_link_and_delete_link(
             assert [page.url for page in list_company_career_pages(connection, company_id)] == [
                 "https://example.com/students"
             ]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_company_create_endpoint_rejects_malformed_career_url_without_writing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "web-company-create-invalid-url.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "get_central_api_url", lambda connection: None)
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        endpoint = f"http://127.0.0.1:{server.server_address[1]}/api/companies"
+        for index, career_url in enumerate(
+            (
+                "https://[",
+                "https://%zz",
+                "https://.",
+                "https://-",
+                "https://example..com",
+            )
+        ):
+            request = Request(
+                endpoint,
+                data=json.dumps(
+                    {
+                        "name": f"Malformed Careers {index}",
+                        "career_url": career_url,
+                    }
+                ).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+
+            with pytest.raises(HTTPError) as error:
+                urlopen(request, timeout=5)
+
+            assert error.value.code == 400
+            assert error.value.headers.get_content_type() == "application/json"
+            assert json.loads(error.value.read().decode()) == {
+                "error": "Career URL must be a valid HTTP or HTTPS URL"
+            }
+        with db.connect() as connection:
+            assert list_companies(connection, include_inactive=True) == []
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_company_create_endpoint_reports_existing_company_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "web-company-create-conflict.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "get_central_api_url", lambda connection: None)
+    db.ensure_initialized()
+    with db.connect() as connection:
+        existing = add_company(connection, Company(name="Cerebras"))
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/companies",
+            data=json.dumps(
+                {
+                    "name": "  cereBRAS  ",
+                    "career_url": "https://jobs.ashbyhq.com/cerebras/",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with pytest.raises(HTTPError) as error:
+            urlopen(request, timeout=5)
+
+        assert error.value.code == 409
+        assert error.value.headers.get_content_type() == "application/json"
+        assert json.loads(error.value.read().decode()) == {
+            "error": (
+                'Cerebras already exists. Add this career link to the existing company instead.'
+            ),
+            "company_id": existing.id,
+        }
+        with db.connect() as connection:
+            assert [company.name for company in list_companies(connection)] == ["Cerebras"]
+            assert list_company_career_pages(connection, existing.id or 0) == []
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_company_create_endpoint_reports_existing_ats_board_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "web-company-create-ats-conflict.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "get_central_api_url", lambda connection: None)
+    db.ensure_initialized()
+    with db.connect() as connection:
+        existing = add_company(connection, Company(name="Cerebras"))
+        add_role(
+            connection,
+            Role(
+                company_id=existing.id or 0,
+                title="DevOps Engineer Intern",
+                role_url=(
+                    "https://jobs.ashbyhq.com/cerebras/"
+                    "c4faac59-3dbb-4ab7-9f74-d1fcbcddc7c6"
+                ),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO roles (company_id, title, role_url, role_status)
+            VALUES (?, 'Legacy malformed URL', 'https://[', 'interested')
+            """,
+            (existing.id,),
+        )
+        connection.commit()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/companies",
+            data=json.dumps(
+                {
+                    "name": "Cerebras Systems",
+                    "career_url": "https://jobs.ashbyhq.com/cerebras/",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with pytest.raises(HTTPError) as error:
+            urlopen(request, timeout=5)
+
+        assert error.value.code == 409
+        assert json.loads(error.value.read().decode()) == {
+            "error": (
+                "This career board already belongs to Cerebras. "
+                "Add the link to that existing company instead."
+            ),
+            "company_id": existing.id,
+        }
+        with db.connect() as connection:
+            assert [company.name for company in list_companies(connection)] == ["Cerebras"]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_company_create_endpoint_serializes_ats_board_ownership(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "web-company-create-ats-race.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "get_central_api_url", lambda connection: None)
+    db.ensure_initialized()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        endpoint = f"http://127.0.0.1:{server.server_address[1]}/api/companies"
+        for index in range(12):
+            barrier = Barrier(2)
+
+            def add_competing_company(
+                suffix: str,
+                *,
+                barrier: Barrier = barrier,
+                index: int = index,
+            ) -> int:
+                barrier.wait()
+                request = Request(
+                    endpoint,
+                    data=json.dumps(
+                        {
+                            "name": f"Race {index} {suffix}",
+                            "career_url": f"https://jobs.ashbyhq.com/race-board-{index}/",
+                        }
+                    ).encode(),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                try:
+                    with urlopen(request, timeout=5) as response:
+                        return response.status
+                except HTTPError as error:
+                    return error.code
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                statuses = sorted(executor.map(add_competing_company, ("A", "B")))
+            assert statuses == [200, 409]
+
+        with db.connect() as connection:
+            assert len(list_companies(connection, include_inactive=True)) == 12
     finally:
         server.shutdown()
         thread.join(timeout=5)

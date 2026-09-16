@@ -2079,15 +2079,17 @@ async function createCompany(form) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
+    const responsePayload = await response.json().catch(() => ({}));
     if (!response.ok) {
       throw new Error(
-        response.status === 400
-          ? "Check the company name and career link, then try again."
-          : "Could not add company. Try again.",
+        responsePayload.error
+          || (response.status === 400
+            ? "Check the company name and career link, then try again."
+            : "Could not add company. Try again."),
       );
     }
     form.reset();
-    renderCompanies(await response.json(), "company added.");
+    renderCompanies(responsePayload, "company added.");
     setCompanyCreateStatus("company added.", "success");
     loadTracker(getActiveSearchQuery()).catch(() => {});
   } finally {
@@ -5390,11 +5392,9 @@ companyTierGuide.addEventListener("toggle", () => {
 companyCreateForm.addEventListener("submit", (event) => {
   event.preventDefault();
   createCompany(companyCreateForm).catch((error) => {
-    companiesStatus.textContent = "could not add company.";
-    setCompanyCreateStatus(
-      error instanceof Error ? error.message : "Could not add company. Try again.",
-      "error",
-    );
+    const message = error instanceof Error ? error.message : "Could not add company. Try again.";
+    companiesStatus.textContent = message;
+    setCompanyCreateStatus(message, "error");
   });
 });
 
