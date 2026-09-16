@@ -629,6 +629,34 @@ def enqueue_autoprep_jobs(
             if str(existing_request["request_hash"]) != request_hash:
                 raise AutoprepConflictError("This Autoprep submission key was already used.")
             saved_role_ids = [int(value) for value in json.loads(existing_request["role_ids_json"])]
+            existing_jobs = _jobs_for_role_ids(connection, saved_role_ids)
+            active_role_ids = {int(job["role_id"]) for job in existing_jobs}
+            missing_role_ids = [
+                role_id for role_id in saved_role_ids if role_id not in active_role_ids
+            ]
+            if missing_role_ids:
+                placeholders = ", ".join("?" for _ in missing_role_ids)
+                rows = connection.execute(
+                    f"SELECT id, role_status FROM roles WHERE id IN ({placeholders})",  # noqa: S608
+                    tuple(missing_role_ids),
+                ).fetchall()
+                statuses = {int(row["id"]): str(row["role_status"]) for row in rows}
+                invalid = [
+                    role_id
+                    for role_id in missing_role_ids
+                    if statuses.get(role_id) != "interested"
+                ]
+                if invalid:
+                    raise ValueError("Autoprep can only queue roles currently marked Interested.")
+                for role_id in missing_role_ids:
+                    connection.execute(
+                        """
+                        INSERT INTO autoprep_jobs (role_id)
+                        VALUES (?)
+                        ON CONFLICT(role_id) DO NOTHING
+                        """,
+                        (role_id,),
+                    )
             if manage_transaction:
                 connection.commit()
             return _jobs_for_role_ids(connection, saved_role_ids)
@@ -668,6 +696,72 @@ def enqueue_autoprep_jobs(
             connection.rollback()
         raise
     return _jobs_for_role_ids(connection, normalized_role_ids)
+
+
+def requeue_failed_or_interrupted_autoprep(
+    connection: sqlite3.Connection,
+    role_id: int,
+    *,
+    manage_transaction: bool = True,
+) -> dict[str, Any] | None:
+    """Resume failed work on an idle role while preserving ready documents."""
+    try:
+        if manage_transaction:
+            connection.execute("BEGIN IMMEDIATE")
+        job = get_role_autoprep_job(connection, role_id)
+        if job is None:
+            if manage_transaction:
+                connection.commit()
+            return None
+        connection.execute(
+            """
+            UPDATE autoprep_jobs
+            SET resume_status = CASE
+                    WHEN resume_status IN ('failed', 'interrupted') THEN 'queued'
+                    ELSE resume_status
+                END,
+                resume_error = CASE
+                    WHEN resume_status IN ('failed', 'interrupted') THEN NULL
+                    ELSE resume_error
+                END,
+                resume_attempt = CASE
+                    WHEN resume_status IN ('failed', 'interrupted') THEN resume_attempt + 1
+                    ELSE resume_attempt
+                END,
+                cover_letter_status = CASE
+                    WHEN cover_letter_status IN ('failed', 'interrupted') THEN 'queued'
+                    ELSE cover_letter_status
+                END,
+                cover_letter_error = CASE
+                    WHEN cover_letter_status IN ('failed', 'interrupted') THEN NULL
+                    ELSE cover_letter_error
+                END,
+                cover_letter_attempt = CASE
+                    WHEN cover_letter_status IN ('failed', 'interrupted')
+                    THEN cover_letter_attempt + 1
+                    ELSE cover_letter_attempt
+                END,
+                overall_status = 'queued',
+                worker_state = 'queued',
+                completed_at = NULL,
+                queued_at = datetime('now'),
+                updated_at = datetime('now')
+            WHERE id = ?
+              AND worker_state = 'idle'
+              AND (
+                  resume_status IN ('failed', 'interrupted')
+                  OR cover_letter_status IN ('failed', 'interrupted')
+              )
+            """,
+            (job["id"],),
+        )
+        if manage_transaction:
+            connection.commit()
+    except Exception:
+        if manage_transaction:
+            connection.rollback()
+        raise
+    return get_role_autoprep_job(connection, role_id)
 
 
 def list_autoprep_jobs(

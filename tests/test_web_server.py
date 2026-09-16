@@ -640,7 +640,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert "dangerouslySetInnerHTML" not in markup
         assert "dangerouslySetInnerHTML" not in app_javascript
         assert '<div id="root"></div>' not in index_markup
-        assert '<script type="module" src="/assets/app.js?v=vanilla-20260915-31"></script>' in (
+        assert '<script type="module" src="/assets/app.js?v=vanilla-20260916-32"></script>' in (
             index_markup
         )
 
@@ -710,7 +710,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="role-url-input"' in markup
         assert 'id="role-company-input"' in markup
         assert 'id="role-company-options"' in markup
-        assert "added to Interested and queued for prep." in app_javascript
+        assert "queued for AutoPrep and will appear in Prepped" in app_javascript
         assert 'id="prep-view"' in markup
         prep_later_index = markup.index('data-prep-action="later"')
         autoprep_action_index = markup.index('data-prep-action="autoprep"')
@@ -784,7 +784,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
         assert "/assets/app.css?v=vanilla-20260915-29" in index_markup
-        assert "/assets/app.js?v=vanilla-20260915-31" in index_markup
+        assert "/assets/app.js?v=vanilla-20260916-32" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -6366,6 +6366,352 @@ def test_roles_create_endpoint_adds_role_and_runs_rescan(
         assert discovered["jobs"] == []
         assert role["company_name"] == "Acme"
         assert role["role_url"] == "https://example.com/jobs/backend-platform-intern"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_roles_create_endpoint_promotes_existing_discovered_role_into_autoprep(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-role-create-existing.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Cerebras"))
+        existing = add_role(
+            connection,
+            Role(
+                company_id=company.id or 0,
+                title="DevOps Engineer Intern - PEY",
+                role_url=(
+                    "https://jobs.ashbyhq.com/cerebras/"
+                    "c4faac59-3dbb-4ab7-9f74-d1fcbcddc7c6"
+                ),
+                role_status=RoleStatus.DISCOVERED,
+                posting_id="c4faac59-3dbb-4ab7-9f74-d1fcbcddc7c6",
+            ),
+        )
+
+    async def fake_run_rescan_role(
+        role_id: int,
+        *,
+        browser_profile_manager: object,
+        update_status: bool,
+    ) -> dict[str, object]:
+        assert role_id == existing.id
+        assert browser_profile_manager is not None
+        assert update_status is False
+        with db.connect() as connection:
+            return {"role": get_role(connection, role_id)}
+
+    monkeypatch.setattr(web_server, "run_rescan_role", fake_run_rescan_role)
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/roles",
+            data=json.dumps(
+                {
+                    "company_id": company.id,
+                    "role_url": (
+                        "https://jobs.ashbyhq.com/cerebras/"
+                        "c4faac59-3dbb-4ab7-9f74-d1fcbcddc7c6?utm_source=northerndev"
+                    ),
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode())
+
+        assert response.status == 200
+        assert payload["role"]["id"] == existing.id
+        assert payload["role"]["role_status"] == "interested"
+        assert payload["autoprep_job"]["role_id"] == existing.id
+        with db.connect() as connection:
+            assert connection.execute("SELECT COUNT(*) FROM roles").fetchone()[0] == 1
+            assert get_role(connection, existing.id or 0).role_status == RoleStatus.INTERESTED
+            event = connection.execute(
+                """
+                SELECT old_status, new_status, summary
+                FROM events
+                WHERE role_id = ? AND event_type = 'status_changed'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (existing.id,),
+            ).fetchone()
+            assert tuple(event) == (
+                "discovered",
+                "interested",
+                "Existing role added to AutoPrep.",
+            )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_roles_create_endpoint_requeues_interested_role_after_return_from_prepped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-role-create-returned-to-interested.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Cerebras"))
+        existing = add_role(
+            connection,
+            Role(
+                company_id=company.id or 0,
+                title="DevOps Engineer Intern - PEY",
+                role_url=(
+                    "https://jobs.ashbyhq.com/cerebras/"
+                    "f6a1d2c3-4b5e-4678-9012-abcdefabcdef"
+                ),
+                role_status=RoleStatus.INTERESTED,
+                posting_id="f6a1d2c3-4b5e-4678-9012-abcdefabcdef",
+            ),
+        )
+        autoprep_service.ensure_autoprep_schema(connection)
+        [original_job] = autoprep_service.enqueue_autoprep_jobs(
+            connection,
+            [existing.id or 0],
+            idempotency_key=f"explicit-role-{existing.id}",
+        )
+        returned = autoprep_service.return_prepped_role_to_interested(
+            connection,
+            existing.id or 0,
+        )
+        assert returned["archived_job_id"] == original_job["id"]
+
+    async def fake_run_rescan_role(
+        role_id: int,
+        *,
+        browser_profile_manager: object,
+        update_status: bool,
+    ) -> dict[str, object]:
+        assert browser_profile_manager is not None
+        assert update_status is False
+        with db.connect() as connection:
+            return {"role": get_role(connection, role_id)}
+
+    monkeypatch.setattr(web_server, "run_rescan_role", fake_run_rescan_role)
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/roles",
+            data=json.dumps(
+                {
+                    "company_id": company.id,
+                    "role_url": (
+                        "https://jobs.ashbyhq.com/cerebras/"
+                        "f6a1d2c3-4b5e-4678-9012-abcdefabcdef?utm_source=northerndev"
+                    ),
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            response = urlopen(request, timeout=5)
+        except HTTPError as error:
+            pytest.fail(f"unexpected HTTP {error.code}: {error.read().decode()}")
+        with response:
+            payload = json.loads(response.read().decode())
+
+        assert response.status == 200
+        assert payload["role"]["id"] == existing.id
+        assert payload["role"]["role_status"] == "interested"
+        assert payload["autoprep_job"]["role_id"] == existing.id
+        assert payload["autoprep_job"]["id"] != original_job["id"]
+        with db.connect() as connection:
+            assert connection.execute("SELECT COUNT(*) FROM autoprep_requests").fetchone()[0] == 1
+            assert connection.execute("SELECT COUNT(*) FROM autoprep_jobs").fetchone()[0] == 1
+            archive_count = connection.execute(
+                "SELECT COUNT(*) FROM autoprep_job_archives"
+            ).fetchone()[0]
+            assert archive_count == 1
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+@pytest.mark.parametrize("failed_status", ["failed", "interrupted"])
+def test_roles_create_endpoint_requeues_failed_autoprep_without_replacing_ready_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failed_status: str,
+) -> None:
+    database = tmp_path / f"tracker-role-create-{failed_status}.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Cerebras"))
+        existing = add_role(
+            connection,
+            Role(
+                company_id=company.id or 0,
+                title="DevOps Engineer Intern - PEY",
+                role_url="https://jobs.ashbyhq.com/cerebras/retry-role",
+                role_status=RoleStatus.INTERESTED,
+            ),
+        )
+        autoprep_service.ensure_autoprep_schema(connection)
+        [job] = autoprep_service.enqueue_autoprep_jobs(
+            connection,
+            [existing.id or 0],
+            idempotency_key=f"explicit-role-{existing.id}",
+        )
+        connection.execute(
+            """
+            UPDATE autoprep_jobs
+            SET resume_status = 'ready',
+                resume_artifact_path = '/tmp/preserved-resume.pdf',
+                resume_attempt = 1,
+                cover_letter_status = ?,
+                cover_letter_error = 'old failure',
+                cover_letter_attempt = 1,
+                overall_status = 'partially_complete',
+                worker_state = 'idle',
+                completed_at = datetime('now')
+            WHERE id = ?
+            """,
+            (failed_status, job["id"]),
+        )
+        connection.execute(
+            "UPDATE roles SET role_status = 'discovered' WHERE id = ?",
+            (existing.id,),
+        )
+        connection.commit()
+
+    async def fake_run_rescan_role(
+        role_id: int,
+        *,
+        browser_profile_manager: object,
+        update_status: bool,
+    ) -> dict[str, object]:
+        assert browser_profile_manager is not None
+        assert update_status is False
+        with db.connect() as connection:
+            return {"role": get_role(connection, role_id)}
+
+    monkeypatch.setattr(web_server, "run_rescan_role", fake_run_rescan_role)
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/roles",
+            data=json.dumps(
+                {
+                    "company_id": company.id,
+                    "role_url": (
+                        "https://jobs.ashbyhq.com/cerebras/retry-role?utm_source=northerndev"
+                    ),
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode())
+
+        assert response.status == 200
+        assert payload["role"]["id"] == existing.id
+        assert payload["role"]["role_status"] == "interested"
+        assert payload["autoprep_job"]["worker_state"] == "queued"
+        assert payload["autoprep_job"]["overall_status"] == "queued"
+        assert payload["autoprep_job"]["resume_status"] == "ready"
+        assert payload["autoprep_job"]["resume_artifact_path"] == "/tmp/preserved-resume.pdf"
+        assert payload["autoprep_job"]["resume_attempt"] == 1
+        assert payload["autoprep_job"]["cover_letter_status"] == "queued"
+        assert payload["autoprep_job"]["cover_letter_error"] is None
+        assert payload["autoprep_job"]["cover_letter_attempt"] == 2
+        with db.connect() as connection:
+            assert connection.execute("SELECT COUNT(*) FROM roles").fetchone()[0] == 1
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+@pytest.mark.parametrize(
+    ("protected_status", "expected_error"),
+    [
+        (
+            RoleStatus.APPLIED,
+            "DevOps Engineer Intern - PEY is already tracked as Applied. "
+            "Its application status was preserved and it was not added to AutoPrep.",
+        ),
+        (
+            RoleStatus.CLOSED,
+            "DevOps Engineer Intern - PEY is marked Closed because the job posting is closed. "
+            "It was not added to AutoPrep.",
+        ),
+    ],
+)
+def test_roles_create_endpoint_explains_protected_existing_role(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    protected_status: RoleStatus,
+    expected_error: str,
+) -> None:
+    database = tmp_path / f"tracker-role-create-{protected_status.value}.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Cerebras"))
+        existing = add_role(
+            connection,
+            Role(
+                company_id=company.id or 0,
+                title="DevOps Engineer Intern - PEY",
+                role_url="https://jobs.ashbyhq.com/cerebras/protected-role",
+                role_status=protected_status,
+            ),
+        )
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/roles",
+            data=json.dumps(
+                {
+                    "company_id": company.id,
+                    "role_url": "https://jobs.ashbyhq.com/cerebras/protected-role",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with pytest.raises(HTTPError) as error:
+            urlopen(request, timeout=5)
+
+        assert error.value.code == 409
+        assert error.value.headers.get_content_type() == "application/json"
+        assert json.loads(error.value.read().decode()) == {
+            "error": expected_error,
+            "role_id": existing.id,
+        }
+        with db.connect() as connection:
+            assert get_role(connection, existing.id or 0).role_status == protected_status
+            assert connection.execute("SELECT COUNT(*) FROM autoprep_jobs").fetchone()[0] == 0
     finally:
         server.shutdown()
         thread.join(timeout=5)

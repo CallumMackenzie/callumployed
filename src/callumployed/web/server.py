@@ -96,6 +96,7 @@ from callumployed.data.repositories import (
     get_location_filter,
     get_master_resume,
     get_role,
+    get_role_by_identity,
     get_tracking_stats,
     list_companies,
     list_company_career_pages,
@@ -163,6 +164,7 @@ from callumployed.services.autoprep import (
     queue_autoprep_regeneration,
     recover_interrupted_application_answers,
     recover_interrupted_autoprep_jobs,
+    requeue_failed_or_interrupted_autoprep,
     retry_autoprep_document,
     return_prepped_role_to_interested,
 )
@@ -1823,15 +1825,24 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 if raw_company_id is not None:
                     company_id = int(raw_company_id)
             except (TypeError, ValueError):
-                self.send_error(HTTPStatus.BAD_REQUEST, "Company ID must be an integer")
+                self._send_json_with_status(
+                    {"error": "Select a valid company before adding the role."},
+                    HTTPStatus.BAD_REQUEST,
+                )
                 return
             company_name = _optional_text(payload.get("company_name"))
             if company_id is None and company_name is None:
-                self.send_error(HTTPStatus.BAD_REQUEST, "Company is required")
+                self._send_json_with_status(
+                    {"error": "Select or enter a company before adding the role."},
+                    HTTPStatus.BAD_REQUEST,
+                )
                 return
             role_url = _optional_text(payload.get("role_url"))
             if role_url is None:
-                self.send_error(HTTPStatus.BAD_REQUEST, "Role URL is required")
+                self._send_json_with_status(
+                    {"error": "Paste the job posting URL before adding the role."},
+                    HTTPStatus.BAD_REQUEST,
+                )
                 return
             role: Role | None = None
             autoprep_job: dict[str, Any] | None = None
@@ -1876,7 +1887,15 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                             else:
                                 company = matched_company
                         if not company.is_active:
-                            self.send_error(HTTPStatus.BAD_REQUEST, "Company is deactivated")
+                            self._send_json_with_status(
+                                {
+                                    "error": (
+                                        f"{company.name} is deactivated. Reactivate it before "
+                                        "adding this role."
+                                    )
+                                },
+                                HTTPStatus.CONFLICT,
+                            )
                             return
                         if company.id is None:
                             raise RuntimeError("Company did not include an ID")
@@ -1884,6 +1903,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                         ensure_autoprep_schema(connection)
                         connection.execute("BEGIN IMMEDIATE")
                         try:
+                            existing_role = get_role_by_identity(connection, role_url)
                             role = add_role(
                                 connection,
                                 Role(
@@ -1896,26 +1916,102 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                             )
                             if role.id is None:
                                 raise RuntimeError("Role was not created")
+                            role_id = role.id
+                            if existing_role is not None and role.company_id != company_id:
+                                owner = get_company(connection, role.company_id)
+                                connection.rollback()
+                                self._send_json_with_status(
+                                    {
+                                        "error": (
+                                            f"{role.title} already belongs to {owner.name}. "
+                                            "Open that existing role instead of adding a duplicate."
+                                        ),
+                                        "role_id": role_id,
+                                    },
+                                    HTTPStatus.CONFLICT,
+                                )
+                                return
+                            protected_statuses = {
+                                RoleStatus.APPLIED,
+                                RoleStatus.OA,
+                                RoleStatus.INTERVIEW,
+                                RoleStatus.REJECTED,
+                                RoleStatus.OFFER,
+                                RoleStatus.CLOSED,
+                                RoleStatus.ARCHIVED,
+                            }
+                            if existing_role is not None and role.role_status in protected_statuses:
+                                status_label = (
+                                    role.role_status.value
+                                    if role.role_status == RoleStatus.OA
+                                    else role.role_status.value.title()
+                                )
+                                error_message = (
+                                    f"{role.title} is marked Closed because the job posting is "
+                                    "closed. It was not added to AutoPrep."
+                                    if role.role_status == RoleStatus.CLOSED
+                                    else (
+                                        f"{role.title} is already tracked as {status_label}. "
+                                        "Its application status was preserved and it was not "
+                                        "added to AutoPrep."
+                                    )
+                                )
+                                connection.rollback()
+                                self._send_json_with_status(
+                                    {
+                                        "error": error_message,
+                                        "role_id": role_id,
+                                    },
+                                    HTTPStatus.CONFLICT,
+                                )
+                                return
+                            if role.role_status != RoleStatus.INTERESTED:
+                                role = set_role_status(
+                                    connection,
+                                    role_id,
+                                    RoleStatus.INTERESTED,
+                                    summary="Existing role added to AutoPrep.",
+                                    commit=False,
+                                )
                             autoprep_job = enqueue_autoprep_jobs(
                                 connection,
-                                [role.id],
-                                idempotency_key=f"explicit-role-{role.id}",
+                                [role_id],
+                                idempotency_key=f"explicit-role-{role_id}",
                                 manage_transaction=False,
                             )[0]
+                            autoprep_job = (
+                                requeue_failed_or_interrupted_autoprep(
+                                    connection,
+                                    role_id,
+                                    manage_transaction=False,
+                                )
+                                or autoprep_job
+                            )
                             connection.commit()
                         except Exception:
                             connection.rollback()
                             raise
                 except LookupError:
-                    self.send_error(HTTPStatus.NOT_FOUND, "Company not found")
+                    self._send_json_with_status(
+                        {"error": "The selected company no longer exists. Refresh and try again."},
+                        HTTPStatus.NOT_FOUND,
+                    )
                     return
-                except RuntimeError as error:
-                    self.send_error(HTTPStatus.BAD_REQUEST, str(error))
+                except (RuntimeError, ValueError) as error:
+                    self._send_json_with_status(
+                        {"error": str(error)},
+                        HTTPStatus.BAD_REQUEST,
+                    )
                     return
                 except Exception:
-                    self.send_error(
+                    self._send_json_with_status(
+                        {
+                            "error": (
+                                "The role could not be added to AutoPrep because preparation "
+                                "setup failed. No role or status change was saved."
+                            )
+                        },
                         HTTPStatus.INTERNAL_SERVER_ERROR,
-                        "Could not create and queue the role",
                     )
                     return
 

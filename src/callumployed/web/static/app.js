@@ -2154,8 +2154,19 @@ async function createRole(form) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  if (!response.ok) throw new Error("Role create failed");
-  const result = await response.json();
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(
+      result.error
+        || (response.status === 400
+          ? "Check the company and job posting URL, then try again."
+          : response.status === 404
+            ? "The selected company no longer exists. Refresh and try again."
+            : response.status === 409
+              ? "That role is already tracked in a state that cannot be added to AutoPrep."
+              : "AutoPrep setup failed before the role could be queued. Try again."),
+    );
+  }
   if (result.tracker) {
     render(result.tracker);
   } else {
@@ -2168,8 +2179,8 @@ async function createRole(form) {
   roleUrlInput.value = "";
   const roleTitle = result.role?.title ? formatUiText(result.role.title) : "role";
   roleAddStatus.textContent = result.scan_error
-    ? `${roleTitle} added to Interested and queued for prep; scan could not finish.`
-    : `${roleTitle} added to Interested and queued for prep.`;
+    ? `${roleTitle} queued for AutoPrep and will appear in Prepped when preparation finishes. Role details could not be refreshed: ${result.scan_error}`
+    : `${roleTitle} queued for AutoPrep and will appear in Prepped when preparation finishes.`;
 }
 
 function companyById(companyId) {
@@ -5392,7 +5403,11 @@ companyTierGuide.addEventListener("toggle", () => {
 companyCreateForm.addEventListener("submit", (event) => {
   event.preventDefault();
   createCompany(companyCreateForm).catch((error) => {
-    const message = error instanceof Error ? error.message : "Could not add company. Try again.";
+    const message = error instanceof TypeError
+      ? "Could not reach the Callumployed server. Check that the app is running and try again."
+      : error instanceof Error
+        ? error.message
+        : "The company could not be added because the request failed unexpectedly.";
     companiesStatus.textContent = message;
     setCompanyCreateStatus(message, "error");
   });
@@ -5400,8 +5415,12 @@ companyCreateForm.addEventListener("submit", (event) => {
 
 roleAddForm.addEventListener("submit", (event) => {
   event.preventDefault();
-  createRole(roleAddForm).catch(() => {
-    roleAddStatus.textContent = "could not add role.";
+  createRole(roleAddForm).catch((error) => {
+    roleAddStatus.textContent = error instanceof TypeError
+      ? "Could not reach the Callumployed server. Check that the app is running and try again."
+      : error instanceof Error
+        ? error.message
+        : "The role could not be added because the request failed unexpectedly.";
   });
 });
 

@@ -6,9 +6,10 @@ from playwright.sync_api import expect, sync_playwright
 
 import callumployed.web.server as web_server
 from callumployed.data import db
-from callumployed.data.models import Company
+from callumployed.data.models import Company, Role, RoleStatus
 from callumployed.data.repositories import (
     add_company,
+    add_role,
     get_role,
     list_companies,
     list_company_career_pages,
@@ -67,7 +68,7 @@ def test_role_form_suggests_saved_companies_but_accepts_and_creates_a_new_one(
             page.locator('#role-add-form button[type="submit"]').click()
 
             expect(page.locator("#role-add-status")).to_contain_text(
-                "platform intern added to Interested"
+                "platform intern queued for AutoPrep and will appear in Prepped"
             )
             expect(
                 page.locator('#role-company-options option[value="Existing Company"]')
@@ -199,6 +200,56 @@ def test_company_form_shows_existing_company_conflict(
 
         with db.connect() as connection:
             assert [company.name for company in list_companies(connection)] == ["Cerebras"]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+@pytest.mark.browser
+def test_role_form_shows_specific_existing_role_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "CALLUMPLOYED_DATABASE_PATH",
+        str(tmp_path / "frontend-role-conflict.sqlite3"),
+    )
+    db.ensure_initialized()
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Cerebras"))
+        role = add_role(
+            connection,
+            Role(
+                company_id=company.id or 0,
+                title="DevOps Engineer Intern - PEY",
+                role_url="https://jobs.ashbyhq.com/cerebras/protected-role",
+                role_status=RoleStatus.CLOSED,
+            ),
+        )
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto(f"http://127.0.0.1:{server.server_address[1]}")
+            page.locator("#role-url-input").fill(
+                "https://jobs.ashbyhq.com/cerebras/protected-role"
+            )
+            page.locator("#role-company-input").fill("Cerebras")
+            page.locator('#role-add-form button[type="submit"]').click()
+
+            expect(page.locator("#role-add-status")).to_have_text(
+                "DevOps Engineer Intern - PEY is marked Closed because the job posting is closed. "
+                "It was not added to AutoPrep."
+            )
+            browser.close()
+
+        with db.connect() as connection:
+            assert get_role(connection, role.id or 0).role_status == RoleStatus.CLOSED
     finally:
         server.shutdown()
         thread.join(timeout=5)

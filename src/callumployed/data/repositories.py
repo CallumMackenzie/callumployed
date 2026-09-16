@@ -1801,6 +1801,7 @@ def set_role_status(
     *,
     summary: str,
     source: EventSource = EventSource.MANUAL,
+    commit: bool = True,
 ) -> Role:
     old_role = get_role(connection, role_id)
     connection.execute(
@@ -1822,8 +1823,10 @@ def set_role_status(
             source=source,
             summary=summary,
         ),
+        commit=False,
     )
-    connection.commit()
+    if commit:
+        connection.commit()
     return get_role(connection, role_id)
 
 
@@ -2493,7 +2496,12 @@ def _optional_int_to_bool(value: object) -> bool | None:
     return bool(value)
 
 
-def add_event(connection: sqlite3.Connection, event: Event) -> Event:
+def add_event(
+    connection: sqlite3.Connection,
+    event: Event,
+    *,
+    commit: bool = True,
+) -> Event:
     cursor = connection.execute(
         """
         INSERT INTO events (
@@ -2517,7 +2525,8 @@ def add_event(connection: sqlite3.Connection, event: Event) -> Event:
             event.summary,
         ),
     )
-    connection.commit()
+    if commit:
+        connection.commit()
     return get_event(connection, _lastrowid(cursor))
 
 
