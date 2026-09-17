@@ -57,7 +57,7 @@ from callumployed.central.config import (
     set_central_passkey,
 )
 from callumployed.central.models import ResolveCompanyRequest
-from callumployed.central.normalization import ats_slug, canonical_role_url
+from callumployed.central.normalization import ats_slug, role_identity
 from callumployed.central.sync import pull_companies, resolve_unlinked_companies
 from callumployed.config import LlmSettings
 from callumployed.data import db
@@ -1853,7 +1853,14 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             role: Role | None = None
             autoprep_job: dict[str, Any] | None = None
             scan_error = None
-            posting_id = _manual_role_posting_id(role_url)
+            try:
+                posting_id = _manual_role_posting_id(role_url)
+            except ValueError as error:
+                self._send_json_with_status(
+                    {"error": str(error)},
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
             claim_barrier = (
                 AUTOPREP_COORDINATOR.defer_claiming()
                 if AUTOPREP_COORDINATOR is not None
@@ -1928,11 +1935,10 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                                 posting_id,
                             )
                             if existing_role is None:
-                                existing_role = _get_manual_role_by_canonical_url(
+                                existing_role = _get_role_by_validated_url_identity(
                                     connection,
                                     company_id=company_id,
                                     role_url=role_url,
-                                    posting_id=posting_id,
                                 )
                             if existing_role is None:
                                 role = add_role(
@@ -1980,16 +1986,22 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                                     if role.role_status == RoleStatus.OA
                                     else role.role_status.value.title()
                                 )
-                                error_message = (
-                                    f"{role.title} is marked Closed because the job posting is "
-                                    "closed. It was not added to AutoPrep."
-                                    if role.role_status == RoleStatus.CLOSED
-                                    else (
+                                if role.role_status == RoleStatus.CLOSED:
+                                    error_message = (
+                                        f"{role.title} is marked Closed because the job posting "
+                                        "is closed. It was not added to AutoPrep."
+                                    )
+                                elif role.role_status == RoleStatus.ARCHIVED:
+                                    error_message = (
+                                        f"{role.title} is archived. It remains archived and was "
+                                        "not restored or added to AutoPrep."
+                                    )
+                                else:
+                                    error_message = (
                                         f"{role.title} is already tracked as {status_label}. "
                                         "Its application status was preserved and it was not "
                                         "added to AutoPrep."
                                     )
-                                )
                                 connection.rollback()
                                 self._send_json_with_status(
                                     {
@@ -7796,6 +7808,31 @@ def _manual_role_posting_id(role_url: str) -> str | None:
         return None
     path_parts = [unquote(part).strip() for part in parsed.path.split("/") if part]
     if (
+        host in {"boards.greenhouse.io", "job-boards.greenhouse.io"}
+        and len(path_parts) == 3
+        and path_parts[0]
+        and path_parts[1].casefold() == "jobs"
+        and path_parts[2]
+    ):
+        query_has_greenhouse_id = any(
+            key.casefold() == "gh_jid"
+            for key in parse_qs(parsed.query, keep_blank_values=True)
+        )
+        query_values = [
+            value.strip().casefold()
+            for key, values in parse_qs(parsed.query, keep_blank_values=True).items()
+            if key.casefold() == "gh_jid"
+            for value in values
+        ]
+        path_posting_id = path_parts[2]
+        if query_has_greenhouse_id and set(query_values) != {path_posting_id.casefold()}:
+            raise ValueError(
+                "The Greenhouse URL's gh_jid must match job ID "
+                f"{path_posting_id} in its path. Paste the canonical job posting URL and try "
+                "again."
+            )
+        return path_posting_id
+    if (
         host == "app.careerpuck.com"
         and len(path_parts) == 4
         and path_parts[0].casefold() == "job-board"
@@ -7816,27 +7853,31 @@ _MANUAL_ROLE_STATUS_RANK = {
     RoleStatus.CLOSED: 40,
     RoleStatus.INTERESTED: 30,
     RoleStatus.DISINTERESTED: 20,
-    RoleStatus.ARCHIVED: 10,
+    RoleStatus.ARCHIVED: 50,
     RoleStatus.DISCOVERED: 0,
 }
 
 
-def _get_manual_role_by_canonical_url(
+def _get_role_by_validated_url_identity(
     connection: sqlite3.Connection,
     *,
     company_id: int,
     role_url: str,
-    posting_id: str | None,
 ) -> Role | None:
-    if posting_id is None:
+    try:
+        expected_identity = role_identity(role_url)
+    except ValueError:
         return None
-    canonical_url = canonical_role_url(role_url)
-    candidates = [
-        role
-        for role in list_roles(connection, company_id=company_id)
-        if _manual_role_posting_id(role.role_url) == posting_id
-        and canonical_role_url(role.role_url) == canonical_url
-    ]
+    if expected_identity is None:
+        return None
+    candidates = []
+    for role in list_roles(connection, company_id=company_id):
+        try:
+            candidate_identity = role_identity(role.role_url)
+        except ValueError:
+            continue
+        if candidate_identity == expected_identity:
+            candidates.append(role)
     if not candidates:
         return None
     return max(

@@ -673,6 +673,10 @@ def test_assess_role_page_accepts_ats_role_without_structured_data() -> None:
         <div class="location">Toronto, ON</div>
         <section>Job description. Responsibilities. Requirements. Apply now.</section>
         """,
+        visible_text=(
+            "Backend Intern Toronto, ON Job description. Responsibilities. Requirements. "
+            "Apply now."
+        ),
     )
 
     assessment = assess_role_page(page)
@@ -682,6 +686,39 @@ def test_assess_role_page_accepts_ats_role_without_structured_data() -> None:
     assert assessment.title == "Backend Intern"
     assert assessment.location == "Toronto, ON"
     assert assessment.confidence >= 0.8
+    assert assessment.posting_id is None
+
+
+@pytest.mark.parametrize(
+    ("label", "expected_posting_id"),
+    [
+        ("Req ID: ABC-123", "ABC-123"),
+        ("Requisition ID 456789", "456789"),
+        ("Job ID: JOB-789", "JOB-789"),
+        ("Req # 1234", "1234"),
+    ],
+)
+def test_assess_role_page_extracts_explicit_posting_id_labels(
+    label: str,
+    expected_posting_id: str,
+) -> None:
+    page = RenderedPageState(
+        url="https://jobs.lever.co/acme/backend-intern",
+        final_url="https://jobs.lever.co/acme/backend-intern",
+        title="Backend Intern",
+        html=(
+            "<h1>Backend Intern</h1>"
+            f"<section>{label}. Job description. Responsibilities. Apply now.</section>"
+        ),
+        visible_text=(
+            f"Backend Intern. {label}. Job description. Responsibilities. Apply now."
+        ),
+    )
+
+    assessment = assess_role_page(page)
+
+    assert assessment.is_role is True
+    assert assessment.posting_id == expected_posting_id
 
 
 def test_parse_job_location_normalizes_geograpy_places(

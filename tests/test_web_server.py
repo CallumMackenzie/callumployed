@@ -6562,6 +6562,264 @@ def test_roles_create_endpoint_reuses_existing_careerpuck_role_with_ready_autopr
         server.server_close()
 
 
+def test_roles_create_endpoint_finds_applied_greenhouse_role_with_bad_historical_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-role-create-greenhouse-applied.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    applied_url = (
+        "https://boards.greenhouse.io/robinhood/jobs/8194428?t=gh_src=&gh_jid=8194428"
+    )
+    submitted_url = (
+        "https://job-boards.greenhouse.io/robinhood/jobs/8194428"
+        "?t=gh_src%3D&gh_jid=8194428&gh_src=ed898e781us"
+    )
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Robinhood"))
+        applied = add_role(
+            connection,
+            Role(
+                company_id=company.id or 0,
+                title="Software Developer Intern/Co-op, Backend (Winter 2027)",
+                role_url=applied_url,
+                role_status=RoleStatus.APPLIED,
+                posting_id="uirements",
+            ),
+        )
+        interested = add_role(
+            connection,
+            Role(
+                company_id=company.id or 0,
+                title="Software Developer Intern/Co-op, Backend (Winter 2027)",
+                role_url=submitted_url,
+                role_status=RoleStatus.INTERESTED,
+                posting_id="uirements",
+            ),
+        )
+
+    async def fail_rescan(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise AssertionError("Applied duplicate must not be rescanned")
+
+    monkeypatch.setattr(web_server, "run_rescan_role", fail_rescan)
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/roles",
+            data=json.dumps(
+                {
+                    "company_id": company.id,
+                    "role_url": submitted_url,
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with pytest.raises(HTTPError) as error:
+            urlopen(request, timeout=5)
+
+        assert error.value.code == 409
+        assert json.loads(error.value.read().decode()) == {
+            "error": (
+                "Software Developer Intern/Co-op, Backend (Winter 2027) is already tracked as "
+                "Applied. Its application status was preserved and it was not added to AutoPrep."
+            ),
+            "role_id": applied.id,
+        }
+        with db.connect() as connection:
+            assert connection.execute("SELECT COUNT(*) FROM roles").fetchone()[0] == 2
+            assert get_role(connection, applied.id or 0).role_status == RoleStatus.APPLIED
+            assert get_role(connection, interested.id or 0).role_status == RoleStatus.INTERESTED
+            assert connection.execute("SELECT COUNT(*) FROM autoprep_jobs").fetchone()[0] == 0
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+@pytest.mark.parametrize(
+    ("stored_url", "submitted_url", "different_board_url"),
+    [
+        (
+            "https://boards.greenhouse.io/robinhood/jobs/8194428?gh_jid=8194428",
+            "https://job-boards.greenhouse.io/robinhood/jobs/8194428"
+            "?gh_jid=8194428&gh_src=tracking",
+            "https://job-boards.greenhouse.io/another-board/jobs/8194428?gh_jid=8194428",
+        ),
+        (
+            "https://jobs.ashbyhq.com/acme/11111111-2222-3333-4444-555555555555",
+            "https://jobs.ashbyhq.com/acme/11111111-2222-3333-4444-555555555555"
+            "?utm_source=tracking",
+            "https://jobs.ashbyhq.com/another-board/11111111-2222-3333-4444-555555555555",
+        ),
+        (
+            "https://jobs.lever.co/acme/11111111-2222-3333-4444-555555555555",
+            "https://jobs.lever.co/acme/11111111-2222-3333-4444-555555555555"
+            "?utm_medium=tracking",
+            "https://jobs.lever.co/another-board/11111111-2222-3333-4444-555555555555",
+        ),
+        (
+            "https://acme.wd5.myworkdayjobs.com/en-US/jobs/job/Toronto/Engineer_R123",
+            "https://acme.wd5.myworkdayjobs.com/en-US/jobs/job/Toronto/Engineer_R123"
+            "?source=tracking",
+            "https://other.wd5.myworkdayjobs.com/en-US/jobs/job/Toronto/Engineer_R123",
+        ),
+        (
+            "https://careers.kula.ai/acme/12345",
+            "https://careers.kula.ai/acme/12345?utm_campaign=tracking",
+            "https://careers.kula.ai/another-account/12345",
+        ),
+        (
+            "https://jobs.bytedance.com/en/position/12345/detail",
+            "https://jobs.bytedance.com/en/position/12345/detail?utm_source=tracking",
+            "https://jobs.bytedance.com/en/position/99999/detail",
+        ),
+        (
+            "https://app.careerpuck.com/job-board/acme/job/12345",
+            "https://app.careerpuck.com/job-board/acme/job/12345?utm_source=tracking",
+            "https://app.careerpuck.com/job-board/another-board/job/12345",
+        ),
+        (
+            "https://careers.example.com/jobs/12345",
+            "https://careers.example.com/jobs/12345?utm_term=tracking",
+            "https://careers.example.com/jobs/99999",
+        ),
+    ],
+)
+def test_manual_role_lookup_uses_url_identity_across_job_boards(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stored_url: str,
+    submitted_url: str,
+    different_board_url: str,
+) -> None:
+    database = tmp_path / "tracker-role-create-provider-identity.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Provider test"))
+        existing = add_role(
+            connection,
+            Role(
+                company_id=company.id or 0,
+                title="Existing applied role",
+                role_url=stored_url,
+                role_status=RoleStatus.APPLIED,
+                posting_id="corrupted-scraped-heading",
+            ),
+        )
+
+        matched = web_server._get_role_by_validated_url_identity(
+            connection,
+            company_id=company.id or 0,
+            role_url=submitted_url,
+        )
+        different_board = web_server._get_role_by_validated_url_identity(
+            connection,
+            company_id=company.id or 0,
+            role_url=different_board_url,
+        )
+
+        assert matched is not None
+        assert matched.id == existing.id
+        assert matched.role_status == RoleStatus.APPLIED
+        assert different_board is None
+
+
+def test_manual_role_lookup_prefers_archived_over_interested_duplicate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-role-create-archived-duplicate.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Archived provider test"))
+        archived = add_role(
+            connection,
+            Role(
+                company_id=company.id or 0,
+                title="Archived existing role",
+                role_url="https://careers.example.com/jobs/12345",
+                role_status=RoleStatus.ARCHIVED,
+                posting_id="bad-archived-id",
+            ),
+        )
+        add_role(
+            connection,
+            Role(
+                company_id=company.id or 0,
+                title="Interested duplicate",
+                role_url="https://careers.example.com/jobs/12345?utm_source=duplicate",
+                role_status=RoleStatus.INTERESTED,
+                posting_id="bad-interested-id",
+            ),
+        )
+
+        matched = web_server._get_role_by_validated_url_identity(
+            connection,
+            company_id=company.id or 0,
+            role_url="https://careers.example.com/jobs/12345?utm_medium=submitted",
+        )
+
+        assert matched is not None
+        assert matched.id == archived.id
+        assert matched.role_status == RoleStatus.ARCHIVED
+
+
+@pytest.mark.parametrize("greenhouse_id", ["", "9999999"])
+def test_roles_create_endpoint_rejects_conflicting_greenhouse_identity_without_writing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    greenhouse_id: str,
+) -> None:
+    database = tmp_path / "tracker-role-create-greenhouse-conflict.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Robinhood"))
+    role_url = (
+        "https://job-boards.greenhouse.io/robinhood/jobs/8194428"
+        f"?gh_jid={greenhouse_id}"
+    )
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/roles",
+            data=json.dumps({"company_id": company.id, "role_url": role_url}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with pytest.raises(HTTPError) as error:
+            urlopen(request, timeout=5)
+
+        assert error.value.code == 400
+        assert json.loads(error.value.read().decode()) == {
+            "error": (
+                "The Greenhouse URL's gh_jid must match job ID 8194428 in its path. "
+                "Paste the canonical job posting URL and try again."
+            )
+        }
+        with db.connect() as connection:
+            assert connection.execute("SELECT COUNT(*) FROM roles").fetchone()[0] == 0
+            autoprep_table_count = connection.execute(
+                "SELECT COUNT(*) FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'autoprep_jobs'"
+            ).fetchone()[0]
+            assert autoprep_table_count == 0
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 def test_manual_careerpuck_match_prefers_closed_and_ignores_malformed_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -6602,11 +6860,10 @@ def test_manual_careerpuck_match_prefers_closed_and_ignores_malformed_history(
                 "uired",
             ),
         )
-        matched = web_server._get_manual_role_by_canonical_url(
+        matched = web_server._get_role_by_validated_url_identity(
             connection,
             company_id=company.id or 0,
             role_url=f"{role_url}?utm_source=example",
-            posting_id="8797837002",
         )
 
         assert matched is not None
@@ -6614,13 +6871,12 @@ def test_manual_careerpuck_match_prefers_closed_and_ignores_malformed_history(
         assert matched.role_status == RoleStatus.CLOSED
         assert malformed.lastrowid != matched.id
         assert (
-            web_server._get_manual_role_by_canonical_url(
+            web_server._get_role_by_validated_url_identity(
                 connection,
                 company_id=company.id or 0,
                 role_url=(
                     "https://app.careerpuck.com/job-board/another-board/job/8797837002"
                 ),
-                posting_id="8797837002",
             )
             is None
         )
@@ -6977,6 +7233,11 @@ def test_roles_create_endpoint_requeues_failed_autoprep_without_replacing_ready_
             RoleStatus.CLOSED,
             "DevOps Engineer Intern - PEY is marked Closed because the job posting is closed. "
             "It was not added to AutoPrep.",
+        ),
+        (
+            RoleStatus.ARCHIVED,
+            "DevOps Engineer Intern - PEY is archived. It remains archived and was not restored "
+            "or added to AutoPrep.",
         ),
     ],
 )

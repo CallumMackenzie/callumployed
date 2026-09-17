@@ -88,7 +88,7 @@ GENERIC_LISTING_TERMS = (
     "view all jobs",
 )
 POSTING_ID_PATTERN = re.compile(
-    r"\b(?:job\s*(?:id|#)|req(?:uisition)?\s*(?:id|#)?)\s*:?\s*([a-z0-9-]+)",
+    r"\b(?:job\s*(?:id|#)|req(?:uisition)?\b\s*(?:id|#)?)\s*:?\s*([a-z0-9-]+)",
     re.I,
 )
 POSTING_ID_URL_PATTERN = re.compile(r"-(\d{4,})(?:[/#?]|$)")
