@@ -2133,8 +2133,11 @@ async function deactivateCompany(companyId) {
   const response = await fetch(`/api/companies/${encodeURIComponent(companyId)}`, {
     method: "DELETE",
   });
-  if (!response.ok) throw new Error("Company deactivate failed");
-  renderCompanies(await response.json(), "company deactivated.");
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `Company deactivate failed (${response.status}).`);
+  }
+  renderCompanies(payload, "company deactivated.");
   loadTracker(getActiveSearchQuery()).catch(() => {});
 }
 
@@ -5456,15 +5459,11 @@ companiesList.addEventListener("change", (event) => {
 companiesList.addEventListener("click", (event) => {
   const companyDeleteButton = event.target.closest("[data-delete-company]");
   if (companyDeleteButton) {
-    const company = companyById(companyDeleteButton.dataset.deleteCompany);
-    const name = company?.name ? formatUiText(company.name) : "this company";
-    const confirmed = window.confirm(
-      `Deactivate ${name}? It will be hidden from company counts and skipped during scans.`,
-    );
-    if (!confirmed) return;
     companyDeleteButton.disabled = true;
-    deactivateCompany(companyDeleteButton.dataset.deleteCompany).catch(() => {
-      companiesStatus.textContent = "could not deactivate company.";
+    deactivateCompany(companyDeleteButton.dataset.deleteCompany).catch((error) => {
+      companiesStatus.textContent = error instanceof Error
+        ? error.message
+        : "Company deactivate failed unexpectedly.";
       companyDeleteButton.disabled = false;
     });
     return;
