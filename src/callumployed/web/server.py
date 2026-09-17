@@ -1929,17 +1929,20 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                         ensure_autoprep_schema(connection)
                         connection.execute("BEGIN IMMEDIATE")
                         try:
-                            existing_role = get_role_by_identity(
+                            indexed_role = get_role_by_identity(
                                 connection,
                                 role_url,
                                 posting_id,
                             )
-                            if existing_role is None:
-                                existing_role = _get_role_by_validated_url_identity(
-                                    connection,
-                                    company_id=company_id,
-                                    role_url=role_url,
-                                )
+                            url_identity_role = _get_role_by_validated_url_identity(
+                                connection,
+                                company_id=company_id,
+                                role_url=role_url,
+                            )
+                            existing_role = _preferred_manual_role(
+                                indexed_role,
+                                url_identity_role,
+                            )
                             if existing_role is None:
                                 role = add_role(
                                     connection,
@@ -7882,11 +7885,20 @@ def _get_role_by_validated_url_identity(
         return None
     return max(
         candidates,
-        key=lambda role: (
-            _MANUAL_ROLE_STATUS_RANK[role.role_status],
-            role.updated_at,
-            role.id or 0,
-        ),
+        key=_manual_role_rank,
+    )
+
+
+def _preferred_manual_role(*roles: Role | None) -> Role | None:
+    candidates = [role for role in roles if role is not None]
+    return max(candidates, key=_manual_role_rank) if candidates else None
+
+
+def _manual_role_rank(role: Role) -> tuple[int, float, int]:
+    return (
+        _MANUAL_ROLE_STATUS_RANK[role.role_status],
+        _datetime_sort_key(role.updated_at) if role.updated_at is not None else float("-inf"),
+        role.id or 0,
     )
 
 

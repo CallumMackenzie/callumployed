@@ -6646,6 +6646,88 @@ def test_roles_create_endpoint_finds_applied_greenhouse_role_with_bad_historical
         server.server_close()
 
 
+def test_roles_create_endpoint_rejects_baidu_variants_with_corrupted_historical_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-role-create-baidu-duplicate.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    tracked_url = (
+        "https://job-boards.greenhouse.io/baidu/jobs/8197142?utm_source=northerndev"
+    )
+    duplicate_url = "https://job-boards.greenhouse.io/baidu/jobs/8197142"
+    submitted_variants = (
+        tracked_url,
+        duplicate_url,
+        "https://boards.greenhouse.io/baidu/jobs/8197142?gh_jid=8197142&gh_src=tracking",
+    )
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Baidu"))
+        applied = add_role(
+            connection,
+            Role(
+                company_id=company.id or 0,
+                title="Forward Deployed Engineer Intern",
+                role_url=tracked_url,
+                role_status=RoleStatus.APPLIED,
+                posting_id="uirements",
+            ),
+        )
+        add_role(
+            connection,
+            Role(
+                company_id=company.id or 0,
+                title="Forward Deployed Engineer Intern",
+                role_url=duplicate_url,
+                role_status=RoleStatus.INTERESTED,
+                posting_id="8197142",
+            ),
+        )
+
+    async def fail_rescan(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise AssertionError("Applied Baidu duplicate must not be rescanned")
+
+    monkeypatch.setattr(web_server, "run_rescan_role", fail_rescan)
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        for submitted_url in submitted_variants:
+            request = Request(
+                f"http://127.0.0.1:{server.server_address[1]}/api/roles",
+                data=json.dumps(
+                    {
+                        "company_id": company.id,
+                        "role_url": submitted_url,
+                    }
+                ).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+
+            with pytest.raises(HTTPError) as error:
+                urlopen(request, timeout=5)
+
+            assert error.value.code == 409
+            assert json.loads(error.value.read().decode()) == {
+                "error": (
+                    "Forward Deployed Engineer Intern is already tracked as Applied. "
+                    "Its application status was preserved and it was not added to AutoPrep."
+                ),
+                "role_id": applied.id,
+            }
+
+        with db.connect() as connection:
+            assert connection.execute("SELECT COUNT(*) FROM roles").fetchone()[0] == 2
+            assert get_role(connection, applied.id or 0).role_status == RoleStatus.APPLIED
+            assert connection.execute("SELECT COUNT(*) FROM autoprep_jobs").fetchone()[0] == 0
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
 @pytest.mark.parametrize(
     ("stored_url", "submitted_url", "different_board_url"),
     [
