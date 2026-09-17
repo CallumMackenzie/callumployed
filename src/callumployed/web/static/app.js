@@ -2121,8 +2121,11 @@ async function deleteCompanyCareerPage(careerPageId) {
   const response = await fetch(`/api/company-career-pages/${encodeURIComponent(careerPageId)}`, {
     method: "DELETE",
   });
-  if (!response.ok) throw new Error("Career page delete failed");
-  renderCompanies(await response.json(), "link deleted.");
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `Career page delete failed (${response.status}).`);
+  }
+  renderCompanies(payload, "link deleted.");
 }
 
 async function deactivateCompany(companyId) {
@@ -5468,13 +5471,11 @@ companiesList.addEventListener("click", (event) => {
   }
   const deleteButton = event.target.closest("[data-delete-career-page]");
   if (!deleteButton) return;
-  const linkRow = deleteButton.closest(".company-link-row");
-  const linkText = linkRow?.querySelector(".company-link-text")?.textContent?.trim();
-  const confirmed = window.confirm(`Delete ${linkText || "this career link"}?`);
-  if (!confirmed) return;
   deleteButton.disabled = true;
-  deleteCompanyCareerPage(deleteButton.dataset.deleteCareerPage).catch(() => {
-    companiesStatus.textContent = "could not delete link.";
+  deleteCompanyCareerPage(deleteButton.dataset.deleteCareerPage).catch((error) => {
+    companiesStatus.textContent = error instanceof Error
+      ? error.message
+      : "Career page delete failed unexpectedly.";
     deleteButton.disabled = false;
   });
 });

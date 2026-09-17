@@ -639,8 +639,13 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert (static_directory / "app.js").read_text() == app_javascript
         assert "dangerouslySetInnerHTML" not in markup
         assert "dangerouslySetInnerHTML" not in app_javascript
+        assert 'window.confirm(`Delete ${linkText' not in app_javascript
+        assert "deleteCompanyCareerPage(deleteButton.dataset.deleteCareerPage)" in app_javascript
+        assert "payload.error || `Career page delete failed (${response.status}).`" in (
+            app_javascript
+        )
         assert '<div id="root"></div>' not in index_markup
-        assert '<script type="module" src="/assets/app.js?v=vanilla-20260916-32"></script>' in (
+        assert '<script type="module" src="/assets/app.js?v=vanilla-20260917-33"></script>' in (
             index_markup
         )
 
@@ -784,7 +789,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
         assert "/assets/app.css?v=vanilla-20260915-29" in index_markup
-        assert "/assets/app.js?v=vanilla-20260916-32" in index_markup
+        assert "/assets/app.js?v=vanilla-20260917-33" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
