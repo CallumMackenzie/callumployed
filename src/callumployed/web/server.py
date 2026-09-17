@@ -1505,9 +1505,12 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             with db.connect() as connection:
                 ensure_autoprep_schema(connection)
                 job = get_role_autoprep_job(connection, role_id)
+                role = get_role(connection, role_id) if job is not None else None
+                company = get_company(connection, role.company_id) if role is not None else None
             if job is None:
                 self.send_error(HTTPStatus.NOT_FOUND, "Autoprep role not found")
                 return
+            assert role is not None and company is not None
             path_value = job.get(document_field)
             directory_value = job.get("artifact_directory")
             if not isinstance(path_value, str) or not isinstance(directory_value, str):
@@ -1518,7 +1521,13 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             if path.parent != directory or path.suffix.lower() != ".pdf" or not path.is_file():
                 self.send_error(HTTPStatus.NOT_FOUND, "Prepared document is not available")
                 return
-            self._send_pdf_file(path, filename=path.name)
+            role_payload = role.model_dump(mode="json")
+            role_payload["company_name"] = company.name
+            kind = "resume" if document_name == "resume.pdf" else "cover_letter"
+            self._send_pdf_file(
+                path,
+                filename=_role_material_pdf_filename(role_payload, kind=kind),
+            )
 
         def _open_autoprep_folder(self, role_id_text: str) -> None:
             try:
@@ -4251,6 +4260,14 @@ def build_prepped_roles_payload() -> dict[str, Any]:
             job["company_name"] = resolved_role["company_name"]
             job["title"] = resolved_role["title"]
             job["location"] = resolved_role["location"]
+            job["resume_filename"] = _role_material_pdf_filename(
+                resolved_role,
+                kind="resume",
+            )
+            job["cover_letter_filename"] = _role_material_pdf_filename(
+                resolved_role,
+                kind="cover_letter",
+            )
         bulk_regeneration = get_latest_bulk_cover_letter_regeneration(connection)
     return {
         "jobs": jobs,
@@ -4615,14 +4632,7 @@ def _copy_autoprep_pdf(
     if directory is None:
         directory = _prepared_applications_root() / f"{company}-{title}-role-{role_id}"
     directory.mkdir(parents=True, exist_ok=True)
-    suffix = "resume" if kind == "resume" else "cover-letter"
-    artifact_field = "resume_artifact_path" if kind == "resume" else "cover_letter_artifact_path"
-    existing_artifact = (existing_job or {}).get(artifact_field)
-    target = directory / f"{company}-{title}-{suffix}.pdf"
-    if isinstance(existing_artifact, str):
-        candidate = Path(existing_artifact).resolve()
-        if candidate.parent == directory.resolve() and candidate.suffix.lower() == ".pdf":
-            target = candidate
+    target = directory / _role_material_pdf_filename(role, kind=kind)
     _atomic_copy_verified_pdf(source_pdf, target)
     return directory, target
 
@@ -4687,13 +4697,7 @@ def _copy_autoprep_counterpart(
     source = Path(source_value)
     if not source.is_file():
         return None
-    if source.resolve().parent == directory.resolve():
-        target = source.resolve()
-    else:
-        company = _safe_filename(_effective_role_company_name(role))
-        title = _safe_filename(str(role.get("title") or "role"))
-        suffix = "cover-letter" if counterpart_kind == "cover_letter" else "resume"
-        target = directory / f"{company}-{title}-{suffix}.pdf"
+    target = directory / _role_material_pdf_filename(role, kind=counterpart_kind)
     if source.resolve() != target.resolve():
         _atomic_copy_verified_pdf(source, target)
     return counterpart_kind, str(target)
@@ -4768,8 +4772,10 @@ def _sync_currently_applying_folder(job: dict[str, Any]) -> dict[str, object]:
         role_id, resume, cover_letter = _ready_autoprep_document_pair(job)
         temporary = Path(tempfile.mkdtemp(prefix=".currently-applying-", dir=root))
         try:
-            _atomic_copy_verified_pdf(resume, temporary / resume.name)
-            _atomic_copy_verified_pdf(cover_letter, temporary / cover_letter.name)
+            resume_name = _role_material_pdf_filename(job, kind="resume")
+            cover_letter_name = _role_material_pdf_filename(job, kind="cover_letter")
+            _atomic_copy_verified_pdf(resume, temporary / resume_name)
+            _atomic_copy_verified_pdf(cover_letter, temporary / cover_letter_name)
             if len(list(temporary.iterdir())) != 2:
                 raise RuntimeError("Currently Applying must contain exactly two documents.")
             if destination.exists():
@@ -4784,7 +4790,7 @@ def _sync_currently_applying_folder(job: dict[str, Any]) -> dict[str, object]:
     return {
         "role_id": role_id,
         "path": str(destination.resolve()),
-        "filenames": [resume.name, cover_letter.name],
+        "filenames": [resume_name, cover_letter_name],
     }
 
 
@@ -7357,8 +7363,8 @@ def _applicant_pdf_filename_prefix() -> str:
     except Exception:  # noqa: BLE001 - filename generation should not block PDF serving.
         first_name = ""
         last_name = ""
-    prefix = _clean_applicant_name_part(first_name) + _clean_applicant_name_part(last_name)
-    return prefix or "Applicant"
+    full_name = " ".join(part for part in (first_name, last_name) if part.strip())
+    return _safe_filename(full_name) if full_name else "applicant"
 
 
 def _application_materials_payload(

@@ -530,6 +530,8 @@ def test_autoprep_api_lists_only_interested_and_returns_accepted_jobs_immediatel
         interested_id = _interested_role(connection, title="Backend Engineer")
         applied_id = _interested_role(connection, company="Beta", title="Applied Engineer")
         set_role_status(connection, applied_id, RoleStatus.APPLIED, summary="Already applied")
+        web_server.set_config_value(connection, "applicant_first_name", "Jake")
+        web_server.set_config_value(connection, "applicant_last_name", "Yeo")
 
     server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -592,8 +594,12 @@ def test_autoprep_api_lists_only_interested_and_returns_accepted_jobs_immediatel
             finish_autoprep_worker(connection, accepted["jobs"][0]["id"])
 
         for document_kind, expected, expected_filename in (
-            ("resume", b"resume", resume_pdf.name),
-            ("cover-letter", b"cover", cover_pdf.name),
+            ("resume", b"resume", "jake-yeo-acme-backend-engineer-resume.pdf"),
+            (
+                "cover-letter",
+                b"cover",
+                "jake-yeo-acme-backend-engineer-cover-letter.pdf",
+            ),
         ):
             with urlopen(
                 f"{base_url}/api/autoprep/roles/{interested_id}/documents/{document_kind}.pdf",
@@ -1478,6 +1484,8 @@ def test_autoprep_cover_letter_only_mode_copies_master_resume_with_public_filena
         role_id = _interested_role(connection, title="Data Science Intern")
         upsert_master_resume(connection, filename="resume.tex", content=master_latex)
         web_server.set_config_value(connection, "autoprep_tailor_resume", "false")
+        web_server.set_config_value(connection, "applicant_first_name", "Jake")
+        web_server.set_config_value(connection, "applicant_last_name", "Yeo")
         [job] = enqueue_autoprep_jobs(connection, [role_id], idempotency_key="cover-only")
         assert claim_next_autoprep_job(connection) is not None
 
@@ -1516,7 +1524,7 @@ def test_autoprep_cover_letter_only_mode_copies_master_resume_with_public_filena
     assert copied_latex == [master_latex]
     assert cover_resume_content == [master_latex]
     assert Path(completed["resume_artifact_path"]).name == (
-        "acme-data-science-intern-resume.pdf"
+        "jake-yeo-acme-data-science-intern-resume.pdf"
     )
     assert Path(completed["resume_artifact_path"]).is_file()
     assert Path(completed["cover_letter_artifact_path"]).is_file()

@@ -4629,7 +4629,9 @@ function renderPreppedDocument(job, documentKind, label) {
   const fieldKind = documentKind === "cover-letter" ? "cover_letter" : "resume";
   const status = job[`${fieldKind}_status`];
   const artifactPath = job[`${fieldKind}_artifact_path`];
-  const filename = artifactPath?.split("/").pop() ?? "Not available";
+  const filename = job[`${fieldKind}_filename`]
+    ?? artifactPath?.split("/").pop()
+    ?? "Not available";
   const error = job[`${fieldKind}_error`];
   const instruction = job[`${fieldKind}_instruction`] || "";
   const key = `${job.role_id}:${documentKind}`;

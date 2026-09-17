@@ -650,7 +650,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
             app_javascript
         )
         assert '<div id="root"></div>' not in index_markup
-        assert '<script type="module" src="/assets/app.js?v=vanilla-20260917-34"></script>' in (
+        assert '<script type="module" src="/assets/app.js?v=vanilla-20260917-35"></script>' in (
             index_markup
         )
 
@@ -794,7 +794,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
         assert "/assets/app.css?v=vanilla-20260915-29" in index_markup
-        assert "/assets/app.js?v=vanilla-20260917-34" in index_markup
+        assert "/assets/app.js?v=vanilla-20260917-35" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -809,6 +809,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'class="prep-document-workspace"' in app_javascript
         assert 'class="prepped-document status-${escapeHtml(status)}"' in app_javascript
         assert 'class="prepped-filename-link"' in app_javascript
+        assert 'job[`${fieldKind}_filename`]' in app_javascript
         assert 'data-autoprep-view="${documentKind}"' in app_javascript
         assert ">View PDF</a>" not in app_javascript
         assert "Preview PDF" not in app_javascript
@@ -1063,6 +1064,7 @@ def test_autoprep_pdf_filename_uses_job_description_company_identity(
     source_pdf = tmp_path / "source.pdf"
     source_pdf.write_bytes(_valid_pdf_bytes())
     monkeypatch.setattr(web_server, "user_data_path", lambda *_args, **_kwargs: tmp_path)
+    monkeypatch.setattr(web_server, "_applicant_pdf_filename_prefix", lambda: "jake-yeo")
 
     directory, target = web_server._copy_autoprep_pdf(
         {
@@ -1078,7 +1080,7 @@ def test_autoprep_pdf_filename_uses_job_description_company_identity(
     )
 
     assert directory.name == "cohere-machine-learning-intern-co-op-role-312"
-    assert target.name == "cohere-machine-learning-intern-co-op-cover-letter.pdf"
+    assert target.name == "jake-yeo-cohere-machine-learning-intern-co-op-cover-letter.pdf"
 
     old_resume = tmp_path / "ramp-role-312-resume.pdf"
     old_resume.write_bytes(_valid_pdf_bytes())
@@ -1097,7 +1099,7 @@ def test_autoprep_pdf_filename_uses_job_description_company_identity(
     )
     assert counterpart == (
         "resume",
-        str(directory / "cohere-machine-learning-intern-co-op-resume.pdf"),
+        str(directory / "jake-yeo-cohere-machine-learning-intern-co-op-resume.pdf"),
     )
 
     resume_directory, resume_target = web_server._copy_autoprep_pdf(
@@ -1114,7 +1116,7 @@ def test_autoprep_pdf_filename_uses_job_description_company_identity(
     )
 
     assert resume_directory == directory
-    assert resume_target.name == "cohere-machine-learning-intern-co-op-resume.pdf"
+    assert resume_target.name == "jake-yeo-cohere-machine-learning-intern-co-op-resume.pdf"
 
 
 def test_autoprep_regeneration_reuses_persisted_role_directory(
@@ -1129,6 +1131,7 @@ def test_autoprep_regeneration_reuses_persisted_role_directory(
     original_resume = original_directory / "sap-original-title-resume.pdf"
     original_resume.write_bytes(_valid_pdf_bytes())
     monkeypatch.setattr(web_server, "user_data_path", lambda *_args, **_kwargs: tmp_path)
+    monkeypatch.setattr(web_server, "_applicant_pdf_filename_prefix", lambda: "jake-yeo")
 
     directory, target = web_server._copy_autoprep_pdf(
         {
@@ -1145,8 +1148,13 @@ def test_autoprep_regeneration_reuses_persisted_role_directory(
     )
 
     assert directory == original_directory
-    assert target == original_resume
-    assert sorted(path.name for path in original_directory.iterdir()) == [original_resume.name]
+    assert target == (
+        original_directory / "jake-yeo-sap-resolved-title-changed-during-regeneration-resume.pdf"
+    )
+    assert sorted(path.name for path in original_directory.iterdir()) == [
+        "jake-yeo-sap-resolved-title-changed-during-regeneration-resume.pdf",
+        original_resume.name,
+    ]
     assert not (root / "sap-resolved-title-changed-during-regeneration-role-378").exists()
 
 
@@ -1170,6 +1178,7 @@ def test_autoprep_regeneration_preserves_unrelated_user_files(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(web_server, "user_data_path", lambda *_args, **_kwargs: tmp_path)
+    monkeypatch.setattr(web_server, "_applicant_pdf_filename_prefix", lambda: "jake-yeo")
     directory = tmp_path / "prepared-applications" / "sap-engineer-role-378"
     directory.mkdir(parents=True)
     resume = directory / "sap-engineer-resume.pdf"
@@ -1192,6 +1201,7 @@ def test_autoprep_regeneration_preserves_unrelated_user_files(
     )
 
     assert sorted(path.name for path in directory.iterdir()) == [
+        "jake-yeo-sap-engineer-resume.pdf",
         "notes.txt",
         "personal-resume.pdf",
         "sap-engineer-resume.pdf",
@@ -1219,6 +1229,7 @@ def test_currently_applying_folder_atomically_projects_selected_role_pair(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(web_server, "user_data_path", lambda *_args, **_kwargs: tmp_path)
+    monkeypatch.setattr(web_server, "_applicant_pdf_filename_prefix", lambda: "jake-yeo")
     role_directory = tmp_path / "prepared-applications" / "acme-engineer-role-42"
     role_directory.mkdir(parents=True)
     resume = role_directory / "acme-engineer-resume.pdf"
@@ -1227,6 +1238,8 @@ def test_currently_applying_folder_atomically_projects_selected_role_pair(
     cover_letter.write_bytes(_valid_pdf_bytes())
     job = {
         "role_id": 42,
+        "company_name": "Acme",
+        "title": "Engineer",
         "resume_status": "ready",
         "cover_letter_status": "ready",
         "resume_artifact_path": str(resume),
@@ -1240,8 +1253,8 @@ def test_currently_applying_folder_atomically_projects_selected_role_pair(
     assert result["role_id"] == 42
     assert Path(str(result["path"])) == current
     assert sorted(path.name for path in current.iterdir()) == [
-        "acme-engineer-cover-letter.pdf",
-        "acme-engineer-resume.pdf",
+        "jake-yeo-acme-engineer-cover-letter.pdf",
+        "jake-yeo-acme-engineer-resume.pdf",
     ]
     assert resume.is_file()
     assert cover_letter.is_file()
@@ -1306,6 +1319,8 @@ def test_currently_applying_role_selection_and_open_folder_api(
             artifact_directory=str(role_directory),
         )
         autoprep_service.finish_autoprep_worker(connection, int(job["id"]))
+        web_server.set_config_value(connection, "applicant_first_name", "Jake")
+        web_server.set_config_value(connection, "applicant_last_name", "Yeo")
 
     open_calls: list[list[str]] = []
 
@@ -1319,6 +1334,23 @@ def test_currently_applying_role_selection_and_open_folder_api(
     thread.start()
     try:
         base_url = f"http://127.0.0.1:{server.server_address[1]}"
+        with urlopen(f"{base_url}/api/autoprep/jobs", timeout=5) as response:
+            payload = json.loads(response.read().decode())
+        [prepared_job] = payload["jobs"]
+        assert prepared_job["resume_filename"] == "jake-yeo-acme-engineer-resume.pdf"
+        assert prepared_job["cover_letter_filename"] == (
+            "jake-yeo-acme-engineer-cover-letter.pdf"
+        )
+
+        with urlopen(
+            f"{base_url}/api/autoprep/roles/{role.id}/documents/resume.pdf",
+            timeout=5,
+        ) as response:
+            assert response.read() == _valid_pdf_bytes()
+        assert response.headers["Content-Disposition"] == (
+            'inline; filename="jake-yeo-acme-engineer-resume.pdf"'
+        )
+
         select = Request(
             f"{base_url}/api/autoprep/roles/{role.id}/currently-applying",
             data=b"",
@@ -1329,8 +1361,8 @@ def test_currently_applying_role_selection_and_open_folder_api(
         assert selected["updated"] is True
         current = tmp_path / "prepared-applications" / "currently-applying"
         assert sorted(path.name for path in current.iterdir()) == [
-            "acme-engineer-cover-letter.pdf",
-            "acme-engineer-resume.pdf",
+            "jake-yeo-acme-engineer-cover-letter.pdf",
+            "jake-yeo-acme-engineer-resume.pdf",
         ]
 
         open_request = Request(
@@ -2241,7 +2273,7 @@ def test_cover_letter_pdf_endpoint_serves_saved_role_pdf(
         assert response.headers["Content-Type"] == "application/pdf"
         disposition = response.headers["Content-Disposition"]
         assert disposition.startswith("inline;")
-        assert 'filename="CallumMackenzie-acme-backend-intern-cover-letter.pdf"' in disposition
+        assert 'filename="callum-mackenzie-acme-backend-intern-cover-letter.pdf"' in disposition
         assert body == b"%PDF saved cover letter"
     finally:
         server.shutdown()
@@ -2255,7 +2287,7 @@ def test_role_material_pdf_filename_includes_safe_job_context(
     monkeypatch.setattr(
         web_server,
         "_applicant_pdf_filename_prefix",
-        lambda: "CallumMackenzie",
+        lambda: "callum-mackenzie",
     )
 
     filename = web_server._role_material_pdf_filename(
@@ -2267,7 +2299,9 @@ def test_role_material_pdf_filename_includes_safe_job_context(
         kind="cover_letter",
     )
 
-    assert filename == ("CallumMackenzie-munchen-r-d-ml-engineer-safety-trust-cover-letter.pdf")
+    assert filename == (
+        "callum-mackenzie-munchen-r-d-ml-engineer-safety-trust-cover-letter.pdf"
+    )
 
 
 def test_cover_letter_latex_normalizer_adds_compact_one_page_layout() -> None:
@@ -2854,7 +2888,7 @@ def test_role_resume_endpoint_loads_and_saves_editable_latex(
         assert response.status == 200
         assert response.headers["Content-Disposition"].startswith("inline;")
         assert (
-            'filename="CallumMackenzie-acme-backend-intern-resume.pdf"'
+            'filename="callum-mackenzie-acme-backend-intern-resume.pdf"'
             in response.headers["Content-Disposition"]
         )
         assert body == _valid_pdf_bytes()
@@ -4121,7 +4155,7 @@ def test_resume_pdf_uses_temporary_resume_when_role_has_no_custom_copy(
         ),
     )
 
-    assert pdf_path == downloads / "CallumMackenzie-acme-backend-intern-resume.pdf"
+    assert pdf_path == downloads / "callum-mackenzie-acme-backend-intern-resume.pdf"
     assert pdf_path.read_bytes() == b"pdf"
     assert not (resume_root / "role-1" / "resume.tex").exists()
 
