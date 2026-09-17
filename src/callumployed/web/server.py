@@ -2014,6 +2014,28 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                                     HTTPStatus.CONFLICT,
                                 )
                                 return
+                            existing_autoprep_job = (
+                                get_role_autoprep_job(connection, role_id)
+                                if existing_role is not None
+                                else None
+                            )
+                            if (
+                                existing_autoprep_job is not None
+                                and existing_autoprep_job["overall_status"] == "ready"
+                            ):
+                                connection.rollback()
+                                self._send_json_with_status(
+                                    {
+                                        "error": (
+                                            f"{role.title} is already in Prepped. Its ready "
+                                            "AutoPrep documents were preserved and the role was "
+                                            "not added or rescanned."
+                                        ),
+                                        "role_id": role_id,
+                                    },
+                                    HTTPStatus.CONFLICT,
+                                )
+                                return
                             if role.role_status != RoleStatus.INTERESTED:
                                 role = set_role_status(
                                     connection,

@@ -6468,7 +6468,7 @@ def test_roles_create_endpoint_promotes_existing_discovered_role_into_autoprep(
         server.server_close()
 
 
-def test_roles_create_endpoint_reuses_existing_careerpuck_role_with_ready_autoprep(
+def test_roles_create_endpoint_rejects_existing_prepped_role(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6525,19 +6525,10 @@ def test_roles_create_endpoint_reuses_existing_careerpuck_role_with_ready_autopr
         )
         connection.commit()
 
-    async def fake_run_rescan_role(
-        role_id: int,
-        *,
-        browser_profile_manager: object,
-        update_status: bool,
-    ) -> dict[str, object]:
-        assert role_id == existing.id
-        assert browser_profile_manager is not None
-        assert update_status is False
-        with db.connect() as connection:
-            return {"role": get_role(connection, role_id)}
+    async def fail_rescan(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise AssertionError("A role already in Prepped must not be rescanned")
 
-    monkeypatch.setattr(web_server, "run_rescan_role", fake_run_rescan_role)
+    monkeypatch.setattr(web_server, "run_rescan_role", fail_rescan)
     server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -6554,18 +6545,32 @@ def test_roles_create_endpoint_reuses_existing_careerpuck_role_with_ready_autopr
             method="POST",
         )
 
-        with urlopen(request, timeout=5) as response:
-            payload = json.loads(response.read().decode())
+        with pytest.raises(HTTPError) as error:
+            urlopen(request, timeout=5)
 
-        assert response.status == 200
-        assert payload["role"]["id"] == existing.id
-        assert payload["role"]["role_status"] == "interested"
-        assert payload["autoprep_job"]["id"] == existing_job["id"]
-        assert payload["autoprep_job"]["overall_status"] == "ready"
+        assert error.value.code == 409
+        assert json.loads(error.value.read().decode()) == {
+            "error": (
+                "Software Engineer Intern, Fullstack (Summer 2027) is already in Prepped. "
+                "Its ready AutoPrep documents were preserved and the role was not added or "
+                "rescanned."
+            ),
+            "role_id": existing.id,
+        }
         with db.connect() as connection:
             assert connection.execute("SELECT COUNT(*) FROM roles").fetchone()[0] == 2
             assert connection.execute("SELECT COUNT(*) FROM autoprep_jobs").fetchone()[0] == 1
             assert get_role(connection, discovered.id or 0).role_status == RoleStatus.DISCOVERED
+            assert get_role(connection, existing.id or 0).role_status == RoleStatus.INTERESTED
+            preserved_job = autoprep_service.get_role_autoprep_job(
+                connection,
+                existing.id or 0,
+            )
+            assert preserved_job is not None
+            assert preserved_job["id"] == existing_job["id"]
+            assert preserved_job["overall_status"] == "ready"
+            assert preserved_job["resume_artifact_path"] == "/tmp/lyft-resume.pdf"
+            assert preserved_job["cover_letter_artifact_path"] == "/tmp/lyft-cover-letter.pdf"
     finally:
         server.shutdown()
         thread.join(timeout=5)
