@@ -9,6 +9,7 @@ import hmac
 import ipaddress
 import json
 import logging
+import math
 import mimetypes
 import os
 import re
@@ -5788,20 +5789,95 @@ def _pdf_page_visible_text(page: Any) -> str:
         "stroke_visible": True,
         "fill_alpha": 1.0,
         "stroke_alpha": 1.0,
+        "soft_mask_active": False,
         "render_mode": 0,
         "fill_color_space": "/DeviceGray",
         "stroke_color_space": "/DeviceGray",
         "path_rectangle": None,
+        "path_unsupported": False,
+        "pending_clip_rectangle": None,
+        "pending_unknown_clip": False,
         "clip_rectangle": crop_rectangle,
         "unknown_clip": False,
     }
     stack: list[dict[str, Any]] = []
     resources: Any = page.get("/Resources", {})
     resources = resources.get_object() if hasattr(resources, "get_object") else resources
-    ext_gstates: Any = resources.get("/ExtGState", {}) if hasattr(resources, "get") else {}
-    ext_gstates = (
-        ext_gstates.get_object() if hasattr(ext_gstates, "get_object") else ext_gstates
-    )
+    resource_stack: list[Any] = [resources]
+    form_transform_stack: list[list[float]] = [[1.0, 0.0, 0.0, 1.0, 0.0, 0.0]]
+    form_state_stack: list[tuple[dict[str, Any], int]] = []
+    supported_color_spaces = {
+        "/DeviceGray",
+        "/G",
+        "/DeviceRGB",
+        "/RGB",
+        "/DeviceCMYK",
+        "/CMYK",
+    }
+
+    def resolved_dictionary(value: Any) -> Any:
+        return value.get_object() if hasattr(value, "get_object") else value
+
+    def scoped_resource(resource_name: str) -> Any:
+        active_resources = resource_stack[-1]
+        if not hasattr(active_resources, "get"):
+            return {}
+        return resolved_dictionary(active_resources.get(resource_name, {}))
+
+    def resolved_color_space_name(value: Any) -> str:
+        color_space_name = str(value)
+        color_spaces = scoped_resource("/ColorSpace")
+        visited_names: set[str] = set()
+        while (
+            color_space_name not in supported_color_spaces
+            and color_space_name not in visited_names
+            and hasattr(color_spaces, "get")
+        ):
+            visited_names.add(color_space_name)
+            definition = resolved_dictionary(color_spaces.get(color_space_name))
+            if isinstance(definition, str):
+                color_space_name = str(definition)
+                continue
+            break
+        return color_space_name
+
+    def multiply_matrices(first: list[float], second: list[float]) -> list[float]:
+        return [
+            first[0] * second[0] + first[1] * second[2],
+            first[0] * second[1] + first[1] * second[3],
+            first[2] * second[0] + first[3] * second[2],
+            first[2] * second[1] + first[3] * second[3],
+            first[4] * second[0] + first[5] * second[2] + second[4],
+            first[4] * second[1] + first[5] * second[3] + second[5],
+        ]
+
+    def effective_matrix(current_matrix: list[float]) -> list[float]:
+        return multiply_matrices(current_matrix, form_transform_stack[-1])
+
+    def transformed_rectangle(
+        rectangle: list[float],
+        matrix: list[float],
+    ) -> tuple[float, float, float, float]:
+        left, bottom, right, top = rectangle
+        points = (
+            (left, bottom),
+            (left, top),
+            (right, bottom),
+            (right, top),
+        )
+        transformed = [
+            (
+                x * matrix[0] + y * matrix[2] + matrix[4],
+                x * matrix[1] + y * matrix[3] + matrix[5],
+            )
+            for x, y in points
+        ]
+        return (
+            min(point[0] for point in transformed),
+            min(point[1] for point in transformed),
+            max(point[0] for point in transformed),
+            max(point[1] for point in transformed),
+        )
 
     def color_space_visible(color_space: str, operands: list[Any]) -> bool:
         values = [float(value) for value in operands if isinstance(value, (int, float))]
@@ -5831,7 +5907,46 @@ def _pdf_page_visible_text(page: Any) -> str:
         _text_matrix: list[float],
     ) -> None:
         nonlocal state
-        if operator == b"q":
+        if operator == b"Do" and operands:
+            form_state_stack.append((state.copy(), len(stack)))
+            xobjects = scoped_resource("/XObject")
+            xobject = xobjects.get(operands[0]) if hasattr(xobjects, "get") else None
+            xobject = resolved_dictionary(xobject)
+            nested_resources = (
+                xobject.get("/Resources") if hasattr(xobject, "get") else None
+            )
+            form_matrix_value = (
+                xobject.get("/Matrix") if hasattr(xobject, "get") else None
+            )
+            form_matrix = (
+                [float(value) for value in form_matrix_value]
+                if isinstance(form_matrix_value, (list, tuple))
+                and len(form_matrix_value) == 6
+                else [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+            )
+            form_to_page = multiply_matrices(
+                form_matrix,
+                effective_matrix(current_matrix),
+            )
+            form_transform_stack.append(form_to_page)
+            state = state.copy()
+            form_bbox = xobject.get("/BBox") if hasattr(xobject, "get") else None
+            if isinstance(form_bbox, (list, tuple)) and len(form_bbox) == 4:
+                bbox_clip = transformed_rectangle(
+                    [float(value) for value in form_bbox],
+                    form_to_page,
+                )
+                state["clip_rectangle"] = intersect_rectangles(
+                    state["clip_rectangle"], bbox_clip
+                )
+            else:
+                state["unknown_clip"] = True
+            resource_stack.append(
+                resolved_dictionary(nested_resources)
+                if nested_resources is not None
+                else resource_stack[-1]
+            )
+        elif operator == b"q":
             stack.append(state.copy())
         elif operator == b"Q" and stack:
             state = stack.pop()
@@ -5854,9 +5969,11 @@ def _pdf_page_visible_text(page: Any) -> str:
                 str(state["stroke_color_space"]), operands
             )
         elif operator == b"cs" and operands:
-            state["fill_color_space"] = str(operands[0])
+            state["fill_color_space"] = resolved_color_space_name(operands[0])
+            state["fill_visible"] = state["fill_color_space"] in supported_color_spaces
         elif operator == b"CS" and operands:
-            state["stroke_color_space"] = str(operands[0])
+            state["stroke_color_space"] = resolved_color_space_name(operands[0])
+            state["stroke_visible"] = state["stroke_color_space"] in supported_color_spaces
         elif operator in {b"sc", b"scn"}:
             state["fill_visible"] = color_space_visible(
                 str(state["fill_color_space"]), operands
@@ -5868,6 +5985,9 @@ def _pdf_page_visible_text(page: Any) -> str:
         elif operator == b"Tr" and operands:
             state["render_mode"] = int(operands[0])
         elif operator == b"re" and len(operands) >= 4:
+            if state["pending_clip_rectangle"] is not None:
+                state["pending_clip_rectangle"] = None
+                state["pending_unknown_clip"] = True
             path_x, path_y, path_width, path_height = map(float, operands[:4])
             first_x = path_x * current_matrix[0] + path_y * current_matrix[2] + current_matrix[4]
             first_y = path_x * current_matrix[1] + path_y * current_matrix[3] + current_matrix[5]
@@ -5881,35 +6001,87 @@ def _pdf_page_visible_text(page: Any) -> str:
                 + (path_y + path_height) * current_matrix[3]
                 + current_matrix[5]
             )
-            state["path_rectangle"] = (
-                min(first_x, last_x),
-                min(first_y, last_y),
-                max(first_x, last_x),
-                max(first_y, last_y),
-            )
+            if state["path_rectangle"] is not None or bool(state["path_unsupported"]):
+                state["path_rectangle"] = None
+                state["path_unsupported"] = True
+            else:
+                state["path_rectangle"] = (
+                    min(first_x, last_x),
+                    min(first_y, last_y),
+                    max(first_x, last_x),
+                    max(first_y, last_y),
+                )
+        elif operator in {b"m", b"l", b"c", b"v", b"y", b"h"}:
+            if state["pending_clip_rectangle"] is not None:
+                state["pending_clip_rectangle"] = None
+                state["pending_unknown_clip"] = True
+            state["path_rectangle"] = None
+            state["path_unsupported"] = True
         elif operator in {b"W", b"W*"}:
             path_rectangle = state["path_rectangle"]
-            if isinstance(path_rectangle, tuple):
-                state["clip_rectangle"] = intersect_rectangles(
-                    state["clip_rectangle"], path_rectangle
-                )
+            if isinstance(path_rectangle, tuple) and not bool(state["path_unsupported"]):
+                state["pending_clip_rectangle"] = path_rectangle
             else:
+                state["pending_unknown_clip"] = True
+        elif operator in {b"n", b"S", b"s", b"f", b"F", b"f*", b"B", b"B*", b"b", b"b*"}:
+            pending_clip = state["pending_clip_rectangle"]
+            if isinstance(pending_clip, tuple):
+                state["clip_rectangle"] = intersect_rectangles(
+                    state["clip_rectangle"], pending_clip
+                )
+            if bool(state["pending_unknown_clip"]):
                 state["unknown_clip"] = True
-        elif operator == b"gs" and operands and hasattr(ext_gstates, "get"):
-            graphics_state: Any = ext_gstates.get(operands[0])
-            if graphics_state is not None and hasattr(graphics_state, "get_object"):
-                graphics_state = graphics_state.get_object()
+            state["pending_clip_rectangle"] = None
+            state["pending_unknown_clip"] = False
+            state["path_rectangle"] = None
+            state["path_unsupported"] = False
+        elif operator == b"gs" and operands:
+            ext_gstates = scoped_resource("/ExtGState")
+            graphics_state = (
+                ext_gstates.get(operands[0]) if hasattr(ext_gstates, "get") else None
+            )
+            graphics_state = resolved_dictionary(graphics_state)
             if hasattr(graphics_state, "get"):
-                state["fill_alpha"] = float(graphics_state.get("/ca", 1.0))
-                state["stroke_alpha"] = float(graphics_state.get("/CA", 1.0))
+                if "/SMask" in graphics_state:
+                    soft_mask = resolved_dictionary(graphics_state.get("/SMask"))
+                    state["soft_mask_active"] = (
+                        soft_mask is not None and str(soft_mask) != "/None"
+                    )
+                if "/ca" in graphics_state:
+                    state["fill_alpha"] = float(graphics_state.get("/ca"))
+                if "/CA" in graphics_state:
+                    state["stroke_alpha"] = float(graphics_state.get("/CA"))
+            else:
+                state["fill_alpha"] = 0.0
+                state["stroke_alpha"] = 0.0
+                state["soft_mask_active"] = True
+
+    def visit_operand_after(
+        operator: bytes,
+        _operands: list[Any],
+        _current_matrix: list[float],
+        _text_matrix: list[float],
+    ) -> None:
+        nonlocal state
+        if operator != b"Do" or not form_state_stack:
+            return
+        state, saved_stack_depth = form_state_stack.pop()
+        del stack[saved_stack_depth:]
+        if len(form_transform_stack) > 1:
+            form_transform_stack.pop()
+        if len(resource_stack) > 1:
+            resource_stack.pop()
 
     def visit_text(
         text: str,
         current_matrix: list[float],
         text_matrix: list[float],
-        _font: Any,
+        font: Any,
         font_size: float,
     ) -> None:
+        if font is None:
+            return
+        current_matrix = effective_matrix(current_matrix)
         current_vertical_scale = (
             current_matrix[2] ** 2 + current_matrix[3] ** 2
         ) ** 0.5
@@ -5919,10 +6091,14 @@ def _pdf_page_visible_text(page: Any) -> str:
             return
         render_mode = int(state["render_mode"])
         fill_is_visible = (
-            bool(state["fill_visible"]) and float(state["fill_alpha"]) > 0.05
+            bool(state["fill_visible"])
+            and float(state["fill_alpha"]) > 0.05
+            and not bool(state["soft_mask_active"])
         )
         stroke_is_visible = (
-            bool(state["stroke_visible"]) and float(state["stroke_alpha"]) > 0.05
+            bool(state["stroke_visible"])
+            and float(state["stroke_alpha"]) > 0.05
+            and not bool(state["soft_mask_active"])
         )
         if render_mode in {3, 7}:
             return
@@ -5946,22 +6122,30 @@ def _pdf_page_visible_text(page: Any) -> str:
             current_matrix[0] ** 2 + current_matrix[1] ** 2
         ) ** 0.5
         text_horizontal_scale = (text_matrix[0] ** 2 + text_matrix[1] ** 2) ** 0.5
-        estimated_width = (
-            len(text.rstrip())
-            * font_size
-            * current_horizontal_scale
-            * text_horizontal_scale
-            * 0.6
+        rendered_text = text.rstrip()
+        estimated_character_width = (
+            font_size * current_horizontal_scale * text_horizontal_scale * 0.6
         )
         clip_left, clip_bottom, clip_right, clip_top = state["clip_rectangle"]
-        if x < clip_left or x + estimated_width > clip_right:
+        if estimated_character_width <= 0.0:
             return
         if y < clip_bottom or y + effective_font_size > clip_top:
             return
-        visible_chunks.append(text)
+        visible_start = max(
+            0,
+            math.ceil((clip_left - x) / estimated_character_width),
+        )
+        visible_end = min(
+            len(rendered_text),
+            math.floor((clip_right - x) / estimated_character_width),
+        )
+        if visible_end <= visible_start:
+            return
+        visible_chunks.append(rendered_text[visible_start:visible_end])
 
     page.extract_text(
         visitor_operand_before=visit_operand,
+        visitor_operand_after=visit_operand_after,
         visitor_text=visit_text,
     )
     return "\n".join(visible_chunks)

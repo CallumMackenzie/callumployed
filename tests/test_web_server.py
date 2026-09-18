@@ -18,7 +18,13 @@ from zipfile import ZipFile
 
 import pytest
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+from pypdf.generic import (
+    ArrayObject,
+    DecodedStreamObject,
+    DictionaryObject,
+    FloatObject,
+    NameObject,
+)
 from typer.testing import CliRunner
 
 import callumployed.web.server as web_server
@@ -177,6 +183,51 @@ def _positioned_text_pdf_bytes(
     return output.getvalue()
 
 
+def _soft_mask_graphics_state(writer: PdfWriter) -> object:
+    zero_alpha_ref = writer._add_object(
+        DictionaryObject(
+            {
+                NameObject("/Type"): NameObject("/ExtGState"),
+                NameObject("/ca"): FloatObject(0.0),
+            }
+        )
+    )
+    mask_form = DecodedStreamObject()
+    mask_form.set_data(b"/Zero gs 0 0 612 792 re f")
+    mask_form[NameObject("/Type")] = NameObject("/XObject")
+    mask_form[NameObject("/Subtype")] = NameObject("/Form")
+    mask_form[NameObject("/BBox")] = ArrayObject(
+        [FloatObject(0), FloatObject(0), FloatObject(612), FloatObject(792)]
+    )
+    mask_form[NameObject("/Group")] = DictionaryObject(
+        {
+            NameObject("/S"): NameObject("/Transparency"),
+            NameObject("/CS"): NameObject("/DeviceGray"),
+        }
+    )
+    mask_form[NameObject("/Resources")] = DictionaryObject(
+        {
+            NameObject("/ExtGState"): DictionaryObject(
+                {NameObject("/Zero"): zero_alpha_ref}
+            )
+        }
+    )
+    mask_form_ref = writer._add_object(mask_form)
+    return writer._add_object(
+        DictionaryObject(
+            {
+                NameObject("/Type"): NameObject("/ExtGState"),
+                NameObject("/SMask"): DictionaryObject(
+                    {
+                        NameObject("/S"): NameObject("/Alpha"),
+                        NameObject("/G"): mask_form_ref,
+                    }
+                ),
+            }
+        )
+    )
+
+
 def _text_pdf_bytes(
     text: str,
     *,
@@ -189,6 +240,11 @@ def _text_pdf_bytes(
     clipped: bool = False,
     clipbox: tuple[float, float, float, float] | None = None,
     color_space_white: bool = False,
+    unsupported_color_space_only: bool = False,
+    soft_mask: bool = False,
+    partial_alpha_sequence: bool = False,
+    compound_clip: bool = False,
+    post_clip_path_extension: bool = False,
     cropbox: tuple[float, float, float, float] | None = None,
 ) -> bytes:
     output = BytesIO()
@@ -205,22 +261,195 @@ def _text_pdf_bytes(
         }
     )
     font_ref = writer._add_object(font)
-    page[NameObject("/Resources")] = DictionaryObject(  # type: ignore[index]
+    page_resources = DictionaryObject(
         {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})}
     )
+    page[NameObject("/Resources")] = page_resources  # type: ignore[index]
     escaped = text.replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
     stream = DecodedStreamObject()
-    if clipbox is not None:
+    if post_clip_path_extension:
+        clip_prefix = "0 0 612 792 re W* 0 0 612 792 re n "
+    elif compound_clip:
+        clip_prefix = "0 0 612 792 re 0 0 612 792 re W* n "
+    elif clipbox is not None:
         clip_prefix = f"{clipbox[0]} {clipbox[1]} {clipbox[2]} {clipbox[3]} re W n "
     else:
         clip_prefix = "0 0 1 1 re W n " if clipped else ""
-    color_prefix = "/DeviceRGB cs 1 1 1 sc " if color_space_white else f"{gray} g "
+    if partial_alpha_sequence:
+        zero_alpha_ref = writer._add_object(
+            DictionaryObject(
+                {
+                    NameObject("/Type"): NameObject("/ExtGState"),
+                    NameObject("/ca"): FloatObject(0.0),
+                }
+            )
+        )
+        omitted_alpha_ref = writer._add_object(
+            DictionaryObject({NameObject("/Type"): NameObject("/ExtGState")})
+        )
+        page_resources[NameObject("/ExtGState")] = DictionaryObject(
+            {
+                NameObject("/Zero"): zero_alpha_ref,
+                NameObject("/Omitted"): omitted_alpha_ref,
+            }
+        )
+        color_prefix = "/Zero gs /Omitted gs 0 g "
+    elif soft_mask:
+        page_resources[NameObject("/ExtGState")] = DictionaryObject(
+            {NameObject("/Masked"): _soft_mask_graphics_state(writer)}
+        )
+        color_prefix = "/Masked gs 0 g "
+    elif unsupported_color_space_only:
+        color_prefix = "/Bogus cs "
+    else:
+        color_prefix = "/DeviceRGB cs 1 1 1 sc " if color_space_white else f"{gray} g "
     stream.set_data(
         (
             f"{scale} 0 0 {scale} 0 0 cm {clip_prefix}"
             f"{color_prefix}BT /F1 {font_size} Tf {render_mode} Tr "
             f"{x} {y} Td ({escaped}) Tj ET"
         ).encode("ascii")
+    )
+    page[NameObject("/Contents")] = writer._add_object(stream)  # type: ignore[index]
+    writer.write(output)
+    return output.getvalue()
+
+
+def _form_xobject_text_pdf_bytes(
+    text: str,
+    *,
+    white: bool = False,
+    transparent: bool = False,
+    color_alias: bool = False,
+    soft_mask: bool = False,
+    bbox: tuple[float, float, float, float] = (0.0, 0.0, 612.0, 792.0),
+    matrix: tuple[float, float, float, float, float, float] | None = None,
+) -> bytes:
+    output = BytesIO()
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=612, height=792)
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    font_ref = writer._add_object(font)
+    form_resources = DictionaryObject(
+        {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})}
+    )
+    if color_alias:
+        form_resources[NameObject("/ColorSpace")] = DictionaryObject(
+            {NameObject("/LocalRGB"): NameObject("/DeviceRGB")}
+        )
+        color_values = "1 1 1" if white else "0 0 0"
+        graphics_prefix = f"/LocalRGB cs {color_values} sc "
+    else:
+        graphics_prefix = "/DeviceRGB cs 1 1 1 sc " if white else "0 g "
+    if soft_mask:
+        form_resources[NameObject("/ExtGState")] = DictionaryObject(
+            {NameObject("/Masked"): _soft_mask_graphics_state(writer)}
+        )
+        graphics_prefix = "/Masked gs 0 g "
+    elif transparent:
+        ext_gstate = DictionaryObject(
+            {
+                NameObject("/Type"): NameObject("/ExtGState"),
+                NameObject("/ca"): FloatObject(0.0),
+            }
+        )
+        ext_gstate_ref = writer._add_object(ext_gstate)
+        form_resources[NameObject("/ExtGState")] = DictionaryObject(
+            {NameObject("/Hidden"): ext_gstate_ref}
+        )
+        graphics_prefix = "/Hidden gs "
+    form = DecodedStreamObject()
+    form.set_data(
+        (
+            f"{graphics_prefix}BT /F1 12 Tf 50 740 Td "
+            f"({text}) Tj ET"
+        ).encode("ascii")
+    )
+    form[NameObject("/Type")] = NameObject("/XObject")
+    form[NameObject("/Subtype")] = NameObject("/Form")
+    form[NameObject("/BBox")] = ArrayObject(
+        [FloatObject(value) for value in bbox]
+    )
+    if matrix is not None:
+        form[NameObject("/Matrix")] = ArrayObject(
+            [FloatObject(value) for value in matrix]
+        )
+    form[NameObject("/Resources")] = form_resources
+    form_ref = writer._add_object(form)
+    page[NameObject("/Resources")] = DictionaryObject(  # type: ignore[index]
+        {NameObject("/XObject"): DictionaryObject({NameObject("/SkillForm"): form_ref})}
+    )
+    stream = DecodedStreamObject()
+    stream.set_data(b"q /SkillForm Do Q")
+    page[NameObject("/Contents")] = writer._add_object(stream)  # type: ignore[index]
+    writer.write(output)
+    return output.getvalue()
+
+
+def _form_xobject_resource_collision_pdf_bytes() -> bytes:
+    output = BytesIO()
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=612, height=792)
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    font_ref = writer._add_object(font)
+    visible_state_ref = writer._add_object(
+        DictionaryObject(
+            {
+                NameObject("/Type"): NameObject("/ExtGState"),
+                NameObject("/ca"): FloatObject(1.0),
+            }
+        )
+    )
+    hidden_state_ref = writer._add_object(
+        DictionaryObject(
+            {
+                NameObject("/Type"): NameObject("/ExtGState"),
+                NameObject("/ca"): FloatObject(0.0),
+            }
+        )
+    )
+    form = DecodedStreamObject()
+    form.set_data(b"/Shared gs BT /F1 12 Tf 50 700 Td (Decoration) Tj ET")
+    form[NameObject("/Type")] = NameObject("/XObject")
+    form[NameObject("/Subtype")] = NameObject("/Form")
+    form[NameObject("/BBox")] = ArrayObject(
+        [FloatObject(0), FloatObject(0), FloatObject(612), FloatObject(792)]
+    )
+    form[NameObject("/Resources")] = DictionaryObject(
+        {
+            NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref}),
+            NameObject("/ExtGState"): DictionaryObject(
+                {NameObject("/Shared"): hidden_state_ref}
+            ),
+        }
+    )
+    form_ref = writer._add_object(form)
+    page[NameObject("/Resources")] = DictionaryObject(  # type: ignore[index]
+        {
+            NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref}),
+            NameObject("/ExtGState"): DictionaryObject(
+                {NameObject("/Shared"): visible_state_ref}
+            ),
+            NameObject("/XObject"): DictionaryObject(
+                {NameObject("/Decoration"): form_ref}
+            ),
+        }
+    )
+    stream = DecodedStreamObject()
+    stream.set_data(
+        b"/Shared gs BT /F1 12 Tf 50 740 Td (Kubernetes) Tj ET /Decoration Do"
     )
     page[NameObject("/Contents")] = writer._add_object(stream)  # type: ignore[index]
     writer.write(output)
@@ -3411,6 +3640,11 @@ def test_save_role_resume_rejects_pdf_that_omits_selected_skills(
         ({"clipbox": (0.0, 0.0, 612.0, 792.0)}, []),
         ({"cropbox": (0.0, 0.0, 40.0, 40.0)}, ["Kubernetes"]),
         ({"color_space_white": True}, ["Kubernetes"]),
+        ({"unsupported_color_space_only": True}, ["Kubernetes"]),
+        ({"soft_mask": True}, ["Kubernetes"]),
+        ({"partial_alpha_sequence": True}, ["Kubernetes"]),
+        ({"compound_clip": True}, ["Kubernetes"]),
+        ({"post_clip_path_extension": True}, ["Kubernetes"]),
         ({"x": 620.0}, ["Kubernetes"]),
     ],
 )
@@ -3430,6 +3664,74 @@ def test_pdf_selected_skill_presence_rejects_term_beyond_visible_chunk_bounds(
 ) -> None:
     pdf_path = tmp_path / "late-off-page.pdf"
     pdf_path.write_bytes(_text_pdf_bytes(f"{'A' * 80} Kubernetes", x=500.0))
+
+    assert web_server._pdf_missing_visible_terms(pdf_path, ["Kubernetes"]) == ["Kubernetes"]
+
+
+@pytest.mark.parametrize(
+    ("white", "transparent", "color_alias", "soft_mask", "expected_missing"),
+    [
+        (False, False, False, False, []),
+        (True, False, False, False, ["Kubernetes"]),
+        (False, True, False, False, ["Kubernetes"]),
+        (False, False, True, False, []),
+        (True, False, True, False, ["Kubernetes"]),
+        (False, False, False, True, ["Kubernetes"]),
+    ],
+)
+def test_pdf_selected_skill_presence_rejects_hidden_form_xobject_text(
+    tmp_path: Path,
+    white: bool,
+    transparent: bool,
+    color_alias: bool,
+    soft_mask: bool,
+    expected_missing: list[str],
+) -> None:
+    pdf_path = tmp_path / "hidden-form.pdf"
+    pdf_path.write_bytes(
+        _form_xobject_text_pdf_bytes(
+            "Kubernetes",
+            white=white,
+            transparent=transparent,
+            color_alias=color_alias,
+            soft_mask=soft_mask,
+        )
+    )
+
+    assert web_server._pdf_missing_visible_terms(pdf_path, ["Kubernetes"]) == expected_missing
+
+
+def test_pdf_selected_skill_presence_accepts_visible_term_before_clipped_tail(
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "visible-term-clipped-tail.pdf"
+    pdf_path.write_bytes(_text_pdf_bytes(f"Kubernetes {'A' * 80}", x=500.0))
+
+    assert web_server._pdf_missing_visible_terms(pdf_path, ["Kubernetes"]) == []
+
+
+def test_pdf_selected_skill_presence_scopes_form_xobject_resources(
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "form-resource-collision.pdf"
+    pdf_path.write_bytes(_form_xobject_resource_collision_pdf_bytes())
+
+    assert web_server._pdf_missing_visible_terms(pdf_path, ["Kubernetes"]) == []
+
+
+@pytest.mark.parametrize(
+    "form_kwargs",
+    [
+        {"bbox": (0.0, 0.0, 40.0, 40.0)},
+        {"matrix": (1.0, 0.0, 0.0, 1.0, 700.0, 0.0)},
+    ],
+)
+def test_pdf_selected_skill_presence_honors_form_geometry(
+    tmp_path: Path,
+    form_kwargs: dict[str, Any],
+) -> None:
+    pdf_path = tmp_path / "hidden-form-geometry.pdf"
+    pdf_path.write_bytes(_form_xobject_text_pdf_bytes("Kubernetes", **form_kwargs))
 
     assert web_server._pdf_missing_visible_terms(pdf_path, ["Kubernetes"]) == ["Kubernetes"]
 
