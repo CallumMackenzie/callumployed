@@ -203,6 +203,7 @@ INSTALLER_SCRIPT_URL = (
 LOGGER = logging.getLogger(__name__)
 _RESUME_SKILL_TOKEN_SECRET = secrets.token_bytes(32)
 _RESUME_SKILL_TOKEN_TTL_SECONDS = 15 * 60
+RESUME_SKILL_ANALYSIS_TIMEOUT_SECONDS = 45.0
 MAX_APPLICATION_ANSWER_CHANGES_CHARS = 4_000
 SCAN_ALL_COMPANY_TIMEOUT_SECONDS = 5 * 60
 COMPANY_TIER_GUIDE_OPEN_CONFIG_KEY = "ui_company_tier_guide_open"
@@ -2699,13 +2700,23 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             )
             try:
                 analysis = asyncio.run(
-                    analyze_resume_skills(
-                        role=role_payload,
-                        resume_content=resume_content,
-                        other_experience_context=experience_context,
-                        settings=llm_settings,
+                    asyncio.wait_for(
+                        analyze_resume_skills(
+                            role=role_payload,
+                            resume_content=resume_content,
+                            other_experience_context=experience_context,
+                            settings=llm_settings,
+                        ),
+                        timeout=RESUME_SKILL_ANALYSIS_TIMEOUT_SECONDS,
                     )
                 )
+            except TimeoutError:
+                LOGGER.warning("Resume skill analysis timed out for role %s", role_id)
+                self._send_json_with_status(
+                    {"error": "Skill analysis timed out. Please try again."},
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+                return
             except Exception:  # noqa: BLE001 - provider failures must be safe at HTTP boundary.
                 LOGGER.exception("Resume skill analysis failed for role %s", role_id)
                 self._send_json_with_status(

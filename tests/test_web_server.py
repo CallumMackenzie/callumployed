@@ -929,7 +929,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
             app_javascript
         )
         assert '<div id="root"></div>' not in index_markup
-        assert '<script type="module" src="/assets/app.js?v=vanilla-20260917-43"></script>' in (
+        assert '<script type="module" src="/assets/app.js?v=vanilla-20260917-44"></script>' in (
             index_markup
         )
 
@@ -1073,7 +1073,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
         assert "/assets/app.css?v=vanilla-20260917-43" in index_markup
-        assert "/assets/app.js?v=vanilla-20260917-43" in index_markup
+        assert "/assets/app.js?v=vanilla-20260917-44" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -3867,6 +3867,27 @@ def test_resume_skill_analysis_and_embedding_endpoints_preserve_review_contract(
             urlopen(forged_request, timeout=5)
         assert error_info.value.code == 400
         assert "fresh skill analysis" in error_info.value.read().decode()
+
+        async def stalled_analyze_resume_skills(**kwargs: object) -> object:
+            await asyncio.sleep(1)
+            raise AssertionError("the timed-out analysis must be cancelled")
+
+        monkeypatch.setattr(
+            web_server,
+            "analyze_resume_skills",
+            stalled_analyze_resume_skills,
+        )
+        monkeypatch.setattr(web_server, "RESUME_SKILL_ANALYSIS_TIMEOUT_SECONDS", 0.01)
+        timed_out_request = Request(
+            f"http://127.0.0.1:{port}/api/roles/1/resume-skills",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(HTTPError) as timeout_error_info:
+            urlopen(timed_out_request, timeout=5)
+        assert timeout_error_info.value.code == 503
+        assert "timed out" in timeout_error_info.value.read().decode().lower()
     finally:
         server.shutdown()
         thread.join(timeout=5)

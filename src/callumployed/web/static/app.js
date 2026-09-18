@@ -112,6 +112,7 @@ const roleAddStatus = document.querySelector("#role-add-status");
 
 const REVIEW_LATER_RECOMMENDATION_THRESHOLD = 3;
 const COVER_LETTER_AUTOSAVE_DELAY_MS = 1200;
+const RESUME_SKILL_ANALYSIS_TIMEOUT_MS = 50_000;
 const APPLICATION_STATUSES = new Set(["applied", "OA", "interview", "rejected", "offer"]);
 const STATUS_COLORS = new Map([
   ["discovered", "#4f6472"],
@@ -3875,11 +3876,24 @@ async function generatePrepResume(roleId, tweaks, previousLatex) {
 }
 
 async function analyzePrepResumeSkills(roleId, previousLatex) {
-  const response = await fetch(`/api/roles/${encodeURIComponent(roleId)}/resume-skills`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ previous_latex: previousLatex }),
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), RESUME_SKILL_ANALYSIS_TIMEOUT_MS);
+  let response;
+  try {
+    response = await fetch(`/api/roles/${encodeURIComponent(roleId)}/resume-skills`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ previous_latex: previousLatex }),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error("Skill analysis timed out. Close this window and try again.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.error || "Skill analysis failed");
   return {
@@ -3930,7 +3944,7 @@ async function openResumeSkillDialog(role, opener) {
         <p class="resume-skill-intro">Choose source-supported skills from the job description—the complete saved description is analyzed. Selected skills are required in this rewrite. Deselected skills are not required, but they may remain in the resume naturally. The rewrite keeps every saved entry and targets roughly the same word count.</p>
         <form class="resume-skill-form">
           <div class="resume-skill-list" aria-live="polite">
-            <div class="resume-skill-loading"><span aria-hidden="true"></span><p>checking the posting and your saved evidence...</p></div>
+            <div class="resume-skill-loading"><span aria-hidden="true"></span><p>checking the posting and your saved evidence... this can take up to 45 seconds.</p></div>
           </div>
           <p class="resume-skill-status" role="status"></p>
           <div class="resume-skill-actions">
