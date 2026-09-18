@@ -161,7 +161,8 @@ def build_resume_skill_analysis_prompt(
         "job_context": {
             "company_name": role.get("company_name"),
             "title": role.get("title"),
-            "description": str(role.get("description") or "")[:16000],
+            # Skill extraction must inspect the complete authoritative saved posting.
+            "description": str(role.get("description") or ""),
         },
         "resume_context": {
             "format": "latex",

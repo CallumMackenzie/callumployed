@@ -3927,7 +3927,7 @@ async function openResumeSkillDialog(role, opener) {
           </div>
           <button type="button" class="resume-skill-close" aria-label="close skill selection">×</button>
         </div>
-        <p class="resume-skill-intro">Choose source-supported skills from the job description. The rewrite keeps every saved entry and targets roughly the same word count.</p>
+        <p class="resume-skill-intro">Choose source-supported skills from the job description—the complete saved description is analyzed. Selected skills are required in this rewrite. Deselected skills are not required, but they may remain in the resume naturally. The rewrite keeps every saved entry and targets roughly the same word count.</p>
         <form class="resume-skill-form">
           <div class="resume-skill-list" aria-live="polite">
             <div class="resume-skill-loading"><span aria-hidden="true"></span><p>checking the posting and your saved evidence...</p></div>
@@ -3935,7 +3935,7 @@ async function openResumeSkillDialog(role, opener) {
           <p class="resume-skill-status" role="status"></p>
           <div class="resume-skill-actions">
             <button type="button" data-resume-skill-cancel>cancel</button>
-            <button type="submit" data-resume-skill-submit disabled>embed selected skills</button>
+            <button type="submit" data-resume-skill-submit disabled>Regenerate with skills embedded</button>
           </div>
         </form>
       </div>
@@ -4037,7 +4037,7 @@ async function openResumeSkillDialog(role, opener) {
       status.textContent = error instanceof Error ? error.message : "Could not embed skills.";
       submit.disabled = false;
       submit.removeAttribute("aria-busy");
-      submit.textContent = "embed selected skills";
+      submit.textContent = "Regenerate with skills embedded";
     }
   });
 }

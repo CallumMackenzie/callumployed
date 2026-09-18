@@ -216,6 +216,23 @@ def test_resume_skill_analysis_is_grounded_in_posting_and_applicant_evidence() -
     assert "Designed PostgreSQL schemas" in prompt
 
 
+def test_resume_skill_analysis_prompt_includes_the_entire_saved_job_description() -> None:
+    unique_tail = "FINAL REQUIREMENT: distributed tracing with OpenTelemetry"
+    description = f"{'General role context. ' * 1000}{unique_tail}"
+
+    prompt = build_resume_skill_analysis_prompt(
+        role={
+            "company_name": "Acme",
+            "title": "Backend Intern",
+            "description": description,
+        },
+        resume_content="Built observable backend services.",
+    )
+
+    assert description in prompt
+    assert unique_tail in prompt
+
+
 def test_resume_skill_analysis_returns_reviewable_supported_and_unsupported_skills() -> None:
     class FakeSkillModel:
         async def ainvoke(self, _prompt: str) -> dict[str, object]:
