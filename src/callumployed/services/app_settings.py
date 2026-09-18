@@ -68,13 +68,16 @@ DEFAULT_AUTOPREP_RESUME_PROMPT = (
 )
 DEFAULT_AUTOPREP_COVER_LETTER_PROMPT = (
     "Review the indexed application materials as well as the resume and job description. "
-    "Write a concise, company-specific cover letter using the strongest 2-3 source-supported "
-    "examples. Explain the task or problem, action taken, and result delivered; demonstrate "
+    "Identify at least two exact posting priorities and connect each to the strongest 2-3 "
+    "source-supported examples. Write a concise, company-specific cover letter that makes those "
+    "connections explicit. Explain the task or problem, action taken, and result delivered; "
+    "demonstrate "
     "relevant soft skills through evidence rather than generic claims. For AI-related roles, "
     "use a source-supported, independently directed AI application and its outcome when "
     "available, naming Hermes when the source supports it. Close by thanking the reader and "
     "inviting an interview. Use three short body paragraphs by default, target roughly 200-300 "
-    "words, and never pad the letter to fill the page. The letter must be at most one page. Do "
+    "words, avoid stock openings such as 'I am excited to apply,' and never pad the letter to "
+    "fill the page. The letter must be at most one page. Do "
     "not invent experience, referrals, company research, outcomes, or metrics."
 )
 SUPPORTED_LLM_PROVIDERS = {"openai", "codex"}

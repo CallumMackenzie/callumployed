@@ -1905,11 +1905,18 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         class Draft:
             latex = (
                 "\\documentclass{letter}\\begin{document}\n"
-                "Dear Acme,\n\nBody.\n\nSincerely,\\\\\nJake Yeo\n"
+                "Dear Acme,\n\nFor Python backend APIs, I built a Python backend for secure "
+                "sensor ingestion on AWS. For secure data ingestion systems, I improved queue "
+                "reliability under production load.\n\nSincerely,\\\\\nJake Yeo\n"
                 "\\end{document}"
             )
             summary = "generated from examples"
             example_ids = [1]
+            posting_connections = ["Python backend APIs", "secure data ingestion"]
+            evidence_connections = [
+                "Built a Python backend for secure sensor ingestion on AWS",
+                "Improved queue reliability",
+            ]
 
         search_tool = kwargs["search_tool"]
         search_tool("Python backend", limit=1)
@@ -1928,15 +1935,19 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         connection.execute(
             """
             UPDATE roles
-            SET description = 'Python backend internship'
+            SET description = 'Build Python backend APIs and secure data ingestion systems.'
             WHERE id = 1
             """
         )
         connection.execute(
             """
             INSERT INTO master_resumes (id, filename, content, content_sha256)
-            VALUES (1, 'resume.tex', 'Python backend resume', 'abc')
-            """
+            VALUES (1, 'resume.tex', ?, 'abc')
+            """,
+            (
+                "Built Python backend APIs and secure data ingestion systems. "
+                "Improved queue reliability under production load.",
+            ),
         )
         connection.commit()
         note = add_experience_note(
@@ -2000,6 +2011,11 @@ def test_cover_letter_endpoint_generates_role_specific_latex(
         assert captured_calls[0]["tweaks"] == "Make it warmer and shorten the Amazon paragraph."
         assert captured_calls[0]["previous_cover_letter_latex"] == (
             "\\documentclass{letter}\\begin{document}Previous Acme draft\\end{document}"
+        )
+        role_context = captured_calls[0]["role"]
+        assert isinstance(role_context, dict)
+        assert role_context["description"] == (
+            "Build Python backend APIs and secure data ingestion systems."
         )
 
         indexed_context = captured_calls[0]["other_experience_context"]
@@ -2594,6 +2610,215 @@ def test_cover_letter_quality_allows_user_edited_evidence_label() -> None:
         edited,
         source="edited_cover_letter",
     )
+
+
+def test_cover_letter_specificity_connections_require_two_grounded_pairs() -> None:
+    role = {
+        "description": "Build Kubernetes services and PostgreSQL APIs for production.",
+    }
+    applicant_context = (
+        "Deployed Kubernetes workloads for a production project and designed relational "
+        "storage for production traffic."
+    )
+    valid = SimpleNamespace(
+        posting_connections=["Kubernetes services", "PostgreSQL APIs"],
+        evidence_connections=[
+            "Deployed Kubernetes workloads",
+            "Designed relational storage",
+        ],
+        latex=(
+            r"\documentclass{letter}\begin{document}"
+            "For Kubernetes services, I deployed Kubernetes workloads for a production project. "
+            "For PostgreSQL APIs, I designed relational storage for production traffic."
+            r"\end{document}"
+        ),
+    )
+
+    web_server._validate_cover_letter_specificity_connections(
+        valid,
+        role=role,
+        applicant_context=applicant_context,
+    )
+
+    with pytest.raises(web_server.GeneratedDocumentQualityError):
+        web_server._validate_cover_letter_specificity_connections(
+            SimpleNamespace(
+                posting_connections=[],
+                evidence_connections=[],
+                latex=valid.latex,
+            ),
+            role=role,
+            applicant_context=applicant_context,
+        )
+
+    with pytest.raises(web_server.GeneratedDocumentQualityError):
+        web_server._validate_cover_letter_specificity_connections(
+            SimpleNamespace(
+                posting_connections=["Kubernetes services", "Rust systems"],
+                evidence_connections=[
+                    "Deployed Kubernetes workloads",
+                    "Designed relational storage",
+                ],
+                latex=valid.latex,
+            ),
+            role=role,
+            applicant_context=applicant_context,
+        )
+
+    with pytest.raises(web_server.GeneratedDocumentQualityError):
+        web_server._validate_cover_letter_specificity_connections(
+            SimpleNamespace(
+                posting_connections=["Kubernetes services", "Kubernetes services"],
+                evidence_connections=[
+                    "Deployed Kubernetes workloads",
+                    "Designed relational storage",
+                ],
+                latex=valid.latex,
+            ),
+            role=role,
+            applicant_context=applicant_context,
+        )
+
+    with pytest.raises(web_server.GeneratedDocumentQualityError):
+        web_server._validate_cover_letter_specificity_connections(
+            SimpleNamespace(
+                posting_connections=["Kubernetes services", "PostgreSQL APIs"],
+                evidence_connections=[
+                    "Deployed Kubernetes workloads",
+                    "Designed relational storage",
+                ],
+                latex=(
+                    r"\documentclass{letter}\begin{document}"
+                    "I deployed Kubernetes workloads while supporting PostgreSQL APIs. "
+                    "I designed relational storage for reliable Kubernetes services."
+                    r"\end{document}"
+                ),
+            ),
+            role=role,
+            applicant_context=applicant_context,
+        )
+
+    with pytest.raises(web_server.GeneratedDocumentQualityError):
+        web_server._validate_cover_letter_specificity_connections(
+            SimpleNamespace(
+                posting_connections=[
+                    "Kubernetes services",
+                    "production Kubernetes services",
+                ],
+                evidence_connections=[
+                    "Deployed Kubernetes workloads",
+                    "Designed relational storage",
+                ],
+                latex=valid.latex,
+            ),
+            role=role,
+            applicant_context=applicant_context,
+        )
+
+    with pytest.raises(web_server.GeneratedDocumentQualityError):
+        web_server._validate_cover_letter_specificity_connections(
+            SimpleNamespace(
+                posting_connections=["Kubernetes services", "PostgreSQL APIs"],
+                evidence_connections=[
+                    "Built production Kubernetes",
+                    "Built production PostgreSQL",
+                ],
+                latex=(
+                    r"\documentclass{letter}\begin{document}"
+                    "For Kubernetes services, I built production PostgreSQL systems. "
+                    "For PostgreSQL APIs, I built production Kubernetes systems."
+                    r"\end{document}"
+                ),
+            ),
+            role=role,
+            applicant_context=(
+                "Built production Kubernetes systems. Built production PostgreSQL systems."
+            ),
+        )
+
+    with pytest.raises(web_server.GeneratedDocumentQualityError):
+        web_server._validate_cover_letter_specificity_connections(
+            SimpleNamespace(
+                posting_connections=["Kubernetes services", "PostgreSQL APIs"],
+                evidence_connections=["Kubernetes services", "Designed relational storage"],
+                latex=valid.latex,
+            ),
+            role=role,
+            applicant_context=(
+                f"{applicant_context} Kubernetes services were also documented."
+            ),
+        )
+
+    with pytest.raises(web_server.GeneratedDocumentQualityError):
+        web_server._validate_cover_letter_specificity_connections(
+            SimpleNamespace(
+                posting_connections=["Kubernetes services", "PostgreSQL APIs"],
+                evidence_connections=[
+                    "Deployed Kubernetes workloads",
+                    "Deployed Kubernetes workloads",
+                ],
+                latex=valid.latex,
+            ),
+            role=role,
+            applicant_context=applicant_context,
+        )
+
+    with pytest.raises(web_server.GeneratedDocumentQualityError):
+        web_server._validate_cover_letter_specificity_connections(
+            SimpleNamespace(
+                posting_connections=["Kubernetes services", "PostgreSQL APIs"],
+                evidence_connections=[
+                    "Deployed Kubernetes workloads",
+                    "Designed relational storage",
+                ],
+                latex=(
+                    r"\documentclass{letter}\begin{document}"
+                    "For Kubernetes services and PostgreSQL APIs, I deployed Kubernetes "
+                    "workloads and designed relational storage."
+                    r"\end{document}"
+                ),
+            ),
+            role=role,
+            applicant_context=applicant_context,
+        )
+
+    with pytest.raises(web_server.GeneratedDocumentQualityError):
+        web_server._validate_cover_letter_specificity_connections(
+            SimpleNamespace(
+                posting_connections=["Kubernetes services", "PostgreSQL APIs"],
+                evidence_connections=[
+                    "Deployed Kubernetes workloads",
+                    "Designed relational storage",
+                ],
+                latex=valid.latex.replace(
+                    r"\end{document}",
+                    " Kubernetes services remain a priority." r"\end{document}",
+                ),
+            ),
+            role=role,
+            applicant_context=applicant_context,
+        )
+
+    with pytest.raises(web_server.GeneratedDocumentQualityError):
+        web_server._validate_cover_letter_specificity_connections(
+            SimpleNamespace(
+                posting_connections=["Kubernetes services", "PostgreSQL APIs"],
+                evidence_connections=[
+                    "Deployed Kubernetes workloads",
+                    "Designed relational storage",
+                ],
+                latex=valid.latex.replace(
+                    r"\end{document}",
+                    (
+                        " Kubernetes services, PostgreSQL APIs, deployed Kubernetes "
+                        "workloads, and designed relational storage all matter."
+                        r"\end{document}"
+                    ),
+                ),
+            ),
+            role=role,
+            applicant_context=applicant_context,
+        )
 
 
 def test_role_title_from_url_decodes_percent_encoded_punctuation() -> None:
@@ -3560,6 +3785,55 @@ def test_cover_letter_generation_returns_concise_local_artifact_when_provider_fa
     assert len(PdfReader(result["pdf_path"]).pages) == 1
 
 
+def test_cover_letter_generation_fails_closed_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "fail-closed.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Backend Intern", "https://example.com/jobs/backend"],
+        env=env,
+    )
+    with db.connect() as connection:
+        connection.execute(
+            "UPDATE roles SET description = ? WHERE id = 1",
+            ("Build Kubernetes services backed by PostgreSQL.",),
+        )
+        connection.commit()
+
+    async def failed_provider(**_kwargs: object) -> object:
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(web_server, "generate_cover_letter", failed_provider)
+    monkeypatch.setattr(
+        web_server,
+        "_publish_reliable_cover_letter_fallback",
+        lambda *_args, **_kwargs: pytest.fail("generic fallback must not be published"),
+    )
+
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        web_server.build_role_cover_letter(
+            {
+                "id": 1,
+                "company_name": "Acme",
+                "title": "Backend Intern",
+                "description": "Build Kubernetes services backed by PostgreSQL.",
+            },
+            web_server.MasterResume(
+                id=1,
+                filename="resume.tex",
+                content=r"\documentclass{article}\begin{document}Python APIs\end{document}",
+                content_sha256="resume",
+                created_at=None,
+                updated_at=None,
+            ),
+        )
+
+
 def test_cover_letter_overflow_uses_bounded_attempts_then_local_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3612,6 +3886,7 @@ def test_cover_letter_overflow_uses_bounded_attempts_then_local_artifact(
     result = web_server.build_role_cover_letter(
         {"id": 1, "company_name": "Acme", "title": "Backend Intern"},
         resume,
+        allow_local_fallback=True,
         required_page_count=1,
     )
 
@@ -3685,6 +3960,7 @@ def test_cover_letter_repair_failures_publish_local_fallback(
     result = web_server.build_role_cover_letter(
         {"id": 1, "company_name": "Acme", "title": "Backend Intern"},
         resume,
+        allow_local_fallback=True,
     )
 
     assert generation_calls == expected_generation_calls

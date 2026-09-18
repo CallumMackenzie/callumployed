@@ -3,7 +3,7 @@ import re
 from datetime import datetime
 from typing import Any, Protocol
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from callumployed.agents.posting_link_classifier import ChatModelFactory, build_chat_model
 from callumployed.config import LlmSettings
@@ -16,7 +16,9 @@ class CoverLetterModel(BaseModel):
 class CoverLetterDraft(CoverLetterModel):
     latex: str
     summary: str
-    example_ids: list[int] = []
+    example_ids: list[int] = Field(default_factory=list)
+    posting_connections: list[str] = Field(default_factory=list)
+    evidence_connections: list[str] = Field(default_factory=list)
 
 
 class ApplicantProfile(CoverLetterModel):
@@ -230,6 +232,18 @@ Integrate the context deliberately:
   the final letter grounded in resume_context and job_context
 - select the 2-3 strongest overlaps between the applicant's evidence and posting;
   do not try to mention every relevant technology or project
+- before drafting, select two or three distinct posting-priority phrases copied
+  verbatim from job_context and the same number of distinct applicant-evidence phrases
+  copied verbatim from resume_context or other_experience_context. Return those phrases
+  in posting_connections and evidence_connections in matching index order; a posting
+  phrase cannot double as its own evidence
+- include both verbatim phrases from every indexed pair together in its own sentence
+  of the letter body; that sentence must not contain a priority or evidence phrase from
+  another declared pair. Every declared priority and evidence phrase must appear exactly
+  once in the whole letter body; do not repeat one elsewhere or add an all-in-one summary
+  sentence containing multiple declared phrases. Do not submit one requirement again
+  with an added modifier as a separate priority, reuse one evidence phrase for
+  multiple priorities, or list the connections as labels or metadata
 - synthesize those experiences into smooth prose in the user's voice; do not dump
   resume bullets into paragraphs or awkwardly combine unrelated experiences
 - a recruiter cannot be expected to recognize a project name. On the first mention
@@ -277,6 +291,9 @@ Integrate the context deliberately:
 - avoid generic filler such as "your mission", "innovative technology",
   "cutting-edge", "strong background", or "fast-paced environment" unless the
   phrase is tied to a concrete posting detail
+- never open with "I am excited to apply", "I am writing to express my interest",
+  or another stock application sentence. Open with the exact role and a concrete
+  posting priority connected to source-supported applicant evidence
 
 The output must be a complete LaTeX letter document, not a plain body. Format it
 like a professional letter and mirror the useful structure/style patterns from
@@ -359,7 +376,9 @@ Do not include resume-only packages or commands such as `fancyhdr`, `titlesec`,
 `\\input{glyphtounicode}`.
 
 Return only JSON matching:
-{"latex":"...","summary":"short generation note","example_ids":[1,2]}
+{"latex":"...","summary":"...","example_ids":[1,2],
+ "posting_connections":["verbatim posting phrase"],
+ "evidence_connections":["verbatim applicant-evidence phrase"]}
 """.strip()
 
 

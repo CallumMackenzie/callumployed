@@ -231,13 +231,16 @@ DEFAULT_AUTOPREP_RESUME_PROMPT = (
 )
 DEFAULT_AUTOPREP_COVER_LETTER_PROMPT = (
     "Review the indexed application materials as well as the resume and job description. "
-    "Write a concise, company-specific cover letter using the strongest 2-3 source-supported "
-    "examples. Explain the task or problem, action taken, and result delivered; demonstrate "
+    "Identify at least two exact posting priorities and connect each to the strongest 2-3 "
+    "source-supported examples. Write a concise, company-specific cover letter that makes those "
+    "connections explicit. Explain the task or problem, action taken, and result delivered; "
+    "demonstrate "
     "relevant soft skills through evidence rather than generic claims. For AI-related roles, "
     "use a source-supported, independently directed AI application and its outcome when "
     "available, naming Hermes when the source supports it. Close by thanking the reader and "
     "inviting an interview. Use three short body paragraphs by default, target roughly 200-300 "
-    "words, and never pad the letter to fill the page. The letter must be at most one page. Do "
+    "words, avoid stock openings such as 'I am excited to apply,' and never pad the letter to "
+    "fill the page. The letter must be at most one page. Do "
     "not invent experience, referrals, company research, outcomes, or metrics."
 )
 DEFAULT_SCAN_HEADLESS = False
@@ -2739,6 +2742,7 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                     resume,
                     tweaks=tweaks,
                     previous_cover_letter_latex=previous_latex,
+                    allow_local_fallback=False,
                 )
             except RuntimeError as error:
                 self._send_json_with_status(
@@ -4525,7 +4529,7 @@ def _prepare_autoprep_cover_letter(
         resume_for_generation,
         tweaks=_autoprep_generation_prompt(configured_prompt, instruction),
         previous_cover_letter_latex=(str((previous_cover_letter or {}).get("latex") or "") or None),
-        allow_local_fallback=True,
+        allow_local_fallback=False,
         required_page_count=1,
     )
     source_pdf = _required_generated_pdf(generated, "cover letter")
@@ -5109,7 +5113,7 @@ def build_role_cover_letter(
     *,
     tweaks: str | None = None,
     previous_cover_letter_latex: str | None = None,
-    allow_local_fallback: bool = True,
+    allow_local_fallback: bool = False,
     required_page_count: int | None = 1,
 ) -> dict[str, Any]:
     """Generate with the configured LangChain provider and role-local SQLite retrieval."""
@@ -5121,10 +5125,10 @@ def build_role_cover_letter(
     experience_notes: list[ExperienceNote] = []
     experience_context: list[dict[str, object]] = []
     role_context: list[dict[str, object]] = []
+    applicant_specificity_context = resume.content
     cover_letter_model = DEFAULT_COVER_LETTER_MODEL
     fallback_role = _role_with_effective_company(role)
     role_for_prompt = dict(fallback_role)
-    role_for_prompt.pop("description", None)
 
     def search_cover_letters(query: str, *, limit: int = 3) -> list[dict[str, object]]:
         with db.connect() as connection:
@@ -5144,6 +5148,7 @@ def build_role_cover_letter(
             fallback_role = authoritative_role.model_dump(mode="json")
             fallback_role["company_name"] = company.name
             fallback_role = _role_with_effective_company(fallback_role)
+            role_for_prompt = dict(fallback_role)
             sync_role_context_vectors(
                 connection,
                 role=authoritative_role,
@@ -5183,6 +5188,15 @@ def build_role_cover_letter(
             role=role_for_prompt,
             tweaks=tweaks,
         )
+        applicant_specificity_context = "\n".join(
+            [
+                resume.content,
+                *[
+                    str(item.get("content") or "")
+                    for item in experience_context
+                ],
+            ]
+        )
         draft = asyncio.run(
             generate_cover_letter(
                 role=role_for_prompt,
@@ -5218,6 +5232,11 @@ def build_role_cover_letter(
 
     for attempt in range(3):
         try:
+            _validate_cover_letter_specificity_connections(
+                draft,
+                role=role_for_prompt,
+                applicant_context=applicant_specificity_context,
+            )
             written = _write_role_cover_letter(
                 role_for_prompt,
                 latex,
@@ -5232,6 +5251,11 @@ def build_role_cover_letter(
             return written
         except Exception as error:  # noqa: BLE001 - generated output must fall back safely.
             if attempt == 2 or source != "ai_cover_letter":
+                if not allow_local_fallback:
+                    raise RuntimeError(
+                        "Could not produce a specific, verified cover letter. The prior document "
+                        "was preserved; try regeneration again."
+                    ) from error
                 return _publish_reliable_cover_letter_fallback(
                     fallback_role,
                     resume,
@@ -5266,9 +5290,11 @@ def build_role_cover_letter(
             elif isinstance(error, GeneratedDocumentQualityError):
                 retry_tweaks = (
                     f"{tweaks or ''}\n\n"
-                    "The previous draft exposed internal evidence-index metadata. Rewrite it as "
-                    "natural first-person applicant prose. Never include labels such as Tools, "
-                    "Useful attributes, Evidence, Repository-verified, or User-confirmed."
+                    "The previous draft failed the specificity quality gate. Rewrite it as natural "
+                    "first-person applicant prose that explicitly connects at least two exact job "
+                    "priorities to concrete source-supported evidence. Do not use stock openings "
+                    "such as 'I am excited to apply' or expose labels such as Tools, Useful "
+                    "attributes, Evidence, Repository-verified, or User-confirmed."
                 )
             else:
                 retry_tweaks = (
@@ -5295,6 +5321,11 @@ def build_role_cover_letter(
                 example_ids = draft.example_ids
             except Exception:
                 LOGGER.exception("AI cover letter repair failed for role %s", role_id)
+                if not allow_local_fallback:
+                    raise RuntimeError(
+                        "Could not repair the cover letter into a specific, verified draft. The "
+                        "prior document was preserved; try regeneration again."
+                    ) from None
                 return _publish_reliable_cover_letter_fallback(
                     fallback_role,
                     resume,
@@ -5359,12 +5390,228 @@ class GeneratedDocumentQualityError(RuntimeError):
     pass
 
 
+_COVER_LETTER_CONNECTION_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "at",
+    "for",
+    "from",
+    "in",
+    "of",
+    "on",
+    "or",
+    "the",
+    "to",
+    "with",
+}
+
+
+def _cover_letter_connection_tokens(value: object) -> list[str]:
+    return [
+        token
+        for token in re.findall(
+            r"[A-Za-z0-9+#]+(?:[.-][A-Za-z0-9+#]+)*",
+            str(value or "").casefold(),
+        )
+        if len(token) > 1 and token not in _COVER_LETTER_CONNECTION_STOPWORDS
+    ]
+
+
+def _cover_letter_verbatim_tokens(value: object) -> list[str]:
+    return re.findall(
+        r"[A-Za-z0-9+#]+(?:[.-][A-Za-z0-9+#]+)*",
+        str(value or "").casefold(),
+    )
+
+
+def _cover_letter_connection_is_verbatim(value: str, corpus: str) -> bool:
+    phrase_tokens = _cover_letter_verbatim_tokens(value)
+    corpus_tokens = _cover_letter_verbatim_tokens(corpus)
+    if len(phrase_tokens) < 2 or len(phrase_tokens) > len(corpus_tokens):
+        return False
+    phrase_length = len(phrase_tokens)
+    return any(
+        corpus_tokens[index : index + phrase_length] == phrase_tokens
+        for index in range(len(corpus_tokens) - phrase_length + 1)
+    )
+
+
+def _cover_letter_connection_signature(value: str) -> tuple[str, ...]:
+    return tuple(sorted(set(_cover_letter_connection_tokens(value))))
+
+
+def _cover_letter_connections_are_near_duplicates(
+    first: tuple[str, ...],
+    second: tuple[str, ...],
+) -> bool:
+    first_tokens = set(first)
+    second_tokens = set(second)
+    if not first_tokens or not second_tokens:
+        return True
+    smaller_size = min(len(first_tokens), len(second_tokens))
+    return len(first_tokens & second_tokens) / smaller_size >= 0.8
+
+
+def _cover_letter_body_segments(body: str) -> list[str]:
+    return [
+        segment.strip()
+        for segment in re.split(r"(?<=[.!?])\s+|\n+", body)
+        if segment.strip()
+    ]
+
+
+def _cover_letter_pair_is_explicit(
+    posting_connection: str,
+    evidence_connection: str,
+    body: str,
+    other_connections: list[str],
+) -> bool:
+    return any(
+        _cover_letter_connection_is_verbatim(posting_connection, segment)
+        and _cover_letter_connection_is_verbatim(evidence_connection, segment)
+        and not any(
+            _cover_letter_connection_is_verbatim(other_connection, segment)
+            for other_connection in other_connections
+        )
+        for segment in _cover_letter_body_segments(body)
+    )
+
+
+def _validate_cover_letter_specificity_connections(
+    draft: Any,
+    *,
+    role: dict[str, Any],
+    applicant_context: str,
+) -> None:
+    posting_connections = [
+        str(item).strip()
+        for item in getattr(draft, "posting_connections", [])
+        if str(item).strip()
+    ]
+    evidence_connections = [
+        str(item).strip()
+        for item in getattr(draft, "evidence_connections", [])
+        if str(item).strip()
+    ]
+    if not (
+        2 <= len(posting_connections) <= 3
+        and len(posting_connections) == len(evidence_connections)
+    ):
+        raise GeneratedDocumentQualityError(
+            "Cover letter must connect two or three posting priorities to applicant evidence."
+        )
+
+    posting_signatures = [
+        _cover_letter_connection_signature(item) for item in posting_connections
+    ]
+    evidence_signatures = [
+        _cover_letter_connection_signature(item) for item in evidence_connections
+    ]
+    pair_signatures = [
+        (posting_signature, evidence_signature)
+        for posting_signature, evidence_signature in zip(
+            posting_signatures,
+            evidence_signatures,
+            strict=True,
+        )
+    ]
+    if (
+        any(not signature for signature in posting_signatures)
+        or any(not signature for signature in evidence_signatures)
+        or len(set(posting_signatures)) != len(posting_signatures)
+        or len(set(evidence_signatures)) != len(evidence_signatures)
+        or len(set(pair_signatures)) != len(pair_signatures)
+        or any(
+            _cover_letter_connections_are_near_duplicates(
+                posting_signatures[first_index],
+                posting_signatures[second_index],
+            )
+            for first_index in range(len(posting_signatures))
+            for second_index in range(first_index + 1, len(posting_signatures))
+        )
+        or any(
+            _cover_letter_connections_are_near_duplicates(
+                evidence_signatures[first_index],
+                evidence_signatures[second_index],
+            )
+            for first_index in range(len(evidence_signatures))
+            for second_index in range(first_index + 1, len(evidence_signatures))
+        )
+        or any(
+            _cover_letter_connections_are_near_duplicates(
+                posting_signature,
+                evidence_signature,
+            )
+            for posting_signature in posting_signatures
+            for evidence_signature in evidence_signatures
+        )
+    ):
+        raise GeneratedDocumentQualityError(
+            "Cover letter posting priorities and applicant evidence must be distinct."
+        )
+
+    job_description = str(role.get("description") or "")
+    body = _plain_text_from_latex(str(getattr(draft, "latex", "")))
+    body_segments = _cover_letter_body_segments(body)
+    for connection in posting_connections + evidence_connections:
+        occurrence_count = sum(
+            _cover_letter_connection_is_verbatim(connection, segment)
+            for segment in body_segments
+        )
+        if occurrence_count != 1:
+            raise GeneratedDocumentQualityError(
+                "Every declared cover-letter priority and evidence phrase must appear exactly "
+                "once in the body."
+            )
+    for index, (posting_connection, evidence_connection) in enumerate(
+        zip(
+            posting_connections,
+            evidence_connections,
+            strict=True,
+        )
+    ):
+        if not _cover_letter_connection_is_verbatim(
+            posting_connection,
+            job_description,
+        ):
+            raise GeneratedDocumentQualityError(
+                "A stated posting priority was not grounded in the saved job description."
+            )
+        if not _cover_letter_connection_is_verbatim(
+            evidence_connection,
+            applicant_context,
+        ):
+            raise GeneratedDocumentQualityError(
+                "A stated applicant example was not grounded in saved applicant evidence."
+            )
+        if not _cover_letter_pair_is_explicit(
+            posting_connection,
+            evidence_connection,
+            body,
+            [
+                connection
+                for other_index, pair in enumerate(
+                    zip(posting_connections, evidence_connections, strict=True)
+                )
+                if other_index != index
+                for connection in pair
+            ],
+        ):
+            raise GeneratedDocumentQualityError(
+                "Every posting-to-evidence pair must have its own sentence without another "
+                "declared pair."
+            )
+
+
 _COVER_LETTER_INTERNAL_METADATA_PATTERNS = (
     re.compile(r"(?i)\b(?:I\s+)?tools\s*:"),
     re.compile(r"(?i)\b(?:I\s+)?useful attributes\s*:"),
     re.compile(r"(?im)^\s*(?:I\s+)?evidence\s*:"),
     re.compile(r"(?i)\brepository-verified\s*:"),
     re.compile(r"(?i)\buser-confirmed\s*:"),
+    re.compile(r"(?i)\bI am excited to apply\b"),
+    re.compile(r"(?i)\bI am writing to express my interest\b"),
 )
 
 
@@ -5376,7 +5623,7 @@ def _validate_cover_letter_quality(latex: str) -> None:
         for candidate in (latex, plain_text)
     ):
         raise GeneratedDocumentQualityError(
-            "Generated cover letter leaked internal evidence metadata into applicant prose."
+            "Generated cover letter contained generic or internal-scaffold prose."
         )
 
 
