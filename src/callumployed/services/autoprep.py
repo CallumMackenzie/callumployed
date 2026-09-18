@@ -208,6 +208,7 @@ def _ensure_autoprep_schema(connection: sqlite3.Connection) -> None:
             artifact_directory TEXT,
             resume_latex TEXT,
             resume_instruction TEXT,
+            resume_selected_skills_json TEXT,
             cover_letter_instruction TEXT,
             resume_error TEXT,
             cover_letter_error TEXT,
@@ -309,7 +310,11 @@ def _ensure_autoprep_schema(connection: sqlite3.Connection) -> None:
         str(row["name"])
         for row in connection.execute("PRAGMA table_info(autoprep_jobs)").fetchall()
     }
-    for column_name in ("resume_instruction", "cover_letter_instruction"):
+    for column_name in (
+        "resume_instruction",
+        "resume_selected_skills_json",
+        "cover_letter_instruction",
+    ):
         if column_name not in job_columns:
             connection.execute(f"ALTER TABLE autoprep_jobs ADD COLUMN {column_name} TEXT")
     _migrate_application_answer_backends(connection)
@@ -1133,9 +1138,21 @@ def _queue_autoprep_regeneration_in_transaction(
     *,
     clean_instruction: str,
     clean_key: str,
+    selected_resume_skills_json: str | None = None,
 ) -> int:
     prefix = _document_prefix(document_kind)
-    instruction_hash = hashlib.sha256(clean_instruction.encode()).hexdigest()
+    request_identity = (
+        clean_instruction
+        if selected_resume_skills_json is None
+        else json.dumps(
+            {
+                "instruction": clean_instruction,
+                "selected_resume_skills_json": selected_resume_skills_json,
+            },
+            sort_keys=True,
+        )
+    )
+    instruction_hash = hashlib.sha256(request_identity.encode()).hexdigest()
     existing = connection.execute(
         """
         SELECT job_id, document_kind, instruction_hash
@@ -1168,12 +1185,20 @@ def _queue_autoprep_regeneration_in_transaction(
         """,
         (clean_key, job["id"], document_kind, instruction_hash),
     )
+    selected_skills_assignment = (
+        ", resume_selected_skills_json = ?" if document_kind == "resume" else ""
+    )
+    parameters: tuple[object, ...] = (
+        (clean_instruction, selected_resume_skills_json, job["id"])
+        if document_kind == "resume"
+        else (clean_instruction, job["id"])
+    )
     connection.execute(
         f"""
         UPDATE autoprep_jobs
         SET {prefix}_status = 'queued',
             {prefix}_error = NULL,
-            {prefix}_instruction = ?,
+            {prefix}_instruction = ?{selected_skills_assignment},
             {prefix}_attempt = {prefix}_attempt + 1,
             overall_status = 'queued',
             worker_state = 'queued',
@@ -1182,7 +1207,7 @@ def _queue_autoprep_regeneration_in_transaction(
             updated_at = datetime('now')
         WHERE id = ?
         """,  # noqa: S608
-        (clean_instruction, job["id"]),
+        parameters,
     )
     return int(job["id"])
 
@@ -1194,6 +1219,7 @@ def queue_autoprep_regeneration(
     *,
     instruction: str,
     idempotency_key: str,
+    selected_resume_skills: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     clean_key = idempotency_key.strip()
     clean_instruction = instruction.strip()
@@ -1207,6 +1233,11 @@ def queue_autoprep_regeneration(
         )
     if len(clean_instruction) > 4000:
         raise ValueError("Regeneration comments must be 4000 characters or fewer.")
+    if selected_resume_skills and document_kind != "resume":
+        raise ValueError("Selected resume skills can only be used for resume regeneration.")
+    selected_resume_skills_json = (
+        json.dumps(selected_resume_skills, sort_keys=True) if selected_resume_skills else None
+    )
     try:
         connection.execute("BEGIN IMMEDIATE")
         job = get_role_autoprep_job(connection, role_id)
@@ -1218,6 +1249,7 @@ def queue_autoprep_regeneration(
             document_kind,
             clean_instruction=clean_instruction,
             clean_key=clean_key,
+            selected_resume_skills_json=selected_resume_skills_json,
         )
         connection.commit()
     except Exception:
@@ -1386,8 +1418,12 @@ def clear_autoprep_instruction(
     document_kind: DocumentKind,
 ) -> None:
     prefix = _document_prefix(document_kind)
+    selected_skills_assignment = (
+        ", resume_selected_skills_json = NULL" if document_kind == "resume" else ""
+    )
     connection.execute(
-        f"UPDATE autoprep_jobs SET {prefix}_instruction = NULL WHERE id = ?",  # noqa: S608
+        f"UPDATE autoprep_jobs SET {prefix}_instruction = NULL{selected_skills_assignment} "
+        "WHERE id = ?",  # noqa: S608
         (job_id,),
     )
     connection.commit()

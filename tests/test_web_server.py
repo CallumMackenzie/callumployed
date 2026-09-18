@@ -177,6 +177,56 @@ def _positioned_text_pdf_bytes(
     return output.getvalue()
 
 
+def _text_pdf_bytes(
+    text: str,
+    *,
+    gray: float = 0.0,
+    render_mode: int = 0,
+    font_size: float = 12.0,
+    x: float = 50.0,
+    y: float = 740.0,
+    scale: float = 1.0,
+    clipped: bool = False,
+    clipbox: tuple[float, float, float, float] | None = None,
+    color_space_white: bool = False,
+    cropbox: tuple[float, float, float, float] | None = None,
+) -> bytes:
+    output = BytesIO()
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=612, height=792)
+    if cropbox is not None:
+        page.cropbox.lower_left = (cropbox[0], cropbox[1])
+        page.cropbox.upper_right = (cropbox[2], cropbox[3])
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    font_ref = writer._add_object(font)
+    page[NameObject("/Resources")] = DictionaryObject(  # type: ignore[index]
+        {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})}
+    )
+    escaped = text.replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
+    stream = DecodedStreamObject()
+    if clipbox is not None:
+        clip_prefix = f"{clipbox[0]} {clipbox[1]} {clipbox[2]} {clipbox[3]} re W n "
+    else:
+        clip_prefix = "0 0 1 1 re W n " if clipped else ""
+    color_prefix = "/DeviceRGB cs 1 1 1 sc " if color_space_white else f"{gray} g "
+    stream.set_data(
+        (
+            f"{scale} 0 0 {scale} 0 0 cm {clip_prefix}"
+            f"{color_prefix}BT /F1 {font_size} Tf {render_mode} Tr "
+            f"{x} {y} Td ({escaped}) Tj ET"
+        ).encode("ascii")
+    )
+    page[NameObject("/Contents")] = writer._add_object(stream)  # type: ignore[index]
+    writer.write(output)
+    return output.getvalue()
+
+
 def test_local_server_enables_address_reuse_before_binding() -> None:
     server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
     try:
@@ -650,7 +700,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
             app_javascript
         )
         assert '<div id="root"></div>' not in index_markup
-        assert '<script type="module" src="/assets/app.js?v=vanilla-20260917-35"></script>' in (
+        assert '<script type="module" src="/assets/app.js?v=vanilla-20260917-42"></script>' in (
             index_markup
         )
 
@@ -793,8 +843,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=vanilla-20260915-29" in index_markup
-        assert "/assets/app.js?v=vanilla-20260917-35" in index_markup
+        assert "/assets/app.css?v=vanilla-20260917-42" in index_markup
+        assert "/assets/app.js?v=vanilla-20260917-42" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -2821,6 +2871,11 @@ def test_cover_letter_specificity_connections_require_two_grounded_pairs() -> No
         )
 
 
+def test_resume_word_count_bounds_are_a_true_ten_percent_range() -> None:
+    assert web_server._resume_word_count_bounds(100) == (90, 110)
+    assert web_server._resume_word_count_bounds(5) == (5, 5)
+
+
 def test_role_title_from_url_decodes_percent_encoded_punctuation() -> None:
     role_url = (
         "https://jobs.sap.com/job/Vancouver-SAP-iXp-Intern-HANA-and-"
@@ -3298,6 +3353,423 @@ def test_save_role_resume_rejects_materially_underfilled_one_page_pdf(
             r"\documentclass{article}\begin{document}Complete experience\end{document}",
             required_page_count=1,
             minimum_page_fill_ratio=0.82,
+        )
+
+
+def test_save_role_resume_rejects_pdf_that_omits_selected_skills(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resume_root = tmp_path / "prepared-resumes"
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    monkeypatch.setattr(web_server, "_resume_resources_root", lambda: tmp_path / "resources")
+    monkeypatch.setattr(web_server.shutil, "which", lambda _name: "/usr/bin/pdflatex")
+
+    def fake_run(command: object, **kwargs: object) -> object:
+        cwd_arg = kwargs["cwd"]
+        assert isinstance(cwd_arg, (str, Path))
+        Path(cwd_arg, "resume.pdf").write_bytes(_text_pdf_bytes("Kubernetes", gray=1.0))
+
+        class Completed:
+            returncode = 0
+
+        return Completed()
+
+    monkeypatch.setattr(web_server.subprocess, "run", fake_run)
+    resume = web_server.MasterResume(
+        id=1,
+        filename="resume.tex",
+        content="source",
+        content_sha256="source",
+        created_at=None,
+        updated_at=None,
+    )
+
+    with pytest.raises(web_server.GeneratedDocumentQualityError, match="Kubernetes"):
+        web_server.save_role_resume(
+            {"id": 1, "company_name": "Acme", "title": "Product Intern"},
+            resume,
+            r"\documentclass{article}\begin{document}Kubernetes\end{document}",
+            required_page_count=1,
+            required_visible_terms=["Kubernetes"],
+        )
+
+    assert not (resume_root / "role-1" / "resume.tex").exists()
+    assert not (resume_root / "role-1" / "resume.pdf").exists()
+
+
+@pytest.mark.parametrize(
+    ("pdf_kwargs", "expected_missing"),
+    [
+        ({}, []),
+        ({"gray": 1.0}, ["Kubernetes"]),
+        ({"render_mode": 3}, ["Kubernetes"]),
+        ({"font_size": 2.0}, ["Kubernetes"]),
+        ({"x": -100.0}, ["Kubernetes"]),
+        ({"scale": 0.01}, ["Kubernetes"]),
+        ({"clipped": True}, ["Kubernetes"]),
+        ({"clipbox": (0.0, 0.0, 612.0, 792.0)}, []),
+        ({"cropbox": (0.0, 0.0, 40.0, 40.0)}, ["Kubernetes"]),
+        ({"color_space_white": True}, ["Kubernetes"]),
+        ({"x": 620.0}, ["Kubernetes"]),
+    ],
+)
+def test_pdf_selected_skill_presence_requires_visible_rendered_text(
+    tmp_path: Path,
+    pdf_kwargs: dict[str, Any],
+    expected_missing: list[str],
+) -> None:
+    pdf_path = tmp_path / "candidate.pdf"
+    pdf_path.write_bytes(_text_pdf_bytes("Kubernetes", **pdf_kwargs))
+
+    assert web_server._pdf_missing_visible_terms(pdf_path, ["Kubernetes"]) == expected_missing
+
+
+def test_pdf_selected_skill_presence_rejects_term_beyond_visible_chunk_bounds(
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "late-off-page.pdf"
+    pdf_path.write_bytes(_text_pdf_bytes(f"{'A' * 80} Kubernetes", x=500.0))
+
+    assert web_server._pdf_missing_visible_terms(pdf_path, ["Kubernetes"]) == ["Kubernetes"]
+
+
+def test_resume_skill_analysis_and_embedding_endpoints_preserve_review_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "resume-skills.sqlite3"
+    resume_root = tmp_path / "prepared-resumes"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    monkeypatch.setattr(web_server, "_prepared_resumes_root", lambda: resume_root)
+    env = {"CALLUMPLOYED_DATABASE_PATH": str(database)}
+    runner.invoke(app, ["companies", "add", "Acme", "https://example.com"], env=env)
+    runner.invoke(
+        app,
+        ["roles", "add", "1", "Backend Intern", "https://example.com/jobs/backend"],
+        env=env,
+    )
+    with db.connect() as connection:
+        connection.execute(
+            "UPDATE roles SET description = ?, role_status = 'interested' WHERE id = 1",
+            ("Required: Python, Kubernetes, and PostgreSQL.",),
+        )
+        connection.execute(
+            """
+            INSERT INTO master_resumes (id, filename, content, content_sha256)
+            VALUES (1, 'resume.tex', ?, 'abc')
+            """,
+            (r"\documentclass{article}\begin{document}Python APIs\end{document}",),
+        )
+        connection.commit()
+        autoprep_service.ensure_autoprep_schema(connection)
+        [job] = autoprep_service.enqueue_autoprep_jobs(
+            connection,
+            [1],
+            idempotency_key="initial-skill-job",
+        )
+        assert autoprep_service.claim_next_autoprep_job(connection) is not None
+        autoprep_service.mark_autoprep_document(
+            connection,
+            job["id"],
+            "resume",
+            "ready",
+            resume_latex="Current durable tailored resume",
+        )
+        autoprep_service.mark_autoprep_document(
+            connection, job["id"], "cover_letter", "ready"
+        )
+        autoprep_service.finish_autoprep_worker(connection, job["id"])
+    db.ensure_initialized()
+
+    analysis_calls: list[dict[str, object]] = []
+
+    async def fake_analyze_resume_skills(**kwargs: object) -> object:
+        analysis_calls.append(dict(kwargs))
+        skill_payload = {
+            "name": "Kubernetes",
+            "posting_evidence": "Python, Kubernetes, and PostgreSQL",
+            "applicant_evidence": "deployed Kubernetes workloads",
+            "supported": True,
+        }
+        return SimpleNamespace(skills=[SimpleNamespace(model_dump=lambda: skill_payload)])
+
+    monkeypatch.setattr(web_server, "analyze_resume_skills", fake_analyze_resume_skills)
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        analysis_request = Request(
+            f"http://127.0.0.1:{port}/api/roles/1/resume-skills",
+            data=json.dumps(
+                {"previous_latex": "Fabricated Rust evidence from the client"}
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(analysis_request, timeout=5) as response:
+            analysis_payload = json.loads(response.read().decode())
+
+        assert response.status == 200
+        assert analysis_payload["skills"][0]["name"] == "Kubernetes"
+        assert analysis_payload["skills"][0]["supported"] is True
+        assert isinstance(analysis_payload["selection_token"], str)
+        assert analysis_calls[0]["resume_content"] == "Current durable tailored resume"
+
+        embed_request = Request(
+            f"http://127.0.0.1:{port}/api/roles/1/resume-skills/embed",
+            data=json.dumps(
+                {
+                    "selected_skills": [analysis_payload["skills"][0]],
+                    "selection_token": analysis_payload["selection_token"],
+                    "idempotency_key": "embed-skills-request",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(embed_request, timeout=5) as response:
+            embed_payload = json.loads(response.read().decode())
+
+        assert response.status == 202
+        assert embed_payload["accepted"] is True
+        assert embed_payload["job"]["resume_status"] == "queued"
+        assert json.loads(embed_payload["job"]["resume_selected_skills_json"]) == [
+            {
+                "name": "Kubernetes",
+                "posting_evidence": "Python, Kubernetes, and PostgreSQL",
+            }
+        ]
+
+        forged_request = Request(
+            f"http://127.0.0.1:{port}/api/roles/1/resume-skills/embed",
+            data=json.dumps(
+                {
+                    "selected_skills": [
+                        {
+                            "name": "Rust",
+                            "posting_evidence": "Python, Kubernetes, and PostgreSQL",
+                            "supported": True,
+                        }
+                    ],
+                    "selection_token": analysis_payload["selection_token"],
+                    "idempotency_key": "forged-skill-request",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(HTTPError) as error_info:
+            urlopen(forged_request, timeout=5)
+        assert error_info.value.code == 400
+        assert "fresh skill analysis" in error_info.value.read().decode()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_build_role_resume_retries_skill_embedding_to_stable_length(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "stable-skill-resume.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    source_words = " ".join(f"word{index}" for index in range(100))
+    source_latex = (
+        rf"\documentclass{{article}}\begin{{document}}{source_words}\end{{document}}"
+    )
+    attempts: list[dict[str, object]] = []
+
+    async def fake_generate_resume_tweak(**kwargs: object) -> object:
+        attempts.append(dict(kwargs))
+        count = 145 if len(attempts) == 1 else 104
+        words = " ".join(f"term{index}" for index in range(count - 1))
+        return SimpleNamespace(
+            latex=(
+                rf"\documentclass{{article}}\begin{{document}}"
+                rf"Kubernetes {words}\end{{document}}"
+            ),
+            summary="Embedded Kubernetes.",
+        )
+
+    monkeypatch.setattr(web_server, "generate_resume_tweak", fake_generate_resume_tweak)
+    monkeypatch.setattr(
+        web_server,
+        "save_role_resume",
+        lambda _role, _resume, latex, **_kwargs: {"latex": latex, "pdf_base64": "pdf"},
+    )
+    result = web_server.build_role_resume(
+        {"id": 1, "title": "Backend Intern", "description": "Kubernetes"},
+        web_server.MasterResume(
+            id=1,
+            filename="resume.tex",
+            content=source_latex,
+            content_sha256="source",
+            created_at=None,
+            updated_at=None,
+        ),
+        tweaks="Embed selected skills.",
+        previous_latex=source_latex,
+        selected_skills=[{"name": "Kubernetes", "posting_evidence": "Kubernetes"}],
+    )
+
+    assert len(attempts) == 2
+    assert attempts[0]["target_word_count"] == 100
+    assert "changed the resume from 100 to 145 words" in str(attempts[1]["tweaks"])
+    assert result["embedded_skills"] == ["Kubernetes"]
+    assert result["previous_word_count"] == 100
+    assert result["word_count"] == 104
+
+
+def test_build_role_resume_rejects_drafts_that_omit_selected_skills(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "omitted-skill-resume.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    source_words = " ".join(f"word{index}" for index in range(100))
+    source_latex = (
+        rf"\documentclass{{article}}\begin{{document}}{source_words}\end{{document}}"
+    )
+    attempts: list[dict[str, object]] = []
+    save_calls: list[str] = []
+
+    async def fake_generate_resume_tweak(**kwargs: object) -> object:
+        attempts.append(dict(kwargs))
+        return SimpleNamespace(
+            latex=source_latex,
+            summary="Returned a stable-length draft without the selected skill.",
+        )
+
+    monkeypatch.setattr(web_server, "generate_resume_tweak", fake_generate_resume_tweak)
+    monkeypatch.setattr(
+        web_server,
+        "save_role_resume",
+        lambda _role, _resume, latex, **_kwargs: save_calls.append(latex),
+    )
+
+    with pytest.raises(RuntimeError, match="selected skills"):
+        web_server.build_role_resume(
+            {"id": 1, "title": "Backend Intern", "description": "Kubernetes"},
+            web_server.MasterResume(
+                id=1,
+                filename="resume.tex",
+                content=source_latex,
+                content_sha256="source",
+                created_at=None,
+                updated_at=None,
+            ),
+            tweaks="Embed selected skills.",
+            previous_latex=source_latex,
+            selected_skills=[{"name": "Kubernetes", "posting_evidence": "Kubernetes"}],
+        )
+
+    assert len(attempts) == 3
+    assert "Kubernetes" in str(attempts[1]["tweaks"])
+    assert save_calls == []
+
+
+def test_resume_skill_selection_and_length_validation_fail_closed() -> None:
+    description = "Required: Python, Kubernetes, and PostgreSQL."
+    selected = web_server._clean_selected_resume_skills(
+        [
+            {
+                "name": "Kubernetes",
+                "posting_evidence": "Python, Kubernetes, and PostgreSQL",
+                "supported": True,
+            }
+        ],
+        description=description,
+    )
+    assert selected == [
+        {
+            "name": "Kubernetes",
+            "posting_evidence": "Python, Kubernetes, and PostgreSQL",
+        }
+    ]
+    with pytest.raises(ValueError, match="source-supported"):
+        web_server._clean_selected_resume_skills(
+            [
+                {
+                    "name": "Go",
+                    "posting_evidence": "Go",
+                    "supported": False,
+                }
+            ],
+            description=description,
+        )
+    assert web_server._resume_content_word_count(
+        r"\documentclass{article}\begin{document}Built Python APIs.\end{document}"
+    ) == 3
+
+
+@pytest.mark.parametrize(
+    ("latex", "skill", "expected_missing"),
+    [
+        (r"\begin{document}Built services with C\#.\end{document}", "C#", []),
+        (r"\begin{document}Built services with C++.\end{document}", "C++", []),
+        (r"\begin{document}Built Node.js APIs.\end{document}", "Node.js", []),
+        (
+            r"\begin{document}Applied Machine   Learning systems.\end{document}",
+            "machine learning",
+            [],
+        ),
+        (
+            "\\begin{document}% Kubernetes\nBuilt Python APIs.\\end{document}",
+            "Kubernetes",
+            ["Kubernetes"],
+        ),
+        (
+            r"\begin{document}\phantom{Kubernetes}Built Python APIs.\end{document}",
+            "Kubernetes",
+            ["Kubernetes"],
+        ),
+        (
+            r"\begin{document}\phantom{\textbf{Kubernetes}}Built APIs.\end{document}",
+            "Kubernetes",
+            ["Kubernetes"],
+        ),
+        (
+            r"\begin{document}\hphantom{\emph{Kubernetes}}Built APIs.\end{document}",
+            "Kubernetes",
+            ["Kubernetes"],
+        ),
+        (
+            r"\begin{document}\vphantom{\underline{Kubernetes}}Built APIs.\end{document}",
+            "Kubernetes",
+            ["Kubernetes"],
+        ),
+        (
+            r"Kubernetes\begin{document}Built Python APIs.\end{document}",
+            "Kubernetes",
+            ["Kubernetes"],
+        ),
+    ],
+)
+def test_resume_selected_skill_presence_uses_visible_body_text(
+    latex: str,
+    skill: str,
+    expected_missing: list[str],
+) -> None:
+    assert web_server._resume_missing_selected_skills(
+        latex,
+        [{"name": skill, "posting_evidence": skill}],
+    ) == expected_missing
+
+
+@pytest.mark.parametrize(
+    "generic_opening",
+    ["I am excited to apply", "I am writing to express my interest"],
+)
+def test_cover_letter_quality_rejects_stock_openings(generic_opening: str) -> None:
+    with pytest.raises(web_server.GeneratedDocumentQualityError, match="generic"):
+        web_server._validate_cover_letter_quality(
+            rf"\documentclass{{article}}\begin{{document}}{generic_opening}\end{{document}}"
         )
 
 

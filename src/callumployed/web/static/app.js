@@ -3874,6 +3874,174 @@ async function generatePrepResume(roleId, tweaks, previousLatex) {
   return response.json();
 }
 
+async function analyzePrepResumeSkills(roleId, previousLatex) {
+  const response = await fetch(`/api/roles/${encodeURIComponent(roleId)}/resume-skills`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ previous_latex: previousLatex }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || "Skill analysis failed");
+  return {
+    skills: Array.isArray(payload.skills) ? payload.skills : [],
+    selectionToken: String(payload.selection_token || ""),
+  };
+}
+
+async function embedPrepResumeSkills(roleId, selectedSkills, selectionToken) {
+  const response = await fetch(`/api/roles/${encodeURIComponent(roleId)}/resume-skills/embed`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      selected_skills: selectedSkills,
+      selection_token: selectionToken,
+      idempotency_key: autoprepActionKey("embed-resume-skills"),
+    }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || "Skill embedding failed");
+  return payload;
+}
+
+function closeResumeSkillDialog(dialog, opener, roleId) {
+  if (!(dialog instanceof HTMLElement)) return;
+  document.body.classList.remove("resume-skill-dialog-open");
+  dialog.remove();
+  const focusTarget = opener instanceof HTMLElement && opener.isConnected
+    ? opener
+    : document.querySelector(`[data-autoprep-resume-skills="${roleId}"]`);
+  focusTarget?.focus();
+}
+
+async function openResumeSkillDialog(role, opener) {
+  const roleId = Number(role.role_id ?? role.id);
+  document.querySelector(".resume-skill-dialog")?.remove();
+  const dialog = htmlToElement(`
+    <section class="resume-skill-dialog" role="dialog" aria-modal="true" aria-labelledby="resume-skill-title">
+      <button class="resume-skill-backdrop" type="button" aria-label="close skill selection"></button>
+      <div class="resume-skill-modal">
+        <div class="resume-skill-header">
+          <div>
+            <p class="eyebrow">resume tailoring</p>
+            <h2 id="resume-skill-title">embed skills for ${escapeUiText(role.title ?? "this role")}</h2>
+          </div>
+          <button type="button" class="resume-skill-close" aria-label="close skill selection">×</button>
+        </div>
+        <p class="resume-skill-intro">Choose source-supported skills from the job description. The rewrite keeps every saved entry and targets roughly the same word count.</p>
+        <form class="resume-skill-form">
+          <div class="resume-skill-list" aria-live="polite">
+            <div class="resume-skill-loading"><span aria-hidden="true"></span><p>checking the posting and your saved evidence...</p></div>
+          </div>
+          <p class="resume-skill-status" role="status"></p>
+          <div class="resume-skill-actions">
+            <button type="button" data-resume-skill-cancel>cancel</button>
+            <button type="submit" data-resume-skill-submit disabled>embed selected skills</button>
+          </div>
+        </form>
+      </div>
+    </section>
+  `);
+  document.body.append(dialog);
+  document.body.classList.add("resume-skill-dialog-open");
+  let escapeHandler;
+  const close = () => {
+    if (escapeHandler) document.removeEventListener("keydown", escapeHandler, true);
+    closeResumeSkillDialog(dialog, opener, roleId);
+  };
+  dialog.querySelector(".resume-skill-backdrop")?.addEventListener("click", close);
+  dialog.querySelector(".resume-skill-close")?.addEventListener("click", close);
+  dialog.querySelector("[data-resume-skill-cancel]")?.addEventListener("click", close);
+  escapeHandler = (event) => {
+    if (!dialog.isConnected) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      close();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = [...dialog.querySelectorAll("button:not([disabled]), input:not([disabled])")];
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+  document.addEventListener("keydown", escapeHandler, true);
+  dialog.querySelector(".resume-skill-close")?.focus();
+
+  const list = dialog.querySelector(".resume-skill-list");
+  const status = dialog.querySelector(".resume-skill-status");
+  const submit = dialog.querySelector("[data-resume-skill-submit]");
+  let skills = [];
+  let selectionToken = "";
+  try {
+    const analysis = await analyzePrepResumeSkills(roleId, null);
+    skills = analysis.skills;
+    selectionToken = analysis.selectionToken;
+    if (!dialog.isConnected) return;
+    if (skills.length === 0) {
+      list.innerHTML = '<p class="resume-skill-empty">No explicit skills were found in this job description.</p>';
+      return;
+    }
+    list.innerHTML = skills
+      .map((skill, index) => {
+        const supported = skill.supported === true;
+        return `
+          <label class="resume-skill-option${supported ? "" : " is-unsupported"}">
+            <input type="checkbox" value="${index}" ${supported ? "checked" : "disabled"} />
+            <span class="resume-skill-copy">
+              <strong>${escapeUiText(skill.name ?? "skill")}</strong>
+              <span>${escapeUiText(skill.posting_evidence ?? "")}</span>
+              <small>${supported ? `supported by: ${escapeUiText(skill.applicant_evidence ?? "saved applicant evidence")}` : "not found in your saved resume or experience; cannot embed truthfully"}</small>
+            </span>
+          </label>
+        `;
+      })
+      .join("");
+    const updateSubmit = () => {
+      submit.disabled = !list.querySelector('input[type="checkbox"]:checked');
+    };
+    list.addEventListener("change", updateSubmit);
+    updateSubmit();
+  } catch (error) {
+    list.innerHTML = '<p class="resume-skill-empty">Could not analyze skills right now.</p>';
+    status.textContent = error instanceof Error ? error.message : "Skill analysis failed.";
+    return;
+  }
+
+  dialog.querySelector(".resume-skill-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (submit.disabled) return;
+    const selectedSkills = [...list.querySelectorAll('input[type="checkbox"]:checked')]
+      .map((input) => skills[Number(input.value)])
+      .filter(Boolean);
+    if (selectedSkills.length === 0) return;
+    submit.disabled = true;
+    submit.setAttribute("aria-busy", "true");
+    submit.textContent = "queuing...";
+    status.textContent = "Queuing a stable-length resume regeneration...";
+    try {
+      const payload = await embedPrepResumeSkills(roleId, selectedSkills, selectionToken);
+      const index = preppedJobs.findIndex((item) => Number(item.role_id) === roleId);
+      if (index >= 0) preppedJobs[index] = payload.job;
+      close();
+      renderPreppedRoles();
+      startPreppedPolling();
+    } catch (error) {
+      status.textContent = error instanceof Error ? error.message : "Could not embed skills.";
+      submit.disabled = false;
+      submit.removeAttribute("aria-busy");
+      submit.textContent = "embed selected skills";
+    }
+  });
+}
+
 async function sendPrepRoleChat(roleId, messages) {
   const response = await fetch(`/api/roles/${encodeURIComponent(roleId)}/chat`, {
     method: "POST",
@@ -4653,7 +4821,10 @@ function renderPreppedDocument(job, documentKind, label) {
       ${error ? `<p class="prepped-error">${escapeHtml(error)}</p>` : ""}
       <label class="prepped-comments-label" for="prepped-comments-${escapeHtml(key)}">${commentsLabel}</label>
       <textarea id="prepped-comments-${escapeHtml(key)}" data-autoprep-comments="${documentKind}" rows="4" placeholder="${commentsPlaceholder}" ${active ? "disabled" : ""}>${escapeUiText(comments)}</textarea>
-      <button class="prepped-regenerate" type="button" data-autoprep-regenerate="${documentKind}" ${canRegenerate ? "" : "disabled"}>${active ? "Regenerating..." : `Regenerate ${escapeHtml(label)}`}</button>
+      <div class="prepped-document-actions">
+        ${documentKind === "resume" ? `<button class="prepped-embed-skills" type="button" data-autoprep-resume-skills="${job.role_id}" ${canRegenerate ? "" : "disabled"}>Embed skills</button>` : ""}
+        <button class="prepped-regenerate" type="button" data-autoprep-regenerate="${documentKind}" ${canRegenerate ? "" : "disabled"}>${active ? "Regenerating..." : `Regenerate ${escapeHtml(label)}`}</button>
+      </div>
     </section>`;
 }
 
@@ -4979,6 +5150,20 @@ preppedDetail.addEventListener("click", async (event) => {
   const currentlyApplyingButton = event.target.closest("[data-currently-applying-open]");
   if (currentlyApplyingButton) {
     openCurrentlyApplyingFolder(currentlyApplyingButton);
+    return;
+  }
+  const resumeSkillButton = event.target.closest("[data-autoprep-resume-skills]");
+  if (resumeSkillButton && !resumeSkillButton.disabled) {
+    resumeSkillButton.disabled = true;
+    resumeSkillButton.setAttribute("aria-busy", "true");
+    try {
+      await openResumeSkillDialog(job, resumeSkillButton);
+    } finally {
+      if (resumeSkillButton.isConnected) {
+        resumeSkillButton.disabled = false;
+        resumeSkillButton.removeAttribute("aria-busy");
+      }
+    }
     return;
   }
   const regenerateButton = event.target.closest("[data-autoprep-regenerate]");

@@ -2172,6 +2172,222 @@ a:hover .role-link-icon {
   background: rgb(247 255 250 / 0.94);
 }
 
+body.resume-skill-dialog-open {
+  overflow: hidden;
+}
+
+.resume-skill-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.resume-skill-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: rgb(13 31 25 / 0.58);
+  backdrop-filter: blur(5px);
+}
+
+.resume-skill-modal {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  width: min(680px, 100%);
+  max-height: min(780px, calc(100dvh - 48px));
+  overflow: hidden;
+  border: 1px solid rgb(26 66 52 / 0.16);
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 28px 80px rgb(8 30 22 / 0.28);
+}
+
+.resume-skill-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 22px 22px 14px;
+}
+
+.resume-skill-header h2 {
+  margin: 4px 0 0;
+  color: var(--text);
+  font-size: 1.12rem;
+  line-height: 1.25;
+}
+
+.resume-skill-close {
+  display: grid;
+  flex: 0 0 42px;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: #fff;
+  color: var(--text);
+  font-size: 1.45rem;
+}
+
+.resume-skill-intro {
+  margin: 0;
+  padding: 0 22px 16px;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.resume-skill-form {
+  display: grid;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.resume-skill-list {
+  display: grid;
+  gap: 10px;
+  overflow-y: auto;
+  padding: 2px 22px 16px;
+}
+
+.resume-skill-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  border: 1px solid rgb(0 137 123 / 0.17);
+  border-radius: 13px;
+  padding: 13px;
+  background: rgb(246 255 250 / 0.72);
+  cursor: pointer;
+}
+
+.resume-skill-option:has(input:checked) {
+  border-color: rgb(0 137 123 / 0.48);
+  box-shadow: inset 0 0 0 1px rgb(0 137 123 / 0.13);
+}
+
+.resume-skill-option.is-unsupported {
+  border-color: var(--line);
+  background: #f6f7f6;
+  cursor: not-allowed;
+  opacity: 0.68;
+}
+
+.resume-skill-option input {
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+  accent-color: var(--green);
+}
+
+.resume-skill-copy {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.resume-skill-copy strong {
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.resume-skill-copy > span,
+.resume-skill-copy small {
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.resume-skill-copy small {
+  color: #38715e;
+}
+
+.resume-skill-option.is-unsupported small {
+  color: #765d5d;
+}
+
+.resume-skill-loading,
+.resume-skill-empty {
+  margin: 0;
+  border: 1px dashed var(--line);
+  border-radius: 13px;
+  padding: 24px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.resume-skill-loading span {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgb(0 137 123 / 0.2);
+  border-top-color: var(--green);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.resume-skill-loading p {
+  margin: 8px 0 0;
+}
+
+.resume-skill-status {
+  min-height: 18px;
+  margin: 0;
+  padding: 0 22px 8px;
+  color: #8a3d3d;
+  font-size: 0.76rem;
+  font-weight: 750;
+}
+
+.resume-skill-actions {
+  display: flex;
+  justify-content: end;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  padding: 14px 22px max(14px, env(safe-area-inset-bottom));
+  background: #fbfcfb;
+}
+
+.resume-skill-actions button {
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 0 16px;
+  background: #fff;
+  color: var(--text);
+  font-weight: 900;
+}
+
+.resume-skill-actions button[type="submit"] {
+  border-color: var(--green);
+  background: var(--green);
+  color: #fff;
+}
+
+.resume-skill-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.prep-generation-controls .prep-skill-embed-button {
+  border-color: rgb(95 43 216 / 0.3);
+  background: #fff;
+  color: #5f2bd8;
+}
+
+.prep-generation-controls .prep-skill-embed-button:hover {
+  border-color: #5f2bd8;
+  background: #f7f3ff;
+}
+
 .prep-cover-latex {
   display: grid;
   gap: 6px;
@@ -5318,11 +5534,35 @@ a:hover .role-link-icon {
 }
 
 .prepped-regenerate {
-  align-self: flex-start;
   border-color: rgb(95 43 216 / 0.28);
   background: rgb(240 235 255 / 0.96);
   color: #3f218d;
   font-weight: 900;
+}
+
+.prepped-document-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.prepped-embed-skills {
+  border-color: rgb(45 224 111 / 0.48);
+  background: rgb(241 255 247 / 0.96);
+  color: #176439;
+  font-weight: 900;
+}
+
+@media (max-width: 480px) {
+  .prepped-document-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .prepped-document-actions button {
+    width: 100%;
+  }
 }
 
 @media (max-width: 760px) {

@@ -272,6 +272,36 @@ def test_resume_regeneration_uses_default_instruction_when_comments_are_empty(
         assert regenerated["cover_letter_status"] == "ready"
 
 
+def test_resume_skill_regeneration_persists_structured_selection(tmp_path: Path) -> None:
+    database = tmp_path / "autoprep-resume-skills.sqlite3"
+    selected_skills = [
+        {
+            "name": "Kubernetes",
+            "posting_evidence": "Experience with Kubernetes is required.",
+        }
+    ]
+    with db.connect(database) as connection:
+        db.run_migrations(connection)
+        ensure_autoprep_schema(connection)
+        role_id = _interested_role(connection)
+        [job] = enqueue_autoprep_jobs(connection, [role_id], idempotency_key="initial")
+        assert claim_next_autoprep_job(connection) is not None
+        mark_autoprep_document(connection, job["id"], "resume", "ready")
+        mark_autoprep_document(connection, job["id"], "cover_letter", "ready")
+        finish_autoprep_worker(connection, job["id"])
+
+        regenerated = queue_autoprep_regeneration(
+            connection,
+            role_id,
+            "resume",
+            instruction="Embed the selected skills without increasing length.",
+            idempotency_key="embed-skills",
+            selected_resume_skills=selected_skills,
+        )
+
+        assert json.loads(regenerated["resume_selected_skills_json"]) == selected_skills
+
+
 def test_failed_sibling_documents_can_join_one_queued_retry(tmp_path: Path) -> None:
     database = tmp_path / "autoprep-transition-retry.sqlite3"
     with db.connect(database) as connection:
