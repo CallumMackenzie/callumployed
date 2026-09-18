@@ -5,15 +5,12 @@ import base64
 import binascii
 import ctypes
 import gzip
-import hmac
 import ipaddress
 import json
 import logging
-import math
 import mimetypes
 import os
 import re
-import secrets
 import shlex
 import shutil
 import socket
@@ -22,7 +19,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 import unicodedata
 from collections import Counter
 from contextlib import nullcontext, suppress
@@ -50,7 +46,6 @@ from callumployed.agents.cover_letter import (
     strip_cover_letter_dash_punctuation,
 )
 from callumployed.agents.resume_feedback import evaluate_resume_feedback
-from callumployed.agents.resume_skill_embedder import analyze_resume_skills
 from callumployed.agents.resume_tweaker import generate_resume_tweak
 from callumployed.agents.role_chat import generate_role_chat, parse_role_chat_messages
 from callumployed.central.client import CentralStoreClient, CentralStoreError
@@ -201,9 +196,6 @@ INSTALLER_SCRIPT_URL = (
     "https://raw.githubusercontent.com/CallumMackenzie/callumployed/master/scripts/install.sh"
 )
 LOGGER = logging.getLogger(__name__)
-_RESUME_SKILL_TOKEN_SECRET = secrets.token_bytes(32)
-_RESUME_SKILL_TOKEN_TTL_SECONDS = 15 * 60
-RESUME_SKILL_ANALYSIS_TIMEOUT_SECONDS = 45.0
 MAX_APPLICATION_ANSWER_CHANGES_CHARS = 4_000
 SCAN_ALL_COMPANY_TIMEOUT_SECONDS = 5 * 60
 COMPANY_TIER_GUIDE_OPEN_CONFIG_KEY = "ui_company_tier_guide_open"
@@ -990,20 +982,6 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 and path_parts[3] == "cover-letter"
             ):
                 self._generate_cover_letter(path_parts[2])
-                return
-            if (
-                len(path_parts) == 4
-                and path_parts[:2] == ["api", "roles"]
-                and path_parts[3] == "resume-skills"
-            ):
-                self._analyze_resume_skills(path_parts[2])
-                return
-            if (
-                len(path_parts) == 5
-                and path_parts[:2] == ["api", "roles"]
-                and path_parts[3:] == ["resume-skills", "embed"]
-            ):
-                self._embed_resume_skills(path_parts[2])
                 return
             if (
                 len(path_parts) == 5
@@ -2659,137 +2637,6 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 )
                 return
             self._send_json({"resume": generated_resume})
-
-        def _analyze_resume_skills(self, role_id_text: str) -> None:
-            try:
-                role_id = int(role_id_text)
-            except ValueError:
-                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
-                return
-            payload = self._read_json_body()
-            if payload is None:
-                return
-            try:
-                with db.connect() as connection:
-                    ensure_autoprep_schema(connection)
-                    role = get_role(connection, role_id)
-                    company = get_company(connection, role.company_id)
-                    resume = get_master_resume(connection)
-                    experience_notes = list_experience_notes(connection)
-                    llm_settings = _llm_settings_for_generation(connection)
-                    job = get_role_autoprep_job(connection, role_id)
-                    autoprep_latex = (
-                        get_autoprep_resume_latex(connection, int(job["id"])) if job else None
-                    )
-            except LookupError:
-                self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
-                return
-            if resume is None:
-                self.send_error(HTTPStatus.BAD_REQUEST, "No master resume stored")
-                return
-            role_payload = role.model_dump(mode="json")
-            role_payload["company_name"] = company.name
-            resume_content = (
-                autoprep_latex
-                or _ensure_role_resume_copy(role_id, resume).read_text()
-            )
-            experience_context = _generation_experience_context(
-                experience_notes,
-                role=role_payload,
-                tweaks="Identify job-requested skills supported by applicant evidence.",
-            )
-            try:
-                analysis = asyncio.run(
-                    asyncio.wait_for(
-                        analyze_resume_skills(
-                            role=role_payload,
-                            resume_content=resume_content,
-                            other_experience_context=experience_context,
-                            settings=llm_settings,
-                        ),
-                        timeout=RESUME_SKILL_ANALYSIS_TIMEOUT_SECONDS,
-                    )
-                )
-            except TimeoutError:
-                LOGGER.warning("Resume skill analysis timed out for role %s", role_id)
-                self._send_json_with_status(
-                    {"error": "Skill analysis timed out. Please try again."},
-                    HTTPStatus.SERVICE_UNAVAILABLE,
-                )
-                return
-            except Exception:  # noqa: BLE001 - provider failures must be safe at HTTP boundary.
-                LOGGER.exception("Resume skill analysis failed for role %s", role_id)
-                self._send_json_with_status(
-                    {"error": "Could not analyze this posting's skills right now."},
-                    HTTPStatus.SERVICE_UNAVAILABLE,
-                )
-                return
-            skill_payloads = [skill.model_dump() for skill in analysis.skills]
-            self._send_json(
-                {
-                    "skills": skill_payloads,
-                    "selection_token": _resume_skill_selection_token(role_id, skill_payloads),
-                }
-            )
-
-        def _embed_resume_skills(self, role_id_text: str) -> None:
-            try:
-                role_id = int(role_id_text)
-            except ValueError:
-                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
-                return
-            payload = self._read_json_body()
-            if payload is None:
-                return
-            idempotency_key = payload.get("idempotency_key")
-            if not isinstance(idempotency_key, str) or not idempotency_key.strip():
-                self.send_error(HTTPStatus.BAD_REQUEST, "An idempotency key is required")
-                return
-            try:
-                with db.connect() as connection:
-                    ensure_autoprep_schema(connection)
-                    role = get_role(connection, role_id)
-            except LookupError:
-                self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
-                return
-            try:
-                selected_skills = _clean_selected_resume_skills(
-                    payload.get("selected_skills"),
-                    description=role.description,
-                )
-                _verify_resume_skill_selection(
-                    payload.get("selection_token"),
-                    role_id=role_id,
-                    selected_skills=selected_skills,
-                )
-            except ValueError as error:
-                self._send_json_with_status({"error": str(error)}, HTTPStatus.BAD_REQUEST)
-                return
-            try:
-                with db.connect() as connection:
-                    job = queue_autoprep_regeneration(
-                        connection,
-                        role_id,
-                        "resume",
-                        instruction=(
-                            "Embed the selected, source-supported skills naturally into the most "
-                            "relevant existing bullets or skills section without increasing the "
-                            "resume's overall length."
-                        ),
-                        idempotency_key=idempotency_key,
-                        selected_resume_skills=selected_skills,
-                    )
-            except AutoprepConflictError as error:
-                self._send_json_with_status({"error": str(error)}, HTTPStatus.CONFLICT)
-                return
-            except ValueError as error:
-                self._send_json_with_status({"error": str(error)}, HTTPStatus.BAD_REQUEST)
-                return
-            _wake_autoprep_coordinator()
-            self._send_json_with_status(
-                {"accepted": True, "job": job},
-                HTTPStatus.ACCEPTED,
-            )
 
         def _chat_about_role(self, role_id_text: str) -> None:
             try:
@@ -4579,7 +4426,6 @@ def _prepare_autoprep_resume(
     with db.connect() as connection:
         current_job = get_autoprep_job(connection, job_id)
         instruction = str(current_job.get("resume_instruction") or "").strip()
-        selected_skills = _stored_selected_resume_skills(current_job)
         previous_latex = get_autoprep_resume_latex(connection, job_id)
         tailor_resume = _config_bool(
             get_config_value(connection, AUTOPREP_TAILOR_RESUME_CONFIG_KEY),
@@ -4594,7 +4440,7 @@ def _prepare_autoprep_resume(
             "resume",
             "regenerating" if instruction else "generating_tweaks",
         )
-    if tailor_resume or selected_skills:
+    if tailor_resume:
         tweaks = _autoprep_generation_prompt(configured_prompt, instruction)
         generated = build_role_resume(
             role_payload,
@@ -4602,7 +4448,6 @@ def _prepare_autoprep_resume(
             tweaks=tweaks,
             previous_latex=previous_latex if instruction else None,
             required_page_count=1,
-            selected_skills=selected_skills or None,
         )
     else:
         generated = save_role_resume(
@@ -5787,398 +5632,6 @@ def _validate_cover_letter_quality_for_source(latex: str, *, source: str) -> Non
         _validate_cover_letter_quality(latex)
 
 
-def _pdf_page_visible_text(page: Any) -> str:
-    visible_chunks: list[str] = []
-    crop_rectangle = (
-        float(page.cropbox.left),
-        float(page.cropbox.bottom),
-        float(page.cropbox.right),
-        float(page.cropbox.top),
-    )
-    state: dict[str, Any] = {
-        "fill_visible": True,
-        "stroke_visible": True,
-        "fill_alpha": 1.0,
-        "stroke_alpha": 1.0,
-        "soft_mask_active": False,
-        "render_mode": 0,
-        "fill_color_space": "/DeviceGray",
-        "stroke_color_space": "/DeviceGray",
-        "path_rectangle": None,
-        "path_unsupported": False,
-        "pending_clip_rectangle": None,
-        "pending_unknown_clip": False,
-        "clip_rectangle": crop_rectangle,
-        "unknown_clip": False,
-    }
-    stack: list[dict[str, Any]] = []
-    resources: Any = page.get("/Resources", {})
-    resources = resources.get_object() if hasattr(resources, "get_object") else resources
-    resource_stack: list[Any] = [resources]
-    form_transform_stack: list[list[float]] = [[1.0, 0.0, 0.0, 1.0, 0.0, 0.0]]
-    form_state_stack: list[tuple[dict[str, Any], int]] = []
-    supported_color_spaces = {
-        "/DeviceGray",
-        "/G",
-        "/DeviceRGB",
-        "/RGB",
-        "/DeviceCMYK",
-        "/CMYK",
-    }
-
-    def resolved_dictionary(value: Any) -> Any:
-        return value.get_object() if hasattr(value, "get_object") else value
-
-    def scoped_resource(resource_name: str) -> Any:
-        active_resources = resource_stack[-1]
-        if not hasattr(active_resources, "get"):
-            return {}
-        return resolved_dictionary(active_resources.get(resource_name, {}))
-
-    def resolved_color_space_name(value: Any) -> str:
-        color_space_name = str(value)
-        color_spaces = scoped_resource("/ColorSpace")
-        visited_names: set[str] = set()
-        while (
-            color_space_name not in supported_color_spaces
-            and color_space_name not in visited_names
-            and hasattr(color_spaces, "get")
-        ):
-            visited_names.add(color_space_name)
-            definition = resolved_dictionary(color_spaces.get(color_space_name))
-            if isinstance(definition, str):
-                color_space_name = str(definition)
-                continue
-            break
-        return color_space_name
-
-    def multiply_matrices(first: list[float], second: list[float]) -> list[float]:
-        return [
-            first[0] * second[0] + first[1] * second[2],
-            first[0] * second[1] + first[1] * second[3],
-            first[2] * second[0] + first[3] * second[2],
-            first[2] * second[1] + first[3] * second[3],
-            first[4] * second[0] + first[5] * second[2] + second[4],
-            first[4] * second[1] + first[5] * second[3] + second[5],
-        ]
-
-    def effective_matrix(current_matrix: list[float]) -> list[float]:
-        return multiply_matrices(current_matrix, form_transform_stack[-1])
-
-    def transformed_rectangle(
-        rectangle: list[float],
-        matrix: list[float],
-    ) -> tuple[float, float, float, float]:
-        left, bottom, right, top = rectangle
-        points = (
-            (left, bottom),
-            (left, top),
-            (right, bottom),
-            (right, top),
-        )
-        transformed = [
-            (
-                x * matrix[0] + y * matrix[2] + matrix[4],
-                x * matrix[1] + y * matrix[3] + matrix[5],
-            )
-            for x, y in points
-        ]
-        return (
-            min(point[0] for point in transformed),
-            min(point[1] for point in transformed),
-            max(point[0] for point in transformed),
-            max(point[1] for point in transformed),
-        )
-
-    def color_space_visible(color_space: str, operands: list[Any]) -> bool:
-        values = [float(value) for value in operands if isinstance(value, (int, float))]
-        if color_space in {"/DeviceGray", "/G"}:
-            return bool(values) and values[0] < 0.95
-        if color_space in {"/DeviceRGB", "/RGB"}:
-            return any(value < 0.95 for value in values[:3])
-        if color_space in {"/DeviceCMYK", "/CMYK"}:
-            return any(value > 0.05 for value in values[:4])
-        return False
-
-    def intersect_rectangles(
-        first: tuple[float, float, float, float],
-        second: tuple[float, float, float, float],
-    ) -> tuple[float, float, float, float]:
-        return (
-            max(first[0], second[0]),
-            max(first[1], second[1]),
-            min(first[2], second[2]),
-            min(first[3], second[3]),
-        )
-
-    def visit_operand(
-        operator: bytes,
-        operands: list[Any],
-        current_matrix: list[float],
-        _text_matrix: list[float],
-    ) -> None:
-        nonlocal state
-        if operator == b"Do" and operands:
-            form_state_stack.append((state.copy(), len(stack)))
-            xobjects = scoped_resource("/XObject")
-            xobject = xobjects.get(operands[0]) if hasattr(xobjects, "get") else None
-            xobject = resolved_dictionary(xobject)
-            nested_resources = (
-                xobject.get("/Resources") if hasattr(xobject, "get") else None
-            )
-            form_matrix_value = (
-                xobject.get("/Matrix") if hasattr(xobject, "get") else None
-            )
-            form_matrix = (
-                [float(value) for value in form_matrix_value]
-                if isinstance(form_matrix_value, (list, tuple))
-                and len(form_matrix_value) == 6
-                else [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
-            )
-            form_to_page = multiply_matrices(
-                form_matrix,
-                effective_matrix(current_matrix),
-            )
-            form_transform_stack.append(form_to_page)
-            state = state.copy()
-            form_bbox = xobject.get("/BBox") if hasattr(xobject, "get") else None
-            if isinstance(form_bbox, (list, tuple)) and len(form_bbox) == 4:
-                bbox_clip = transformed_rectangle(
-                    [float(value) for value in form_bbox],
-                    form_to_page,
-                )
-                state["clip_rectangle"] = intersect_rectangles(
-                    state["clip_rectangle"], bbox_clip
-                )
-            else:
-                state["unknown_clip"] = True
-            resource_stack.append(
-                resolved_dictionary(nested_resources)
-                if nested_resources is not None
-                else resource_stack[-1]
-            )
-        elif operator == b"q":
-            stack.append(state.copy())
-        elif operator == b"Q" and stack:
-            state = stack.pop()
-        elif operator in {b"g", b"rg", b"k"}:
-            state["fill_color_space"] = {
-                b"g": "/DeviceGray",
-                b"rg": "/DeviceRGB",
-                b"k": "/DeviceCMYK",
-            }[operator]
-            state["fill_visible"] = color_space_visible(
-                str(state["fill_color_space"]), operands
-            )
-        elif operator in {b"G", b"RG", b"K"}:
-            state["stroke_color_space"] = {
-                b"G": "/DeviceGray",
-                b"RG": "/DeviceRGB",
-                b"K": "/DeviceCMYK",
-            }[operator]
-            state["stroke_visible"] = color_space_visible(
-                str(state["stroke_color_space"]), operands
-            )
-        elif operator == b"cs" and operands:
-            state["fill_color_space"] = resolved_color_space_name(operands[0])
-            state["fill_visible"] = state["fill_color_space"] in supported_color_spaces
-        elif operator == b"CS" and operands:
-            state["stroke_color_space"] = resolved_color_space_name(operands[0])
-            state["stroke_visible"] = state["stroke_color_space"] in supported_color_spaces
-        elif operator in {b"sc", b"scn"}:
-            state["fill_visible"] = color_space_visible(
-                str(state["fill_color_space"]), operands
-            )
-        elif operator in {b"SC", b"SCN"}:
-            state["stroke_visible"] = color_space_visible(
-                str(state["stroke_color_space"]), operands
-            )
-        elif operator == b"Tr" and operands:
-            state["render_mode"] = int(operands[0])
-        elif operator == b"re" and len(operands) >= 4:
-            if state["pending_clip_rectangle"] is not None:
-                state["pending_clip_rectangle"] = None
-                state["pending_unknown_clip"] = True
-            path_x, path_y, path_width, path_height = map(float, operands[:4])
-            first_x = path_x * current_matrix[0] + path_y * current_matrix[2] + current_matrix[4]
-            first_y = path_x * current_matrix[1] + path_y * current_matrix[3] + current_matrix[5]
-            last_x = (
-                (path_x + path_width) * current_matrix[0]
-                + (path_y + path_height) * current_matrix[2]
-                + current_matrix[4]
-            )
-            last_y = (
-                (path_x + path_width) * current_matrix[1]
-                + (path_y + path_height) * current_matrix[3]
-                + current_matrix[5]
-            )
-            if state["path_rectangle"] is not None or bool(state["path_unsupported"]):
-                state["path_rectangle"] = None
-                state["path_unsupported"] = True
-            else:
-                state["path_rectangle"] = (
-                    min(first_x, last_x),
-                    min(first_y, last_y),
-                    max(first_x, last_x),
-                    max(first_y, last_y),
-                )
-        elif operator in {b"m", b"l", b"c", b"v", b"y", b"h"}:
-            if state["pending_clip_rectangle"] is not None:
-                state["pending_clip_rectangle"] = None
-                state["pending_unknown_clip"] = True
-            state["path_rectangle"] = None
-            state["path_unsupported"] = True
-        elif operator in {b"W", b"W*"}:
-            path_rectangle = state["path_rectangle"]
-            if isinstance(path_rectangle, tuple) and not bool(state["path_unsupported"]):
-                state["pending_clip_rectangle"] = path_rectangle
-            else:
-                state["pending_unknown_clip"] = True
-        elif operator in {b"n", b"S", b"s", b"f", b"F", b"f*", b"B", b"B*", b"b", b"b*"}:
-            pending_clip = state["pending_clip_rectangle"]
-            if isinstance(pending_clip, tuple):
-                state["clip_rectangle"] = intersect_rectangles(
-                    state["clip_rectangle"], pending_clip
-                )
-            if bool(state["pending_unknown_clip"]):
-                state["unknown_clip"] = True
-            state["pending_clip_rectangle"] = None
-            state["pending_unknown_clip"] = False
-            state["path_rectangle"] = None
-            state["path_unsupported"] = False
-        elif operator == b"gs" and operands:
-            ext_gstates = scoped_resource("/ExtGState")
-            graphics_state = (
-                ext_gstates.get(operands[0]) if hasattr(ext_gstates, "get") else None
-            )
-            graphics_state = resolved_dictionary(graphics_state)
-            if hasattr(graphics_state, "get"):
-                if "/SMask" in graphics_state:
-                    soft_mask = resolved_dictionary(graphics_state.get("/SMask"))
-                    state["soft_mask_active"] = (
-                        soft_mask is not None and str(soft_mask) != "/None"
-                    )
-                if "/ca" in graphics_state:
-                    state["fill_alpha"] = float(graphics_state.get("/ca"))
-                if "/CA" in graphics_state:
-                    state["stroke_alpha"] = float(graphics_state.get("/CA"))
-            else:
-                state["fill_alpha"] = 0.0
-                state["stroke_alpha"] = 0.0
-                state["soft_mask_active"] = True
-
-    def visit_operand_after(
-        operator: bytes,
-        _operands: list[Any],
-        _current_matrix: list[float],
-        _text_matrix: list[float],
-    ) -> None:
-        nonlocal state
-        if operator != b"Do" or not form_state_stack:
-            return
-        state, saved_stack_depth = form_state_stack.pop()
-        del stack[saved_stack_depth:]
-        if len(form_transform_stack) > 1:
-            form_transform_stack.pop()
-        if len(resource_stack) > 1:
-            resource_stack.pop()
-
-    def visit_text(
-        text: str,
-        current_matrix: list[float],
-        text_matrix: list[float],
-        font: Any,
-        font_size: float,
-    ) -> None:
-        if font is None:
-            return
-        current_matrix = effective_matrix(current_matrix)
-        current_vertical_scale = (
-            current_matrix[2] ** 2 + current_matrix[3] ** 2
-        ) ** 0.5
-        text_vertical_scale = (text_matrix[2] ** 2 + text_matrix[3] ** 2) ** 0.5
-        effective_font_size = font_size * current_vertical_scale * text_vertical_scale
-        if not text.strip() or effective_font_size < 4.0 or bool(state["unknown_clip"]):
-            return
-        render_mode = int(state["render_mode"])
-        fill_is_visible = (
-            bool(state["fill_visible"])
-            and float(state["fill_alpha"]) > 0.05
-            and not bool(state["soft_mask_active"])
-        )
-        stroke_is_visible = (
-            bool(state["stroke_visible"])
-            and float(state["stroke_alpha"]) > 0.05
-            and not bool(state["soft_mask_active"])
-        )
-        if render_mode in {3, 7}:
-            return
-        if render_mode in {0, 4} and not fill_is_visible:
-            return
-        if render_mode in {1, 5} and not stroke_is_visible:
-            return
-        if render_mode in {2, 6} and not (fill_is_visible or stroke_is_visible):
-            return
-        x = (
-            text_matrix[4] * current_matrix[0]
-            + text_matrix[5] * current_matrix[2]
-            + current_matrix[4]
-        )
-        y = (
-            text_matrix[4] * current_matrix[1]
-            + text_matrix[5] * current_matrix[3]
-            + current_matrix[5]
-        )
-        current_horizontal_scale = (
-            current_matrix[0] ** 2 + current_matrix[1] ** 2
-        ) ** 0.5
-        text_horizontal_scale = (text_matrix[0] ** 2 + text_matrix[1] ** 2) ** 0.5
-        rendered_text = text.rstrip()
-        estimated_character_width = (
-            font_size * current_horizontal_scale * text_horizontal_scale * 0.6
-        )
-        clip_left, clip_bottom, clip_right, clip_top = state["clip_rectangle"]
-        if estimated_character_width <= 0.0:
-            return
-        if y < clip_bottom or y + effective_font_size > clip_top:
-            return
-        visible_start = max(
-            0,
-            math.ceil((clip_left - x) / estimated_character_width),
-        )
-        visible_end = min(
-            len(rendered_text),
-            math.floor((clip_right - x) / estimated_character_width),
-        )
-        if visible_end <= visible_start:
-            return
-        visible_chunks.append(rendered_text[visible_start:visible_end])
-
-    page.extract_text(
-        visitor_operand_before=visit_operand,
-        visitor_operand_after=visit_operand_after,
-        visitor_text=visit_text,
-    )
-    return "\n".join(visible_chunks)
-
-
-def _pdf_visible_text(pdf_path: Path) -> str:
-    return "\n".join(_pdf_page_visible_text(page) for page in PdfReader(str(pdf_path)).pages)
-
-
-def _pdf_missing_visible_terms(pdf_path: Path, required_terms: list[str]) -> list[str]:
-    visible_text = _pdf_visible_text(pdf_path).casefold()
-    missing: list[str] = []
-    for term in required_terms:
-        cleaned_term = term.strip()
-        if not cleaned_term:
-            continue
-        pattern = re.escape(cleaned_term.casefold()).replace(r"\ ", r"\s+")
-        if re.search(rf"(?<![\w+#]){pattern}(?![\w+#])", visible_text) is None:
-            missing.append(cleaned_term)
-    return missing
-
-
 def _pdf_page_fill_ratio(pdf_path: Path) -> float | None:
     reader = PdfReader(str(pdf_path))
     if len(reader.pages) != 1:
@@ -6407,7 +5860,6 @@ def save_role_resume(
     *,
     required_page_count: int | None = None,
     minimum_page_fill_ratio: float | None = None,
-    required_visible_terms: list[str] | None = None,
 ) -> dict[str, Any]:
     role_id = role.get("id")
     if not isinstance(role_id, int):
@@ -6428,7 +5880,6 @@ def save_role_resume(
         selected_pdf: Path | None = None
         page_counts: list[int] = []
         page_fill_ratios: list[float | None] = []
-        missing_visible_term_attempts: list[list[str]] = []
         candidates = _one_page_resume_candidates(latex) if required_page_count == 1 else [latex]
         for candidate_latex in candidates:
             candidate_path.write_text(candidate_latex)
@@ -6449,30 +5900,10 @@ def save_role_resume(
                     page_fill_ratio is None or page_fill_ratio < minimum_page_fill_ratio
                 ):
                     continue
-                if required_visible_terms:
-                    missing_visible_terms = _pdf_missing_visible_terms(
-                        candidate_pdf,
-                        required_visible_terms,
-                    )
-                    if missing_visible_terms:
-                        missing_visible_term_attempts.append(missing_visible_terms)
-                        continue
                 selected_latex = candidate_latex
                 selected_pdf = candidate_pdf
                 break
         if selected_latex is None or selected_pdf is None:
-            if missing_visible_term_attempts:
-                missing_names = sorted(
-                    {
-                        name
-                        for missing_attempt in missing_visible_term_attempts
-                        for name in missing_attempt
-                    },
-                    key=str.casefold,
-                )
-                raise GeneratedDocumentQualityError(
-                    "Generated resume PDF omitted selected skills: " + ", ".join(missing_names)
-                )
             one_page_attempted = 1 in page_counts
             if minimum_page_fill_ratio is not None and one_page_attempted:
                 measured_fill_ratios = [ratio for ratio in page_fill_ratios if ratio is not None]
@@ -6613,13 +6044,11 @@ def build_role_resume(
     tweaks: str,
     previous_latex: str | None = None,
     required_page_count: int = 1,
-    selected_skills: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     role_id = role.get("id")
     if not isinstance(role_id, int):
         raise RuntimeError("Role did not include an ID")
     source_latex = previous_latex or _ensure_role_resume_copy(role_id, resume).read_text()
-    target_word_count = _resume_content_word_count(source_latex)
     authoritative_latex = resume.content
     experience_notes: list[ExperienceNote] = []
     with db.connect() as connection:
@@ -6641,17 +6070,11 @@ def build_role_resume(
                     resume_content=candidate_source,
                     tweaks=candidate_tweaks,
                     other_experience_context=experience_context,
-                    selected_skills=selected_skills,
-                    target_word_count=target_word_count if selected_skills else None,
                     settings=llm_settings,
                 )
             )
         except Exception:  # noqa: BLE001 - always publish a bounded source-based artifact.
             LOGGER.exception("AI resume generation failed for role %s", role_id)
-            if selected_skills:
-                raise RuntimeError(
-                    "Could not embed the selected skills without risking the saved resume."
-                ) from None
             return _source_resume_fallback(
                 role,
                 resume,
@@ -6669,10 +6092,6 @@ def build_role_resume(
         )
         if missing_experience:
             if attempt == 2:
-                if selected_skills:
-                    raise RuntimeError(
-                        "Could not embed the selected skills without removing saved resume content."
-                    )
                 return _source_resume_fallback(
                     role,
                     resume,
@@ -6694,77 +6113,15 @@ def build_role_resume(
             )
             continue
 
-        if selected_skills:
-            missing_selected_skills = _resume_missing_selected_skills(
-                draft.latex,
-                selected_skills,
-            )
-            if missing_selected_skills:
-                missing_names = ", ".join(missing_selected_skills)
-                if attempt == 2:
-                    raise RuntimeError(
-                        "Could not embed all selected skills in the generated resume."
-                    )
-                candidate_source = source_latex
-                candidate_tweaks = (
-                    f"{tweaks}\n\n"
-                    f"The prior draft omitted these selected skills: {missing_names}. Include each "
-                    "skill by name in a truthful, source-supported bullet or skills section. "
-                    "Replace or tighten lower-priority wording rather than adding bulk, and "
-                    "preserve every source entry."
-                )
-                continue
-
-            generated_word_count = _resume_content_word_count(draft.latex)
-            minimum_word_count, maximum_word_count = _resume_word_count_bounds(
-                target_word_count
-            )
-            if not minimum_word_count <= generated_word_count <= maximum_word_count:
-                if attempt == 2:
-                    raise RuntimeError(
-                        "Could not embed the selected skills while keeping the resume length "
-                        "stable."
-                    )
-                candidate_source = source_latex
-                candidate_tweaks = (
-                    f"{tweaks}\n\n"
-                    f"The prior draft changed the resume from {target_word_count} to "
-                    f"{generated_word_count} words. Return between {minimum_word_count} and "
-                    f"{maximum_word_count} words (90-110% of the source). Replace or tighten "
-                    "lower-priority wording to make room for the selected skills; do not add bulk "
-                    "or remove source entries."
-                )
-                continue
-
         try:
             generated = save_role_resume(
                 role,
                 resume,
                 draft.latex,
                 required_page_count=required_page_count,
-                required_visible_terms=[skill["name"] for skill in selected_skills or []],
             )
-        except GeneratedDocumentQualityError as error:
-            if not selected_skills:
-                raise
+        except Exception:
             if attempt == 2:
-                raise RuntimeError(
-                    "Could not embed all selected skills in the generated resume PDF."
-                ) from error
-            candidate_source = source_latex
-            candidate_tweaks = (
-                f"{tweaks}\n\n"
-                f"The compiled resume omitted selected skill text: {error}. Include every selected "
-                "skill visibly in a truthful bullet or skills section while preserving all source "
-                "entries and the target length."
-            )
-            continue
-        except Exception as error:
-            if attempt == 2:
-                if selected_skills:
-                    raise RuntimeError(
-                        "Could not embed the selected skills while preserving the one-page resume."
-                    ) from error
                 return _source_resume_fallback(
                     role,
                     resume,
@@ -6787,18 +6144,8 @@ def build_role_resume(
             continue
         return {
             **generated,
-            "summary": (
-                draft.summary
-                or (
-                    "Embedded the selected skills while preserving the resume length."
-                    if selected_skills
-                    else "Regenerated resume with tweaks."
-                )
-            ),
+            "summary": draft.summary or "Regenerated resume with tweaks.",
             "tweaks": tweaks,
-            "embedded_skills": [skill["name"] for skill in selected_skills or []],
-            "word_count": _resume_content_word_count(draft.latex),
-            "previous_word_count": target_word_count,
         }
     raise AssertionError("bounded resume generation loop did not return")
 
@@ -7531,87 +6878,6 @@ def _plain_text_from_latex(value: str) -> str:
     return " ".join(text.split()).strip(" -;,")
 
 
-def _resume_content_word_count(latex: str) -> int:
-    content = latex
-    if "\\begin{document}" in content:
-        content = content.split("\\begin{document}", 1)[1]
-    if "\\end{document}" in content:
-        content = content.split("\\end{document}", 1)[0]
-    plain_text = _plain_text_from_latex(content)
-    return len(re.findall(r"[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*", plain_text))
-
-
-def _resume_missing_selected_skills(
-    latex: str,
-    selected_skills: list[dict[str, str]],
-) -> list[str]:
-    content = latex
-    if "\\begin{document}" in content:
-        content = content.split("\\begin{document}", 1)[1]
-    if "\\end{document}" in content:
-        content = content.split("\\end{document}", 1)[0]
-    plain_text = _visible_resume_text_from_latex(content).casefold()
-    missing: list[str] = []
-    for skill in selected_skills:
-        name = skill.get("name", "").strip()
-        if not name:
-            continue
-        pattern = re.escape(name.casefold()).replace(r"\ ", r"\s+")
-        if re.search(rf"(?<![\w+#]){pattern}(?![\w+#])", plain_text) is None:
-            missing.append(name)
-    return missing
-
-
-def _visible_resume_text_from_latex(value: str) -> str:
-    text = re.sub(r"(?<!\\)%[^\r\n]*", " ", value)
-    text = _remove_latex_command_groups(
-        text,
-        commands=("phantom", "hphantom", "vphantom"),
-    )
-    for escaped, visible in (
-        (r"\#", "#"),
-        (r"\$", "$"),
-        (r"\%", "%"),
-        (r"\&", "&"),
-        (r"\_", "_"),
-        (r"\{", "{"),
-        (r"\}", "}"),
-    ):
-        text = text.replace(escaped, visible)
-    return _plain_text_from_latex(text)
-
-
-def _remove_latex_command_groups(value: str, *, commands: tuple[str, ...]) -> str:
-    command_pattern = re.compile(
-        rf"\\(?:{'|'.join(re.escape(command) for command in commands)})\s*\{{"
-    )
-    text = value
-    while match := command_pattern.search(text):
-        depth = 1
-        index = match.end()
-        while index < len(text) and depth:
-            if text[index] == "\\" and index + 1 < len(text) and text[index + 1] in "{}":
-                index += 2
-                continue
-            if text[index] == "{":
-                depth += 1
-            elif text[index] == "}":
-                depth -= 1
-            index += 1
-        if depth:
-            break
-        text = f"{text[: match.start()]} {text[index:]}"
-    return text
-
-
-def _resume_word_count_bounds(target_word_count: int) -> tuple[int, int]:
-    if target_word_count <= 0:
-        return (0, 0)
-    minimum = (target_word_count * 9 + 9) // 10
-    maximum = (target_word_count * 11) // 10
-    return minimum, maximum
-
-
 def _fallback_role_priorities(role: dict[str, Any]) -> list[str]:
     role_text = " ".join(
         str(role.get(key) or "") for key in ("title", "description")
@@ -7982,138 +7248,6 @@ def _optional_resume_tweaks(value: object) -> str | None:
         return None
     cleaned = value.strip()
     return cleaned or None
-
-
-def _resume_skill_selection_token(
-    role_id: int,
-    skills: list[dict[str, object]],
-) -> str:
-    supported = [
-        {
-            "name": str(skill.get("name") or "").strip(),
-            "posting_evidence": str(skill.get("posting_evidence") or "").strip(),
-        }
-        for skill in skills
-        if skill.get("supported") is True
-    ]
-    payload = json.dumps(
-        {
-            "role_id": role_id,
-            "expires_at": int(time.time()) + _RESUME_SKILL_TOKEN_TTL_SECONDS,
-            "skills": supported,
-        },
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode()
-    signature = hmac.digest(_RESUME_SKILL_TOKEN_SECRET, payload, "sha256")
-    encoded_payload = base64.urlsafe_b64encode(payload).rstrip(b"=").decode()
-    encoded_signature = base64.urlsafe_b64encode(signature).rstrip(b"=").decode()
-    return f"{encoded_payload}.{encoded_signature}"
-
-
-def _decode_resume_skill_token_component(value: str) -> bytes:
-    padding = "=" * (-len(value) % 4)
-    return base64.urlsafe_b64decode(f"{value}{padding}")
-
-
-def _verify_resume_skill_selection(
-    token: object,
-    *,
-    role_id: int,
-    selected_skills: list[dict[str, str]],
-) -> None:
-    error_message = "Run a fresh skill analysis before embedding these skills."
-    if not isinstance(token, str) or not token or len(token) > 12_000:
-        raise ValueError(error_message)
-    try:
-        encoded_payload, encoded_signature = token.split(".", 1)
-        payload_bytes = _decode_resume_skill_token_component(encoded_payload)
-        signature = _decode_resume_skill_token_component(encoded_signature)
-        expected_signature = hmac.digest(_RESUME_SKILL_TOKEN_SECRET, payload_bytes, "sha256")
-        payload = json.loads(payload_bytes)
-    except (ValueError, binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ValueError(error_message) from error
-    if not hmac.compare_digest(signature, expected_signature):
-        raise ValueError(error_message)
-    if (
-        not isinstance(payload, dict)
-        or payload.get("role_id") != role_id
-        or not isinstance(payload.get("expires_at"), int)
-        or int(payload["expires_at"]) < int(time.time())
-        or not isinstance(payload.get("skills"), list)
-    ):
-        raise ValueError(error_message)
-    approved = {
-        (
-            str(item.get("name") or "").casefold(),
-            str(item.get("posting_evidence") or "").casefold(),
-        )
-        for item in payload["skills"]
-        if isinstance(item, dict)
-    }
-    requested = {
-        (skill["name"].casefold(), skill["posting_evidence"].casefold())
-        for skill in selected_skills
-    }
-    if not requested or not requested.issubset(approved):
-        raise ValueError(error_message)
-
-
-def _clean_selected_resume_skills(
-    value: object,
-    *,
-    description: str | None,
-) -> list[dict[str, str]]:
-    if not isinstance(value, list) or not value:
-        raise ValueError("Select at least one supported skill")
-    if len(value) > 12:
-        raise ValueError("Select no more than 12 skills")
-    normalized_description = " ".join(str(description or "").split()).casefold()
-    selected: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for item in value:
-        if not isinstance(item, dict) or item.get("supported") is not True:
-            raise ValueError("Only source-supported skills can be embedded")
-        name_value = item.get("name")
-        evidence_value = item.get("posting_evidence")
-        if not isinstance(name_value, str) or not isinstance(evidence_value, str):
-            raise ValueError("Each selected skill needs posting evidence")
-        name = " ".join(name_value.split())
-        posting_evidence = " ".join(evidence_value.split())
-        if not name or len(name) > 120 or not posting_evidence or len(posting_evidence) > 500:
-            raise ValueError("Selected skill details are invalid")
-        if posting_evidence.casefold() not in normalized_description:
-            raise ValueError(f"{name} is not grounded in the saved job description")
-        key = name.casefold()
-        if key in seen:
-            continue
-        seen.add(key)
-        selected.append({"name": name, "posting_evidence": posting_evidence})
-    if not selected:
-        raise ValueError("Select at least one supported skill")
-    return selected
-
-
-def _stored_selected_resume_skills(job: dict[str, Any]) -> list[dict[str, str]]:
-    raw_value = job.get("resume_selected_skills_json")
-    if not raw_value:
-        return []
-    try:
-        parsed = json.loads(str(raw_value))
-    except json.JSONDecodeError as error:
-        raise RuntimeError("Saved resume skill selection is invalid.") from error
-    if not isinstance(parsed, list) or not 1 <= len(parsed) <= 12:
-        raise RuntimeError("Saved resume skill selection is invalid.")
-    selected: list[dict[str, str]] = []
-    for item in parsed:
-        if not isinstance(item, dict):
-            raise RuntimeError("Saved resume skill selection is invalid.")
-        name = str(item.get("name") or "").strip()
-        evidence = str(item.get("posting_evidence") or "").strip()
-        if not name or not evidence or len(name) > 120 or len(evidence) > 500:
-            raise RuntimeError("Saved resume skill selection is invalid.")
-        selected.append({"name": name, "posting_evidence": evidence})
-    return selected
 
 
 def _optional_resume_latex(value: object) -> str | None:
