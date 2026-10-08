@@ -60,6 +60,7 @@ def test_configured_llm_settings_maps_an_explicit_model_to_the_selected_provider
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(tmp_path / "provider-model.sqlite3"))
+    monkeypatch.setenv("OPENAI_API_KEY", "platform-key-must-not-reach-subscription")
 
     with db.connect() as connection:
         db.run_migrations(connection)
@@ -77,8 +78,10 @@ def test_configured_llm_settings_maps_an_explicit_model_to_the_selected_provider
     assert codex.provider == "codex"
     assert codex.model == "gpt-5.6-terra"
     assert codex.codex_model == "gpt-5.6-terra"
+    assert codex.openai_api_key is None
     assert openai.provider == "openai"
     assert openai.model == "gpt-4.1-mini"
+    assert openai.openai_api_key is not None
 
 
 def test_shared_settings_can_modify_every_current_setting(

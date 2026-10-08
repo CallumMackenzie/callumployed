@@ -438,6 +438,7 @@ def sync_role_context_vectors(
     *,
     role: Role,
     company_name: str,
+    commit: bool = True,
 ) -> bool:
     """Replace only one role's local retrieval projection when its source changes."""
     if role.id is None:
@@ -475,7 +476,8 @@ def sync_role_context_vectors(
                 json.dumps(_text_vector(content), sort_keys=True),
             ),
         )
-    connection.commit()
+    if commit:
+        connection.commit()
     return True
 
 

@@ -179,6 +179,9 @@ def configured_llm_settings(
 ) -> LlmSettings:
     provider = str(get_settings(connection)["llm_provider"])
     updates: dict[str, str | None] = {"provider": provider}
+    if provider == "codex":
+        # Subscription-backed Codex must never inherit Platform API credentials.
+        updates["openai_api_key"] = None
     if model is not None:
         updates["model"] = model
         if provider == "codex":

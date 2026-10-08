@@ -185,6 +185,172 @@ def test_local_server_enables_address_reuse_before_binding() -> None:
         server.server_close()
 
 
+def test_prepped_role_can_save_a_missing_job_description(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "prepped-description.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="DatologyAI"))
+        assert company.id is not None
+        role = add_role(
+            connection,
+            Role(
+                company_id=company.id,
+                title="Software Engineer Intern, Infrastructure (Summer 2027)",
+                role_url="https://example.com/software-engineer-intern",
+                role_status=RoleStatus.INTERESTED,
+            ),
+        )
+        assert role.id is not None
+        autoprep_service.ensure_autoprep_schema(connection)
+        [job] = autoprep_service.enqueue_autoprep_jobs(
+            connection,
+            [role.id],
+            idempotency_key="missing-description",
+        )
+        connection.execute(
+            """
+            UPDATE autoprep_jobs
+            SET worker_state = 'idle', overall_status = 'partially_complete',
+                cover_letter_status = 'failed',
+                cover_letter_error = 'No saved job description was available.'
+            WHERE id = ?
+            """,
+            (job["id"],),
+        )
+        connection.commit()
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        endpoint = (
+            f"http://127.0.0.1:{server.server_address[1]}"
+            f"/api/autoprep/roles/{role.id}/description"
+        )
+        request = Request(
+            endpoint,
+            data=json.dumps(
+                {"description": "Build reliable data infrastructure for machine learning teams."}
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read())
+
+        assert payload["description"] == (
+            "Build reliable data infrastructure for machine learning teams."
+        )
+        assert payload["cover_letter_error"] == (
+            "The previous cover letter attempt failed because no job description was saved. "
+            "The description is now saved; retry to generate a new draft."
+        )
+        with db.connect() as connection:
+            saved_role = get_role(connection, role.id)
+            saved_job = autoprep_service.get_role_autoprep_job(connection, role.id)
+            contexts = web_server.retrieve_role_context(
+                connection,
+                role_id=role.id,
+                query="data infrastructure",
+                limit=20,
+            )
+        assert saved_role.description == payload["description"]
+        assert saved_job is not None
+        assert saved_job["cover_letter_error"] == payload["cover_letter_error"]
+        assert any(payload["description"] in str(item["content"]) for item in contexts)
+
+        overwrite = Request(
+            endpoint,
+            data=json.dumps({"description": "Overwrite the authoritative posting."}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(HTTPError) as overwrite_error:
+            urlopen(overwrite, timeout=5)
+        assert overwrite_error.value.code == 409
+        assert b"already has a saved job description" in overwrite_error.value.read()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_prepped_description_save_rolls_back_if_context_refresh_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "prepped-description-rollback.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    db.ensure_initialized()
+    with db.connect() as connection:
+        company = add_company(connection, Company(name="Tesla"))
+        assert company.id is not None
+        role = add_role(
+            connection,
+            Role(
+                company_id=company.id,
+                title="Software Engineer Intern",
+                role_url="https://example.com/intern",
+                role_status=RoleStatus.INTERESTED,
+            ),
+        )
+        assert role.id is not None
+        autoprep_service.ensure_autoprep_schema(connection)
+        [job] = autoprep_service.enqueue_autoprep_jobs(
+            connection,
+            [role.id],
+            idempotency_key="missing-description-rollback",
+        )
+        connection.execute(
+            """
+            UPDATE autoprep_jobs
+            SET worker_state = 'idle', overall_status = 'partially_complete',
+                cover_letter_status = 'failed', cover_letter_error = 'Original failure.'
+            WHERE id = ?
+            """,
+            (job["id"],),
+        )
+        connection.commit()
+
+    def fail_context_refresh(*_args: object, **_kwargs: object) -> bool:
+        raise RuntimeError("simulated context failure")
+
+    monkeypatch.setattr(web_server, "sync_role_context_vectors", fail_context_refresh)
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        endpoint = (
+            f"http://127.0.0.1:{server.server_address[1]}"
+            f"/api/autoprep/roles/{role.id}/description"
+        )
+        request = Request(
+            endpoint,
+            data=json.dumps({"description": "Complete authoritative posting."}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(HTTPError) as save_error:
+            urlopen(request, timeout=5)
+        assert save_error.value.code == 500
+        assert b"No changes were saved" in save_error.value.read()
+
+        with db.connect() as connection:
+            saved_role = get_role(connection, role.id)
+            saved_job = autoprep_service.get_role_autoprep_job(connection, role.id)
+        assert saved_role.description is None
+        assert saved_job is not None
+        assert saved_job["cover_letter_error"] == "Original failure."
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
 def test_application_answer_can_be_regenerated_and_deleted_through_role_scoped_api(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -650,7 +816,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
             app_javascript
         )
         assert '<div id="root"></div>' not in index_markup
-        assert '<script type="module" src="/assets/app.js?v=vanilla-20260917-35"></script>' in (
+        assert '<script type="module" src="/assets/app.js?v=vanilla-20260917-37"></script>' in (
             index_markup
         )
 
@@ -793,8 +959,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=vanilla-20260915-29" in index_markup
-        assert "/assets/app.js?v=vanilla-20260917-35" in index_markup
+        assert "/assets/app.css?v=vanilla-20260915-30" in index_markup
+        assert "/assets/app.js?v=vanilla-20260917-37" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -1269,7 +1435,7 @@ def test_currently_applying_folder_atomically_projects_selected_role_pair(
     assert not backup.exists()
 
 
-def test_currently_applying_role_selection_and_open_folder_api(
+def test_partially_complete_role_can_update_currently_applying_and_mark_applied(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1299,9 +1465,7 @@ def test_currently_applying_role_selection_and_open_folder_api(
         role_directory = tmp_path / "prepared-applications" / f"acme-engineer-role-{role.id}"
         role_directory.mkdir(parents=True)
         resume = role_directory / "acme-engineer-resume.pdf"
-        cover_letter = role_directory / "acme-engineer-cover-letter.pdf"
         resume.write_bytes(_valid_pdf_bytes())
-        cover_letter.write_bytes(_valid_pdf_bytes())
         autoprep_service.mark_autoprep_document(
             connection,
             int(job["id"]),
@@ -1314,9 +1478,8 @@ def test_currently_applying_role_selection_and_open_folder_api(
             connection,
             int(job["id"]),
             "cover_letter",
-            "ready",
-            artifact_path=str(cover_letter),
-            artifact_directory=str(role_directory),
+            "failed",
+            error="Cover letter unavailable.",
         )
         autoprep_service.finish_autoprep_worker(connection, int(job["id"]))
         web_server.set_config_value(connection, "applicant_first_name", "Jake")
@@ -1337,6 +1500,7 @@ def test_currently_applying_role_selection_and_open_folder_api(
         with urlopen(f"{base_url}/api/autoprep/jobs", timeout=5) as response:
             payload = json.loads(response.read().decode())
         [prepared_job] = payload["jobs"]
+        assert prepared_job["overall_status"] == "partially_complete"
         assert prepared_job["resume_filename"] == "jake-yeo-acme-engineer-resume.pdf"
         assert prepared_job["cover_letter_filename"] == (
             "jake-yeo-acme-engineer-cover-letter.pdf"
@@ -1361,7 +1525,6 @@ def test_currently_applying_role_selection_and_open_folder_api(
         assert selected["updated"] is True
         current = tmp_path / "prepared-applications" / "currently-applying"
         assert sorted(path.name for path in current.iterdir()) == [
-            "jake-yeo-acme-engineer-cover-letter.pdf",
             "jake-yeo-acme-engineer-resume.pdf",
         ]
 
@@ -1374,6 +1537,18 @@ def test_currently_applying_role_selection_and_open_folder_api(
             opened = json.loads(response.read().decode())
         assert opened == {"opened": True, "path": str(current.resolve())}
         assert open_calls == [["open", str(current.resolve())]]
+
+        applied_request = Request(
+            f"{base_url}/api/autoprep/roles/{role.id}/applied",
+            data=b"",
+            method="POST",
+        )
+        with urlopen(applied_request, timeout=5) as response:
+            applied = json.loads(response.read().decode())
+        assert applied["applied"] is True
+        assert applied["role"]["role_status"] == "applied"
+        with db.connect() as connection:
+            assert get_role(connection, role.id).role_status is RoleStatus.APPLIED
     finally:
         server.shutdown()
         server.server_close()
@@ -2566,7 +2741,7 @@ def test_fallback_cover_letter_excludes_material_index_metadata() -> None:
         ],
     )
 
-    assert "I built and tested a production API" in latex
+    assert "I built and tested a production API" not in latex
     assert "SAP\\\\\nVancouver, BC\\\\\nAPI Platform Intern" in latex
     assert "I strengthened its API validation" in latex
     assert "I i strengthened" not in latex
@@ -2574,7 +2749,7 @@ def test_fallback_cover_letter_excludes_material_index_metadata() -> None:
     assert "cloud infrastructure, authentication" not in latex
     assert "built arbitrary pdf continuation" not in latex.lower()
     assert "built arbitrary resume fragment" not in latex.lower()
-    assert "I designed and shipped a reliable deployment workflow." in latex
+    assert "I designed and shipped a reliable deployment workflow." not in latex
     assert "workflow!." not in latex
     assert "Tools:" not in latex
     assert "Useful attributes:" not in latex
@@ -2582,243 +2757,6 @@ def test_fallback_cover_letter_excludes_material_index_metadata() -> None:
     assert "User-confirmed:" not in latex
     assert "I tools" not in latex
     assert "I useful attributes" not in latex
-
-
-def test_cover_letter_quality_rejects_internal_evidence_metadata() -> None:
-    malformed = (
-        "\\documentclass{article}\n\\begin{document}\n"
-        "Dear Hiring Manager,\\par\n"
-        "Evidence: I built and tested the API.\n"
-        "Sincerely,\\\\\nJake Yeo\n\\end{document}\n"
-    )
-
-    with pytest.raises(web_server.GeneratedDocumentQualityError):
-        web_server._validate_cover_letter_quality(malformed)
-
-
-def test_cover_letter_quality_rejects_latex_formatted_metadata_label() -> None:
-    malformed = r"\textbf{Evidence}: I built and tested the API."
-
-    with pytest.raises(web_server.GeneratedDocumentQualityError):
-        web_server._validate_cover_letter_quality(malformed)
-
-
-def test_cover_letter_quality_allows_user_edited_evidence_label() -> None:
-    edited = "Evidence: this wording was intentionally added by the user."
-
-    web_server._validate_cover_letter_quality_for_source(
-        edited,
-        source="edited_cover_letter",
-    )
-
-
-def test_cover_letter_specificity_connections_require_two_grounded_pairs() -> None:
-    role = {
-        "description": "Build Kubernetes services and PostgreSQL APIs for production.",
-    }
-    applicant_context = (
-        "Deployed Kubernetes workloads for a production project and designed relational "
-        "storage for production traffic."
-    )
-    valid = SimpleNamespace(
-        posting_connections=["Kubernetes services", "PostgreSQL APIs"],
-        evidence_connections=[
-            "Deployed Kubernetes workloads",
-            "Designed relational storage",
-        ],
-        latex=(
-            r"\documentclass{letter}\begin{document}"
-            "For Kubernetes services, I deployed Kubernetes workloads for a production project. "
-            "For PostgreSQL APIs, I designed relational storage for production traffic."
-            r"\end{document}"
-        ),
-    )
-
-    web_server._validate_cover_letter_specificity_connections(
-        valid,
-        role=role,
-        applicant_context=applicant_context,
-    )
-
-    with pytest.raises(web_server.GeneratedDocumentQualityError):
-        web_server._validate_cover_letter_specificity_connections(
-            SimpleNamespace(
-                posting_connections=[],
-                evidence_connections=[],
-                latex=valid.latex,
-            ),
-            role=role,
-            applicant_context=applicant_context,
-        )
-
-    with pytest.raises(web_server.GeneratedDocumentQualityError):
-        web_server._validate_cover_letter_specificity_connections(
-            SimpleNamespace(
-                posting_connections=["Kubernetes services", "Rust systems"],
-                evidence_connections=[
-                    "Deployed Kubernetes workloads",
-                    "Designed relational storage",
-                ],
-                latex=valid.latex,
-            ),
-            role=role,
-            applicant_context=applicant_context,
-        )
-
-    with pytest.raises(web_server.GeneratedDocumentQualityError):
-        web_server._validate_cover_letter_specificity_connections(
-            SimpleNamespace(
-                posting_connections=["Kubernetes services", "Kubernetes services"],
-                evidence_connections=[
-                    "Deployed Kubernetes workloads",
-                    "Designed relational storage",
-                ],
-                latex=valid.latex,
-            ),
-            role=role,
-            applicant_context=applicant_context,
-        )
-
-    with pytest.raises(web_server.GeneratedDocumentQualityError):
-        web_server._validate_cover_letter_specificity_connections(
-            SimpleNamespace(
-                posting_connections=["Kubernetes services", "PostgreSQL APIs"],
-                evidence_connections=[
-                    "Deployed Kubernetes workloads",
-                    "Designed relational storage",
-                ],
-                latex=(
-                    r"\documentclass{letter}\begin{document}"
-                    "I deployed Kubernetes workloads while supporting PostgreSQL APIs. "
-                    "I designed relational storage for reliable Kubernetes services."
-                    r"\end{document}"
-                ),
-            ),
-            role=role,
-            applicant_context=applicant_context,
-        )
-
-    with pytest.raises(web_server.GeneratedDocumentQualityError):
-        web_server._validate_cover_letter_specificity_connections(
-            SimpleNamespace(
-                posting_connections=[
-                    "Kubernetes services",
-                    "production Kubernetes services",
-                ],
-                evidence_connections=[
-                    "Deployed Kubernetes workloads",
-                    "Designed relational storage",
-                ],
-                latex=valid.latex,
-            ),
-            role=role,
-            applicant_context=applicant_context,
-        )
-
-    with pytest.raises(web_server.GeneratedDocumentQualityError):
-        web_server._validate_cover_letter_specificity_connections(
-            SimpleNamespace(
-                posting_connections=["Kubernetes services", "PostgreSQL APIs"],
-                evidence_connections=[
-                    "Built production Kubernetes",
-                    "Built production PostgreSQL",
-                ],
-                latex=(
-                    r"\documentclass{letter}\begin{document}"
-                    "For Kubernetes services, I built production PostgreSQL systems. "
-                    "For PostgreSQL APIs, I built production Kubernetes systems."
-                    r"\end{document}"
-                ),
-            ),
-            role=role,
-            applicant_context=(
-                "Built production Kubernetes systems. Built production PostgreSQL systems."
-            ),
-        )
-
-    with pytest.raises(web_server.GeneratedDocumentQualityError):
-        web_server._validate_cover_letter_specificity_connections(
-            SimpleNamespace(
-                posting_connections=["Kubernetes services", "PostgreSQL APIs"],
-                evidence_connections=["Kubernetes services", "Designed relational storage"],
-                latex=valid.latex,
-            ),
-            role=role,
-            applicant_context=(
-                f"{applicant_context} Kubernetes services were also documented."
-            ),
-        )
-
-    with pytest.raises(web_server.GeneratedDocumentQualityError):
-        web_server._validate_cover_letter_specificity_connections(
-            SimpleNamespace(
-                posting_connections=["Kubernetes services", "PostgreSQL APIs"],
-                evidence_connections=[
-                    "Deployed Kubernetes workloads",
-                    "Deployed Kubernetes workloads",
-                ],
-                latex=valid.latex,
-            ),
-            role=role,
-            applicant_context=applicant_context,
-        )
-
-    with pytest.raises(web_server.GeneratedDocumentQualityError):
-        web_server._validate_cover_letter_specificity_connections(
-            SimpleNamespace(
-                posting_connections=["Kubernetes services", "PostgreSQL APIs"],
-                evidence_connections=[
-                    "Deployed Kubernetes workloads",
-                    "Designed relational storage",
-                ],
-                latex=(
-                    r"\documentclass{letter}\begin{document}"
-                    "For Kubernetes services and PostgreSQL APIs, I deployed Kubernetes "
-                    "workloads and designed relational storage."
-                    r"\end{document}"
-                ),
-            ),
-            role=role,
-            applicant_context=applicant_context,
-        )
-
-    with pytest.raises(web_server.GeneratedDocumentQualityError):
-        web_server._validate_cover_letter_specificity_connections(
-            SimpleNamespace(
-                posting_connections=["Kubernetes services", "PostgreSQL APIs"],
-                evidence_connections=[
-                    "Deployed Kubernetes workloads",
-                    "Designed relational storage",
-                ],
-                latex=valid.latex.replace(
-                    r"\end{document}",
-                    " Kubernetes services remain a priority." r"\end{document}",
-                ),
-            ),
-            role=role,
-            applicant_context=applicant_context,
-        )
-
-    with pytest.raises(web_server.GeneratedDocumentQualityError):
-        web_server._validate_cover_letter_specificity_connections(
-            SimpleNamespace(
-                posting_connections=["Kubernetes services", "PostgreSQL APIs"],
-                evidence_connections=[
-                    "Deployed Kubernetes workloads",
-                    "Designed relational storage",
-                ],
-                latex=valid.latex.replace(
-                    r"\end{document}",
-                    (
-                        " Kubernetes services, PostgreSQL APIs, deployed Kubernetes "
-                        "workloads, and designed relational storage all matter."
-                        r"\end{document}"
-                    ),
-                ),
-            ),
-            role=role,
-            applicant_context=applicant_context,
-        )
 
 
 def test_role_title_from_url_decodes_percent_encoded_punctuation() -> None:
@@ -3776,16 +3714,18 @@ def test_cover_letter_generation_returns_concise_local_artifact_when_provider_fa
     result = web_server.build_role_cover_letter(
         {"id": 1, "company_name": "Acme", "title": "Backend Intern"},
         resume,
-        allow_local_fallback=True,
         required_page_count=1,
     )
 
     assert result["source"] == "local_cover_letter_fallback"
+    normalized_latex = " ".join(result["latex"].split())
+    assert "What interests me about the backend intern role at Acme" in normalized_latex
+    assert "I am applying for" not in normalized_latex
     assert web_server._cover_letter_body_word_count(result["latex"]) <= 300
     assert len(PdfReader(result["pdf_path"]).pages) == 1
 
 
-def test_cover_letter_generation_fails_closed_by_default(
+def test_cover_letter_generation_fails_closed_without_a_saved_description(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3798,12 +3738,6 @@ def test_cover_letter_generation_fails_closed_by_default(
         ["roles", "add", "1", "Backend Intern", "https://example.com/jobs/backend"],
         env=env,
     )
-    with db.connect() as connection:
-        connection.execute(
-            "UPDATE roles SET description = ? WHERE id = 1",
-            ("Build Kubernetes services backed by PostgreSQL.",),
-        )
-        connection.commit()
 
     async def failed_provider(**_kwargs: object) -> object:
         raise RuntimeError("provider unavailable")
@@ -3821,7 +3755,6 @@ def test_cover_letter_generation_fails_closed_by_default(
                 "id": 1,
                 "company_name": "Acme",
                 "title": "Backend Intern",
-                "description": "Build Kubernetes services backed by PostgreSQL.",
             },
             web_server.MasterResume(
                 id=1,
@@ -3832,6 +3765,47 @@ def test_cover_letter_generation_fails_closed_by_default(
                 updated_at=None,
             ),
         )
+
+
+def test_caller_description_does_not_enable_fallback_before_authoritative_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fallback_attempted = False
+
+    def fail_database_load() -> object:
+        raise RuntimeError("authoritative role unavailable")
+
+    def fail_if_fallback_runs(*_args: object, **_kwargs: object) -> dict[str, Any]:
+        nonlocal fallback_attempted
+        fallback_attempted = True
+        return {}
+
+    monkeypatch.setattr(web_server.db, "connect", fail_database_load)
+    monkeypatch.setattr(
+        web_server,
+        "_publish_reliable_cover_letter_fallback",
+        fail_if_fallback_runs,
+    )
+
+    with pytest.raises(RuntimeError, match="authoritative role unavailable"):
+        web_server.build_role_cover_letter(
+            {
+                "id": 1,
+                "company_name": "Caller Company",
+                "title": "Caller Role",
+                "description": "This description was not loaded from the database.",
+            },
+            web_server.MasterResume(
+                id=1,
+                filename="resume.tex",
+                content="Built a production service.",
+                content_sha256="resume",
+                created_at=None,
+                updated_at=None,
+            ),
+        )
+
+    assert fallback_attempted is False
 
 
 def test_cover_letter_overflow_uses_bounded_attempts_then_local_artifact(
@@ -4147,15 +4121,113 @@ def test_local_cover_letter_fallback_uses_concrete_resume_and_role_evidence() ->
     )
     body_words = web_server._cover_letter_body_word_count(normalized)
 
-    assert 140 <= body_words <= 300
+    assert 90 <= body_words <= 300
     assert "My background aligns especially around" not in normalized
     assert "around 2027" not in normalized
-    assert "AWS Lambda" in normalized
-    assert "Docker" in normalized
     assert "34-route Express API" in normalized
+    assert "AWS Lambda" not in normalized
+    assert "Docker" not in normalized
     assert "API platform" in normalized
     assert "scalable services" in normalized
     assert "role's focus aligns" not in normalized
+    assert "hands-on experience building, testing, and improving" not in normalized
+    assert "These projects required me" not in normalized
+
+
+def test_local_cover_letter_fallback_sounds_natural_for_generic_scraped_title() -> None:
+    role = {
+        "id": 1,
+        "company_name": "Epic Games",
+        "title": "jobs",
+        "description": "Design scalable services and infrastructure for online experiences.",
+    }
+    resume = web_server.MasterResume(
+        filename="resume.tex",
+        content=(
+            "Built and tested a local-first progressive web application for daily use. "
+            "Investigated production and development environment bugs and delivered fixes."
+        ),
+        content_sha256="source",
+    )
+    latex = web_server._fallback_cover_letter_latex(
+        role,
+        resume,
+        applicant_profile=ApplicantProfile(first_name="Jake", last_name="Yeo"),
+        other_experience_context=[
+            {
+                "filename": "ai-tools.md",
+                "content": (
+                    "I use Codex and Hermes Agent to research unfamiliar technologies, inspect "
+                    "code, and accelerate repetitive implementation work."
+                ),
+            }
+        ],
+    )
+    normalized = " ".join(latex.split())
+
+    assert "What interests me about the opportunity at Epic Games" in normalized
+    assert "jobs role" not in normalized.lower()
+    assert "application materials" not in normalized.lower()
+    assert "documented experience" not in normalized.lower()
+    assert "this evidence" not in normalized.lower()
+    assert "Codex" not in normalized
+    assert "Hermes Agent" not in normalized
+
+
+def test_cover_letter_opening_uses_a_concise_presentation_title_and_company() -> None:
+    latex = """\\documentclass[letterpaper,11pt]{article}
+\\begin{document}
+DatologyAI\\\\
+Software Engineer Intern, Infrastructure (Summer 2027)\\\\
+
+\\noindent Dear Hiring Manager,\\par
+
+The Software Engineer Intern, Infrastructure (Summer 2027) role at Datologyai stands out
+because my work building reliable data services matches the role.
+
+\\noindent Sincerely,\\\\
+Jake Yeo
+\\end{document}
+"""
+
+    naturalized = web_server._naturalize_cover_letter_opening(
+        latex,
+        role_title="Software Engineer Intern, Infrastructure (Summer 2027)",
+        company_name="DatologyAI",
+    )
+
+    assert (
+        "The software engineer intern role at Datology stands out to me because my work"
+        in " ".join(naturalized.split())
+    )
+    assert "DatologyAI\\\\" in naturalized
+    assert "Software Engineer Intern, Infrastructure (Summer 2027)\\\\" in naturalized
+
+
+@pytest.mark.parametrize(
+    ("saved_title", "presentation_title"),
+    [
+        ("Software Engineer Intern, Infrastructure", "software engineer intern"),
+        ("Software Engineer Intern (Summer 2027)", "software engineer intern"),
+        ("Software Engineer Intern — Infrastructure", "software engineer intern"),
+        ("Software Engineer Intern - Summer 2027", "software engineer intern"),
+        ("Software Engineer Intern | Infrastructure", "software engineer intern"),
+        ("Software Engineer Intern / Infrastructure", "software engineer intern"),
+        ("Software Engineer Intern: Infrastructure", "software engineer intern"),
+        ("AI Research Intern", "AI research intern"),
+    ],
+)
+def test_cover_letter_presentation_title_handles_common_metadata_separators(
+    saved_title: str,
+    presentation_title: str,
+) -> None:
+    assert web_server._cover_letter_presentation_role_title(saved_title) == presentation_title
+
+
+def test_cover_letter_company_alias_is_narrow_and_preserves_other_ai_brands() -> None:
+    assert web_server._cover_letter_presentation_company_name("DatologyAI") == "Datology"
+    assert web_server._cover_letter_presentation_company_name("OpenAI") == "OpenAI"
+    assert web_server._cover_letter_presentation_company_name("Character.AI") == "Character.AI"
 
 
 def test_role_chat_endpoint_uses_role_material_contexts(
@@ -4499,7 +4571,7 @@ def test_application_generation_uses_configured_provider_and_document_model(
     assert selected.provider == "codex"
     assert selected.model == "gpt-5.6-terra"
     assert selected.codex_model == "gpt-5.6-terra"
-    assert selected.openai_api_key is not None
+    assert selected.openai_api_key is None
 
 
 def test_saved_application_answers_use_configured_llm_provider(
@@ -4808,7 +4880,7 @@ def test_config_payload_returns_current_settings(
             "editable": True,
             "options": [
                 {"value": "openai", "label": "OpenAI API key"},
-                {"value": "codex", "label": "Codex subscription (local CLI)"},
+                {"value": "codex", "label": "ChatGPT subscription (no API key)"},
             ],
         },
 

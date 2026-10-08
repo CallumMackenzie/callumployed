@@ -289,6 +289,9 @@ const preppedStatusChangeRoleIds = new Set();
 const returningPreppedRoleIds = new Set();
 const confirmingPreppedReturnRoleIds = new Set();
 const preppedCommentsByDocument = new Map();
+const preppedDescriptionDrafts = new Map();
+const preppedDescriptionSaveErrors = new Map();
+const savingPreppedDescriptionRoleIds = new Set();
 const openPreppedDetailSections = new Set();
 const preppedApplicationAnswersByRoleId = new Map();
 const preppedApplicationQuestionDrafts = new Map();
@@ -389,6 +392,20 @@ function safeExternalHttpUrl(value) {
   } catch {
     return "";
   }
+}
+
+function appScopedPath(path) {
+  const appId = new URLSearchParams(window.location.search).get("app");
+  if (!appId) return path;
+  const url = new URL(path, window.location.origin);
+  url.searchParams.set("app", appId);
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+function cacheBustedPath(path) {
+  const url = new URL(path, window.location.origin);
+  url.searchParams.set("v", Date.now());
+  return `${url.pathname}${url.search}${url.hash}`;
 }
 
 function findLatexCommandEnd(value, start) {
@@ -3387,7 +3404,7 @@ function renderPrepResume(role, state = {}) {
   const savedResume = prepResumeByRoleId.get(role.id);
   const resume = state.resume ?? savedResume;
   const tweaks = state.tweaks ?? prepResumeTweaksByRoleId.get(role.id) ?? "";
-  const pdfUrl = `/api/roles/${encodeURIComponent(role.id)}/resume.pdf`;
+  const pdfUrl = appScopedPath(`/api/roles/${encodeURIComponent(role.id)}/resume.pdf`);
   if (state.loading) {
     return `
       <details class="prep-panel prep-resume" id="prep-resume-${role.id}" open>
@@ -3543,7 +3560,7 @@ function renderPrepCoverLetter(role, state = {}) {
   const savedDraft = prepCoverLetterByRoleId.get(role.id);
   const draft = state.coverLetter ?? savedDraft;
   const tweaks = state.tweaks ?? draft?.tweaks ?? "";
-  const pdfUrl = `/api/roles/${encodeURIComponent(role.id)}/cover-letter.pdf`;
+  const pdfUrl = appScopedPath(`/api/roles/${encodeURIComponent(role.id)}/cover-letter.pdf`);
   if (state.loading) {
     return `
       <details class="prep-panel prep-cover-letter" id="prep-cover-letter-${role.id}" open>
@@ -3935,12 +3952,13 @@ function updatePrepPdfPreview(kind, roleId, payload) {
   const panel = editor?.closest(".prep-panel");
   const iframe = panel?.querySelector(".prep-cover-pdf");
   const link = panel?.querySelector(".prep-cover-pdf-link");
-  const pdfUrl =
+  const pdfUrl = appScopedPath(
     kind === "resume"
       ? `/api/roles/${encodeURIComponent(roleId)}/resume.pdf`
-      : `/api/roles/${encodeURIComponent(roleId)}/cover-letter.pdf`;
+      : `/api/roles/${encodeURIComponent(roleId)}/cover-letter.pdf`,
+  );
   if (iframe) {
-    iframe.src = `${pdfUrl}?v=${Date.now()}`;
+    iframe.src = cacheBustedPath(pdfUrl);
   }
   if (link) {
     link.href = pdfUrl;
@@ -4157,7 +4175,7 @@ async function refreshPreppedRoles() {
     const selectedJob = preppedJobs.find(
       (job) => Number(job.role_id) === Number(selectedPreppedRoleId),
     );
-    if (selectedJob?.overall_status === "ready") {
+    if (selectedJob?.resume_status === "ready" || selectedJob?.cover_letter_status === "ready") {
       queueCurrentlyApplyingSync(selectedJob.role_id);
     }
   } catch {
@@ -4297,9 +4315,7 @@ function queueCurrentlyApplyingSync(roleId, {force = false} = {}) {
   }
   const selectionVersion = ++currentlyApplyingSelectionVersion;
   currentlyApplyingPendingSignature = signature;
-  currentlyApplyingStatus = job.overall_status === "ready"
-    ? `Updating for ${job.company_name} — ${job.title}...`
-    : "Both documents must be ready before this role can update the folder.";
+  currentlyApplyingStatus = `Updating available documents for ${job.company_name} — ${job.title}...`;
   renderPreppedDetail();
   currentlyApplyingSyncChain = currentlyApplyingSyncChain
     .catch(() => {})
@@ -4353,6 +4369,64 @@ async function openCurrentlyApplyingFolder(button) {
   }
 }
 
+function renderPreppedRoleDescription(job) {
+  if (String(job.description || "").trim()) {
+    return `<div class="prepped-description-copy">${renderDescriptionMarkdown(job.description)}</div>`;
+  }
+  const roleId = Number(job.role_id);
+  const draft = preppedDescriptionDrafts.get(roleId) ?? "";
+  const saving = savingPreppedDescriptionRoleIds.has(roleId);
+  const error = preppedDescriptionSaveErrors.get(roleId);
+  const active = job.worker_state !== "idle" || autoprepJobIsActive(job);
+  return `<form class="prepped-description-editor" data-prepped-description-form>
+    <p>No job description is saved. Paste the complete posting here before retrying the cover letter.</p>
+    <label for="prepped-description-${roleId}">Job description</label>
+    <textarea id="prepped-description-${roleId}" data-prepped-description-draft rows="10" maxlength="100000" placeholder="Paste the complete job description…" ${saving || active ? "disabled" : ""}>${escapeHtml(draft)}</textarea>
+    <div class="prepped-description-editor-actions">
+      <span class="${error ? "prepped-error" : ""}" role="status" aria-live="polite">${escapeUiText(error || (active ? "Wait for active preparation to finish before saving." : "The saved description will be used for the next cover-letter attempt."))}</span>
+      <button type="submit" ${saving || active || !draft.trim() ? "disabled" : ""}>${saving ? "Saving…" : "Save job description"}</button>
+    </div>
+  </form>`;
+}
+
+async function savePreppedRoleDescription(roleId) {
+  const numericRoleId = Number(roleId);
+  const description = String(preppedDescriptionDrafts.get(numericRoleId) ?? "").trim();
+  if (!description || savingPreppedDescriptionRoleIds.has(numericRoleId)) return;
+  savingPreppedDescriptionRoleIds.add(numericRoleId);
+  preppedDescriptionSaveErrors.delete(numericRoleId);
+  renderPreppedDetail();
+  try {
+    const response = await fetch(
+      `/api/autoprep/roles/${encodeURIComponent(roleId)}/description`,
+      {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({description}),
+      },
+    );
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "Could not save the job description.");
+    const job = preppedJobs.find((item) => Number(item.role_id) === numericRoleId);
+    if (job) {
+      job.description = payload.description;
+      if (typeof payload.cover_letter_error === "string") {
+        job.cover_letter_error = payload.cover_letter_error;
+      }
+    }
+    preppedDescriptionDrafts.delete(numericRoleId);
+    preppedDescriptionSaveErrors.delete(numericRoleId);
+  } catch (error) {
+    preppedDescriptionSaveErrors.set(
+      numericRoleId,
+      error instanceof Error ? error.message : "Could not save the job description.",
+    );
+  } finally {
+    savingPreppedDescriptionRoleIds.delete(numericRoleId);
+    if (Number(selectedPreppedRoleId) === numericRoleId) renderPreppedDetail();
+  }
+}
+
 function renderPreppedDetail() {
   const currentIndex = preppedJobs.findIndex((job) => Number(job.role_id) === Number(selectedPreppedRoleId));
   const job = preppedJobs[currentIndex];
@@ -4386,9 +4460,9 @@ function renderPreppedDetail() {
       <span class="prepped-status status-${escapeHtml(job.overall_status)}">${escapeHtml(autoprepStatusLabel(job.overall_status))}</span>
     </header>
     <dl class="prepped-role-facts">${roleFacts.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeUiText(value)}</dd></div>`).join("")}</dl>
-    <details class="prepped-role-description" data-prepped-detail-section="description" ${openPreppedDetailSections.has(descriptionKey) ? "open" : ""}>
+    <details class="prepped-role-description" data-prepped-detail-section="description" ${openPreppedDetailSections.has(descriptionKey) || !String(job.description || "").trim() ? "open" : ""}>
       <summary>Job description</summary>
-      <div class="prepped-description-copy">${renderDescriptionMarkdown(job.description || "No job description was saved.")}</div>
+      ${renderPreppedRoleDescription(job)}
     </details>
     ${job.notes ? `<details class="prepped-role-description" data-prepped-detail-section="notes" ${openPreppedDetailSections.has(notesKey) ? "open" : ""}><summary>Role notes</summary><div class="prepped-description-copy">${escapeUiText(job.notes).replaceAll("\n", "<br>")}</div></details>` : ""}
     <div class="prepped-document-grid">
@@ -4402,14 +4476,14 @@ function renderPreppedDetail() {
       <button class="review-action prepped-folder-action" type="button" data-autoprep-open-folder ${job.artifact_directory ? "" : "disabled"}>Open Documents Folder</button>
       <button class="review-action prepped-return-interested" type="button" data-autoprep-return-interested data-autoprep-lifecycle-action aria-label="${confirmingReturn ? "Confirm return to Interested" : "Return to Interested"}: ${escapeHtml(job.company_name)} — ${escapeHtml(job.title)}" aria-busy="${returningToInterested ? "true" : "false"}" ${returnUnavailable ? "disabled" : ""} title="${job.worker_state === "running" ? "Wait for active preparation to finish before returning this role" : "Remove this role from Prepped and make it selectable in Interested"}">${returningToInterested ? "Returning..." : confirmingReturn ? "Confirm return to Interested" : "Return to Interested"}</button>
       <button class="review-action danger prepped-disinterested" type="button" data-autoprep-disinterested data-autoprep-lifecycle-action aria-busy="${movingToDisinterested ? "true" : "false"}" ${disinterestedUnavailable ? "disabled" : ""} title="${autoprepJobIsActive(job) ? "Wait for preparation to finish before moving this role" : "Move this role out of Prepped"}">${movingToDisinterested ? "Moving to Disinterested..." : "Move to Disinterested"}</button>
-      <button class="review-action success" type="button" data-autoprep-applied data-autoprep-lifecycle-action ${job.overall_status === "ready" && !roleMutationPending ? "" : "disabled"}>Applied</button>
+      <button class="review-action success" type="button" data-autoprep-applied data-autoprep-lifecycle-action ${!roleMutationPending ? "" : "disabled"}>Applied</button>
     </div>
     <p class="prepped-safety-note">Autoprep prepares files only. It never submits an application.</p>
     <details class="currently-applying-guide" data-currently-applying-guide ${currentlyApplyingGuideOpen ? "open" : ""}>
       <summary>Currently Applying folder</summary>
       <div class="currently-applying-guide-body">
-        <p>Selecting a prepared role copies its current resume and cover letter into one easy-to-find folder for job-site upload dialogs.</p>
-        <p>The original files stay in the role's documents folder. Selecting another role, or finishing a regeneration for the selected role, safely replaces both copies together.</p>
+        <p>Selecting a prepared role copies every currently available document into one easy-to-find folder for job-site upload dialogs.</p>
+        <p>The original files stay in the role's documents folder. Selecting another role, or finishing a regeneration for the selected role, safely replaces the available copies together.</p>
         <p class="currently-applying-status" role="status" aria-live="polite">${escapeUiText(currentlyApplyingStatus)}</p>
         <button type="button" data-currently-applying-open ${currentlyApplyingOpenPending ? "disabled" : ""}>${currentlyApplyingOpenPending ? "Opening..." : "Open Currently Applying Folder"}</button>
       </div>
@@ -4625,6 +4699,32 @@ async function deleteApplicationAnswer(roleId, answerId) {
   }
 }
 
+function coverLetterFailureExplanation(job) {
+  const error = String(job.cover_letter_error || "").trim();
+  if (!String(job.description || "").trim()) {
+    return "No job description was saved, so Callumployed could not verify a role-specific letter. Paste and save the complete posting above, then retry.";
+  }
+  const normalizedError = error.toLowerCase();
+  if (
+    normalizedError.includes("specific, verified cover letter")
+    || normalizedError.includes("specificity quality gate")
+    || normalizedError.includes("repair the cover letter")
+  ) {
+    return "The AI draft did not make enough specific, verifiable connections between the saved posting and your saved experience. The previous document was preserved; retry to generate a new draft.";
+  }
+  if (
+    normalizedError.includes("insufficient_quota")
+    || normalizedError.includes("credit_balance_exhausted")
+    || normalizedError.includes("no credits")
+  ) {
+    return "The selected AI provider has no remaining credits. Add credits or choose another provider in Settings, then retry.";
+  }
+  if (normalizedError.includes("one page") || normalizedError.includes("page count")) {
+    return "The generated letter could not be compiled into a complete one-page PDF. The previous document was preserved; retry to generate a shorter valid draft.";
+  }
+  return error || "Cover-letter generation stopped before a valid document could be published. Retry the cover letter.";
+}
+
 function renderPreppedDocument(job, documentKind, label) {
   const fieldKind = documentKind === "cover-letter" ? "cover_letter" : "resume";
   const status = job[`${fieldKind}_status`];
@@ -4650,7 +4750,7 @@ function renderPreppedDocument(job, documentKind, label) {
     <section class="prepped-document status-${escapeHtml(status)}">
       <div class="prepped-document-heading"><h4>${escapeHtml(label)}</h4><span>${escapeHtml(autoprepStatusLabel(status))}</span></div>
       <p class="prepped-filename">${filenameMarkup}</p>
-      ${error ? `<p class="prepped-error">${escapeHtml(error)}</p>` : ""}
+      ${retryingFailedDocument && documentKind === "cover-letter" ? `<div class="prepped-failure-explanation" role="alert"><strong>Why the cover letter failed</strong><p>${escapeUiText(coverLetterFailureExplanation(job))}</p></div>` : error ? `<p class="prepped-error">${escapeUiText(error)}</p>` : ""}
       <label class="prepped-comments-label" for="prepped-comments-${escapeHtml(key)}">${commentsLabel}</label>
       <textarea id="prepped-comments-${escapeHtml(key)}" data-autoprep-comments="${documentKind}" rows="4" placeholder="${commentsPlaceholder}" ${active ? "disabled" : ""}>${escapeUiText(comments)}</textarea>
       <button class="prepped-regenerate" type="button" data-autoprep-regenerate="${documentKind}" ${canRegenerate ? "" : "disabled"}>${active ? "Regenerating..." : `Regenerate ${escapeHtml(label)}`}</button>
@@ -4890,6 +4990,18 @@ preppedList.addEventListener("click", (event) => {
 });
 
 preppedDetail.addEventListener("input", (event) => {
+  const descriptionDraft = event.target.closest("[data-prepped-description-draft]");
+  if (descriptionDraft) {
+    const roleId = Number(selectedPreppedRoleId);
+    preppedDescriptionDrafts.set(roleId, descriptionDraft.value);
+    preppedDescriptionSaveErrors.delete(roleId);
+    const submitButton = descriptionDraft.form?.querySelector('button[type="submit"]');
+    if (submitButton) {
+      submitButton.disabled = !descriptionDraft.value.trim()
+        || savingPreppedDescriptionRoleIds.has(roleId);
+    }
+    return;
+  }
   const questionDraft = event.target.closest("[data-application-question-draft]");
   if (questionDraft) {
     const roleId = Number(selectedPreppedRoleId);
@@ -4920,6 +5032,13 @@ preppedDetail.addEventListener("input", (event) => {
       || !["ready", "failed", "interrupted"].includes(status)
       || (!retryingFailedDocument && comments.dataset.autoprepComments !== "cover-letter" && !comments.value.trim());
   }
+});
+
+preppedDetail.addEventListener("submit", (event) => {
+  const descriptionForm = event.target.closest("[data-prepped-description-form]");
+  if (!descriptionForm) return;
+  event.preventDefault();
+  savePreppedRoleDescription(selectedPreppedRoleId);
 });
 
 preppedDetail.addEventListener("toggle", (event) => {

@@ -198,6 +198,8 @@ def test_cover_letter_prompt_includes_resume_job_and_tool_results() -> None:
             "id": 1,
             "company_name": "Acme",
             "title": "Backend Intern",
+            "cover_letter_company_name": "Acme",
+            "cover_letter_role_title": "backend intern",
             "role_url": "https://example.com/jobs/backend",
             "location": "Vancouver",
             "description": "Python distributed systems internship",
@@ -234,7 +236,7 @@ def test_cover_letter_prompt_includes_resume_job_and_tool_results() -> None:
     assert "resume_context" in prompt
     assert "job_context" in prompt
     assert "other_experience_context" in prompt
-    assert "projects / employment history" in prompt
+    assert "projects or employment history" in prompt
     assert "may or may not already" in prompt
     assert "Built a BLE sensor network for motion analysis." in prompt
     assert "cover_letter_example_tool_results" in prompt
@@ -243,6 +245,14 @@ def test_cover_letter_prompt_includes_resume_job_and_tool_results() -> None:
     assert "Treat current_date as the authoritative present date" in prompt
     assert "never reuse or infer a date from an example" in prompt
     assert '"description": "Python distributed systems internship"' in prompt
+    assert '"cover_letter_company_name": "Acme"' in prompt
+    assert '"cover_letter_role_title": "backend intern"' in prompt
+    assert "Do not paste the full database title into the opening" in normalized_prompt
+    assert "Treat the resume as a fact library, not as prose" in normalized_prompt
+    assert "one or two strongest experiences" in normalized_prompt
+    assert "do not paraphrase resume bullets one after another" in normalized_prompt
+    assert "why the applicant chose an approach" in normalized_prompt
+    assert '"posting_connections":[],"evidence_connections":[]' in prompt
     assert "Python distributed systems internship" in prompt
     assert "Dear Stripe" in prompt
     assert "matching their writing style is required, not optional" in normalized_prompt
@@ -266,23 +276,22 @@ def test_cover_letter_prompt_includes_resume_job_and_tool_results() -> None:
     assert "tailor every body paragraph to the specific position" in prompt
     assert "sent unchanged to another company" in prompt
     assert "too generic" in prompt
-    assert "must name the exact company and role" in prompt
-    assert "specific responsibilities or requirements from the posting" in prompt
+    assert "recipient header must retain the exact" in normalized_prompt
+    assert "specific responsibility or requirement" in normalized_prompt
     assert "avoid generic filler" in prompt
-    assert "three concise body paragraphs by default" in prompt
-    assert "a fourth paragraph only" in prompt
-    assert "how the role was found or a referral only when" in prompt
-    assert "task or problem, the action taken, and the result delivered" in prompt
-    assert "Never invent a number or metric" in prompt
-    assert "soft skills through concrete evidence" in prompt
-    assert "only when the posting asks for AI" in prompt
-    assert "one evidence paragraph must discuss source-supported AI work" in prompt
-    assert "Hermes or a relevant AI-enabled application by name" in prompt
+    assert "write three or four concise paragraphs" in prompt
+    assert "Optional second story" in prompt
+    assert "Mention discovery source or referral only when supplied" in normalized_prompt
+    assert "develop one relevant experience beyond its resume bullet" in normalized_prompt
+    assert "Never invent a number or metric" in normalized_prompt
+    assert "Demonstrate collaboration, communication, ownership" in normalized_prompt
+    assert "job asks for AI" in prompt
+    assert "one story paragraph must discuss that AI work" in normalized_prompt
+    assert "Hermes or a relevant AI-enabled application by name" in normalized_prompt
     assert "independently directed AI-enabled application" in normalized_prompt
     assert "merely listing coding assistants used in an unrelated job" in normalized_prompt
-    assert "company values, mission, product, domain, or recent work" in prompt
-    assert "thank the reader for their time" in prompt
-    assert "invite an interview or conversation" in prompt
+    assert "thank the reader once" in normalized_prompt
+    assert "invite further conversation once" in normalized_prompt
     assert "Use this exact LaTeX scaffold" in prompt
     assert "named hiring contact" in prompt
     assert "Dear Hiring Manager" in prompt
@@ -548,7 +557,7 @@ def test_cover_letter_agent_queries_example_tool_and_passes_documents() -> None:
     assert "cover_letter_example_tool_results" in prompts[0]
     assert "other_experience_context" in prompts[0]
     assert "Built Kubernetes-backed internal scheduling tools." in prompts[0]
-    assert "primary writing-style reference" in prompts[0]
+    assert "writing-voice reference" in " ".join(prompts[0].split())
     assert "never use em dashes" in prompts[0]
     assert "at most one page" in prompts[0]
     assert "Cut one paragraph and make the intro more direct." in prompts[0]

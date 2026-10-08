@@ -186,11 +186,13 @@ def _bounded_context_items(
 SYSTEM_PROMPT = """
 You generate a role-specific LaTeX cover letter for a job application.
 
-Always use the provided resume context and job context. Use retrieved past cover
-letters as the primary writing-style reference. Match the user's voice from
-those examples: sentence length, directness, level of technical specificity,
-paragraph rhythm, and closing style. Do not copy company-specific claims that do
-not apply to the current job.
+Always use the complete provided job description plus the applicant's resume and
+experience context. Treat the resume as a fact library, not as prose to convert
+into paragraphs. Use retrieved past cover letters only as a writing-voice
+reference: sentence length, directness, level of technical specificity,
+paragraph rhythm, and closing style. The narrative rules below override an
+example that repeats resume bullets, sounds generic, or uses awkward wording.
+Do not copy company-specific claims that do not apply to the current job.
 When cover_letter_example_tool_results are present, matching their writing style
 is required, not optional. Before drafting, infer their recurring voice and
 structure, then make the new letter sound like the same author while tailoring
@@ -199,14 +201,13 @@ letter voice when the examples support a more specific style.
 Treat current_date as the authoritative present date. Use it for the recipient
 header's date line; never reuse or infer a date from an example, resume, prior
 draft, or job posting.
-When provided, other_experience_context contains role-relevant projects / employment history
-pages retrieved from the indexed application materials; those details may or may not already
-be on the resume. Review every retrieved page before drafting.
-First identify the strongest concrete evidence in those pages, compare it with
-the posting requirements, and deliberately use the most relevant evidence when
+When provided, other_experience_context contains role-relevant projects or employment history;
+those details may or may not already be on the resume. Review every page before drafting.
+First identify the strongest concrete experience in those pages, compare it with
+the job requirements, and deliberately use the most relevant example when
 it strengthens the letter. Do not treat this context as decorative or ignore it
-in favor of generic prose. If none of the retrieved evidence is genuinely
-relevant, rely on the resume instead rather than forcing a weak connection. You
+in favor of generic prose. If none of it is genuinely relevant, rely on the resume
+instead rather than forcing a weak connection. You
 may use indexed experience that is not already on the resume, but do not imply
 it appears on the resume unless resume_context also supports it.
 When regeneration tweaks are provided, treat them as direct user feedback and
@@ -230,22 +231,19 @@ Integrate the context deliberately:
   deliberately instead of starting from scratch; preserve strong targeted
   material, remove or rewrite the parts contradicted by the feedback, and keep
   the final letter grounded in resume_context and job_context
-- select the 2-3 strongest overlaps between the applicant's evidence and posting;
-  do not try to mention every relevant technology or project
-- before drafting, select two or three distinct posting-priority phrases copied
-  verbatim from job_context and the same number of distinct applicant-evidence phrases
-  copied verbatim from resume_context or other_experience_context. Return those phrases
-  in posting_connections and evidence_connections in matching index order; a posting
-  phrase cannot double as its own evidence
-- include both verbatim phrases from every indexed pair together in its own sentence
-  of the letter body; that sentence must not contain a priority or evidence phrase from
-  another declared pair. Every declared priority and evidence phrase must appear exactly
-  once in the whole letter body; do not repeat one elsewhere or add an all-in-one summary
-  sentence containing multiple declared phrases. Do not submit one requirement again
-  with an added modifier as a separate priority, reuse one evidence phrase for
-  multiple priorities, or list the connections as labels or metadata
-- synthesize those experiences into smooth prose in the user's voice; do not dump
-  resume bullets into paragraphs or awkwardly combine unrelated experiences
+- select only the one or two strongest experiences for this role; omit the rest even when they are
+  relevant. A focused story is better than a catalogue of qualifications
+- leave posting_connections and evidence_connections empty. They are legacy output fields, not a
+  checklist, and must not shape or appear in the letter
+- do not paraphrase resume bullets one after another. Use each selected experience to add
+  information a resume normally cannot: the problem or context, why the applicant chose an
+  approach, what they learned or demonstrated, and how that prepares them for a named
+  responsibility in this role
+- synthesize the experiences into smooth prose in the user's voice. Do not dump resume bullets into
+  paragraphs, enumerate tools, list every technology, or awkwardly combine unrelated experiences
+- write only recruiter-facing prose. Never mention "application materials", "saved experience",
+  "approved context", "job_context", "resume_context", "evidence", sources, retrieval, validation,
+  or any application/tool workflow. State the relevant experience directly as the applicant's work
 - a recruiter cannot be expected to recognize a project name. On the first mention
   of every named project, explain in the same sentence both its recognizable product category
   and its primary user or system purpose before discussing implementation details or outcomes.
@@ -253,28 +251,27 @@ Integrate the context deliberately:
   <users or systems do something concrete>, ...`; do not leave a project as an unexplained
   proper noun. If the approved context does not support that explanation, describe the
   supported work generically without naming the project. Apply this rule to projects retained
-  from a previous draft during regeneration as well as to newly selected evidence
-- write three concise body paragraphs by default, and use a fourth paragraph only
-  when a second distinct, source-supported example materially strengthens the case:
-  1. Introduction: it must name the exact company and role, state direct interest, and
-     mention how the role was found or a referral only when job_context or the
-     approved applicant evidence explicitly supports that fact. Never invent a
-     discovery source, referral, or personal connection.
-  2. Relevant evidence: connect a primary job requirement to a concise story that
-     explains the task or problem, the action taken, and the result delivered.
-  3. Complementary evidence, when it earns a fourth paragraph: connect another
-     priority to a distinct project or job
-     example, and demonstrate relevant soft skills through concrete evidence of
-     collaboration, communication, ownership, adaptability, leadership, or problem
-     solving rather than merely claiming those traits. When an outcome is supported
-     but unquantified, describe it plainly. Never invent a number or metric.
-  4. Company fit and conclusion: explain specific interest using only supplied
-     evidence about company values, mission, product, domain, or recent work;
-     then thank the reader for their time and invite an interview or conversation.
-- use source-supported AI work only when the posting asks for AI, machine
-  learning, LLM, or closely related experience. For those roles, when the supplied
+  from a previous draft during regeneration as well as to newly selected examples
+- write three or four concise paragraphs:
+  1. Introduction, 2-3 sentences: use job_context.cover_letter_company_name and
+     job_context.cover_letter_role_title, explain why this work is genuinely interesting using a
+     concrete responsibility, product, user problem, or technical challenge from the complete job
+     description, and preview the applicant's fit. The recipient header must retain the exact
+     company and role. Mention discovery source or referral only when supplied; never invent one.
+  2. Primary story, 3-5 sentences: develop one relevant experience beyond its resume bullet. Explain
+     the problem or context, the applicant's choices or contribution, the supported outcome, and why
+     that experience matters for a specific responsibility in this role.
+  3. Optional second story, 3-5 sentences: include only when a distinct experience reveals another
+     important dimension of fit. Demonstrate collaboration, communication, ownership, adaptability,
+     leadership, or problem solving through what happened rather than adjective claims. Never invent
+     a number or metric.
+  4. Conclusion, 1-2 sentences: connect the applicant's interest and likely contribution, thank the
+     reader once, and invite further conversation once. Do not repeat the opening, examples, or call
+     to action.
+- use AI work only when both the supplied applicant facts support it and the job asks for AI,
+  machine learning, LLM, or closely related experience. For those roles, when the supplied
   context contains relevant AI experience, one requirement applies:
-  one evidence paragraph must discuss source-supported AI work.
+  one story paragraph must discuss that AI work.
   Name Hermes or a relevant AI-enabled application by name
   when the source supports it, and explain what the applicant built, how they used AI
   responsibly, and the supported result. If the context offers an independently
@@ -284,16 +281,18 @@ Integrate the context deliberately:
   this instruction alone
 - tailor every body paragraph to the specific position; a paragraph that could
   be sent unchanged to another company is too generic
-- evidence paragraphs must pair specific applicant evidence with
-  specific responsibilities or requirements from the posting
+- each story paragraph must explain the relevance of a specific applicant experience to a specific
+  responsibility or requirement, not merely place matching keywords in the same paragraph
 - reuse 1-2 distinctive phrases from the posting when they are truthful and
   natural, but do not invent company facts or unsupported enthusiasm
 - avoid generic filler such as "your mission", "innovative technology",
   "cutting-edge", "strong background", or "fast-paced environment" unless the
   phrase is tied to a concrete posting detail
-- never open with "I am excited to apply", "I am writing to express my interest",
-  or another stock application sentence. Open with the exact role and a concrete
-  posting priority connected to source-supported applicant evidence
+- never open with "I am excited to apply", "I am writing to express my interest", "stands out to
+  me because", or another stock application sentence. Do not paste the full database title into the
+  opening when it includes a specialization, season, or year. Open naturally with the supplied
+  concise title, company, and a concrete reason the actual work is compelling. Vary the syntax to
+  suit the role rather than filling a template
 
 The output must be a complete LaTeX letter document, not a plain body. Format it
 like a professional letter and mirror the useful structure/style patterns from
@@ -330,7 +329,7 @@ the retrieved examples:
 - keep paragraphs visually separated with vertical space
 - ensure the generated PDF is at most one page at 11pt
 - target roughly 200-300 words of body text; a shorter complete letter is better than
-  padding, repetition, or weak evidence, so never add text merely to fill the page
+  padding, repetition, or a weak example, so never add text merely to fill the page
 - keep it concise, specific, and honest
 - mention only experience supported by resume_context or other_experience_context
 - align wording with the posting's strongest requirements
@@ -364,7 +363,7 @@ recipient lines, greeting if needed, and body paragraphs:
 \\noindent Dear <explicitly named hiring contact, or Hiring Manager>,\\par
 \\vspace{0.35em}
 
-<three concise body paragraphs, or four only when distinct evidence warrants it>
+<three concise body paragraphs, or four only when a distinct second story warrants it>
 
 \\vspace{0.35em}
 \\noindent Sincerely,\\\\[12pt]
@@ -377,8 +376,7 @@ Do not include resume-only packages or commands such as `fancyhdr`, `titlesec`,
 
 Return only JSON matching:
 {"latex":"...","summary":"...","example_ids":[1,2],
- "posting_connections":["verbatim posting phrase"],
- "evidence_connections":["verbatim applicant-evidence phrase"]}
+ "posting_connections":[],"evidence_connections":[]}
 """.strip()
 
 
@@ -521,6 +519,9 @@ def build_cover_letter_prompt(
             "company_id": role.get("company_id"),
             "company_name": role.get("company_name"),
             "title": role.get("title"),
+            "cover_letter_company_name": role.get("cover_letter_company_name")
+            or role.get("company_name"),
+            "cover_letter_role_title": role.get("cover_letter_role_title") or role.get("title"),
             "url": role.get("role_url"),
             "location": role.get("location"),
             "description": _bounded_context_text(

@@ -197,6 +197,7 @@ INSTALLER_SCRIPT_URL = (
 )
 LOGGER = logging.getLogger(__name__)
 MAX_APPLICATION_ANSWER_CHANGES_CHARS = 4_000
+MAX_JOB_DESCRIPTION_CHARS = 100_000
 SCAN_ALL_COMPANY_TIMEOUT_SECONDS = 5 * 60
 COMPANY_TIER_GUIDE_OPEN_CONFIG_KEY = "ui_company_tier_guide_open"
 APPLICANT_FIRST_NAME_CONFIG_KEY = "applicant_first_name"
@@ -246,7 +247,7 @@ DEFAULT_AUTOPREP_COVER_LETTER_PROMPT = (
 DEFAULT_SCAN_HEADLESS = False
 LLM_PROVIDER_OPTIONS = (
     ("openai", "OpenAI API key"),
-    ("codex", "Codex subscription (local CLI)"),
+    ("codex", "ChatGPT subscription (no API key)"),
 )
 SUPPORTED_LLM_PROVIDERS = frozenset(value for value, _label in LLM_PROVIDER_OPTIONS)
 COVER_LETTER_MODEL_OPTIONS = (
@@ -867,6 +868,13 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 self._open_currently_applying_folder()
                 return
 
+            if (
+                len(path_parts) == 5
+                and path_parts[:3] == ["api", "autoprep", "roles"]
+                and path_parts[4] == "description"
+            ):
+                self._save_prepped_role_description(path_parts[3])
+                return
             if (
                 len(path_parts) == 5
                 and path_parts[:3] == ["api", "autoprep", "roles"]
@@ -1641,13 +1649,6 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                     if job is None:
                         connection.rollback()
                         raise LookupError
-                    if job["overall_status"] != "ready":
-                        connection.rollback()
-                        self._send_json_with_status(
-                            {"error": "Both documents must be ready before marking Applied."},
-                            HTTPStatus.CONFLICT,
-                        )
-                        return
                     role = get_role(connection, role_id)
                     if role.role_status is not RoleStatus.APPLIED:
                         connection.execute(
@@ -1707,6 +1708,115 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                     "returned_to_interested": True,
                     "role_id": result["role_id"],
                     "archived_job_id": result["archived_job_id"],
+                }
+            )
+
+        def _save_prepped_role_description(self, role_id_text: str) -> None:
+            try:
+                role_id = int(role_id_text)
+            except ValueError:
+                self._send_json_with_status({"error": "Invalid role ID."}, HTTPStatus.BAD_REQUEST)
+                return
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            description = payload.get("description")
+            if not isinstance(description, str) or not description.strip():
+                self._send_json_with_status(
+                    {"error": "Paste a job description before saving."},
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+            description = description.strip()
+            if len(description) > MAX_JOB_DESCRIPTION_CHARS:
+                self._send_json_with_status(
+                    {
+                        "error": (
+                            "Job descriptions must be "
+                            f"{MAX_JOB_DESCRIPTION_CHARS:,} characters or fewer."
+                        )
+                    },
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+            try:
+                with db.connect() as connection:
+                    db.run_migrations(connection)
+                    ensure_autoprep_schema(connection)
+                    connection.execute("BEGIN IMMEDIATE")
+                    job = get_role_autoprep_job(connection, role_id)
+                    if job is None:
+                        raise LookupError(f"Prepped role {role_id} was not found.")
+                    if str(job.get("worker_state")) != "idle":
+                        raise AutoprepConflictError(
+                            "Wait for active preparation to finish before saving the job "
+                            "description."
+                        )
+                    role = get_role(connection, role_id)
+                    if str(role.description or "").strip():
+                        raise AutoprepConflictError(
+                            "This role already has a saved job description."
+                        )
+                    update_result = connection.execute(
+                        """
+                        UPDATE roles
+                        SET description = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ? AND TRIM(COALESCE(description, '')) = ''
+                        """,
+                        (description, role_id),
+                    )
+                    if update_result.rowcount != 1:
+                        raise AutoprepConflictError(
+                            "This role already has a saved job description."
+                        )
+                    updated_role = get_role(connection, role_id)
+                    company = get_company(connection, updated_role.company_id)
+                    sync_role_context_vectors(
+                        connection,
+                        role=updated_role,
+                        company_name=company.name,
+                        commit=False,
+                    )
+                    if str(job.get("cover_letter_status")) in {"failed", "interrupted"}:
+                        job = mark_autoprep_document(
+                            connection,
+                            int(job["id"]),
+                            "cover_letter",
+                            str(job["cover_letter_status"]),
+                            error=(
+                                "The previous cover letter attempt failed because no job "
+                                "description was saved. The description is now saved; retry "
+                                "to generate a new draft."
+                            ),
+                            commit=False,
+                        )
+                    connection.commit()
+            except AutoprepConflictError as error:
+                self._send_json_with_status({"error": str(error)}, HTTPStatus.CONFLICT)
+                return
+            except LookupError:
+                self._send_json_with_status(
+                    {"error": "Prepped role not found."},
+                    HTTPStatus.NOT_FOUND,
+                )
+                return
+            except Exception:
+                LOGGER.exception("Could not save the Prepped job description for role %s", role_id)
+                self._send_json_with_status(
+                    {
+                        "error": (
+                            "Could not save the job description. No changes were saved; "
+                            "try again."
+                        )
+                    },
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+                return
+            self._send_json(
+                {
+                    "role_id": role_id,
+                    "description": description,
+                    "cover_letter_error": job.get("cover_letter_error"),
                 }
             )
 
@@ -4707,20 +4817,20 @@ def _copy_autoprep_counterpart(
     return counterpart_kind, str(target)
 
 
-def _ready_autoprep_document_pair(job: dict[str, Any]) -> tuple[int, Path, Path]:
+def _available_autoprep_documents(job: dict[str, Any]) -> tuple[int, list[tuple[str, Path]]]:
     role_id = job.get("role_id")
     if not isinstance(role_id, int):
         raise ValueError("Prepared role does not have a valid ID.")
-    if job.get("resume_status") != "ready" or job.get("cover_letter_status") != "ready":
-        raise ValueError("Both documents must be ready before selecting this role.")
     directory = _existing_autoprep_directory(job, role_id)
     if directory is None:
         raise FileNotFoundError("The selected role's documents folder is not available.")
-    paths: list[Path] = []
-    for field, label in (
-        ("resume_artifact_path", "resume"),
-        ("cover_letter_artifact_path", "cover letter"),
+    documents: list[tuple[str, Path]] = []
+    for kind, field, label in (
+        ("resume", "resume_artifact_path", "resume"),
+        ("cover_letter", "cover_letter_artifact_path", "cover letter"),
     ):
+        if job.get(f"{kind}_status") != "ready":
+            continue
         value = job.get(field)
         if not isinstance(value, str):
             raise FileNotFoundError(f"The selected role's {label} is not available.")
@@ -4729,10 +4839,12 @@ def _ready_autoprep_document_pair(job: dict[str, Any]) -> tuple[int, Path, Path]
             raise FileNotFoundError(f"The selected role's {label} is not available.")
         if path.stat().st_size <= 0 or not PdfReader(str(path)).pages:
             raise RuntimeError(f"The selected role's {label} PDF is invalid.")
-        paths.append(path)
-    if paths[0].name == paths[1].name:
+        documents.append((kind, path))
+    if not documents:
+        raise ValueError("This role does not have a prepared document available yet.")
+    if len({path.name for _kind, path in documents}) != len(documents):
         raise RuntimeError("Prepared document filenames must be distinct.")
-    return role_id, paths[0], paths[1]
+    return role_id, documents
 
 
 def _exchange_directories_atomically(first: Path, second: Path) -> None:
@@ -4773,15 +4885,16 @@ def _sync_currently_applying_folder(job: dict[str, Any]) -> dict[str, object]:
             if not backup.is_dir() or backup.is_symlink():
                 raise RuntimeError("Currently Applying recovery path is not a directory.")
             backup.replace(destination)
-        role_id, resume, cover_letter = _ready_autoprep_document_pair(job)
+        role_id, documents = _available_autoprep_documents(job)
         temporary = Path(tempfile.mkdtemp(prefix=".currently-applying-", dir=root))
         try:
-            resume_name = _role_material_pdf_filename(job, kind="resume")
-            cover_letter_name = _role_material_pdf_filename(job, kind="cover_letter")
-            _atomic_copy_verified_pdf(resume, temporary / resume_name)
-            _atomic_copy_verified_pdf(cover_letter, temporary / cover_letter_name)
-            if len(list(temporary.iterdir())) != 2:
-                raise RuntimeError("Currently Applying must contain exactly two documents.")
+            filenames: list[str] = []
+            for kind, source in documents:
+                filename = _role_material_pdf_filename(job, kind=kind)
+                _atomic_copy_verified_pdf(source, temporary / filename)
+                filenames.append(filename)
+            if len(list(temporary.iterdir())) != len(documents):
+                raise RuntimeError("Currently Applying does not match the available documents.")
             if destination.exists():
                 if not destination.is_dir() or destination.is_symlink():
                     raise RuntimeError("Currently Applying path is not a safe directory.")
@@ -4794,7 +4907,7 @@ def _sync_currently_applying_folder(job: dict[str, Any]) -> dict[str, object]:
     return {
         "role_id": role_id,
         "path": str(destination.resolve()),
-        "filenames": [resume_name, cover_letter_name],
+        "filenames": filenames,
     }
 
 
@@ -4890,6 +5003,59 @@ def _role_with_effective_company(role: dict[str, Any]) -> dict[str, Any]:
     if explicit_location:
         resolved["location"] = explicit_location
     return resolved
+
+
+def _cover_letter_presentation_role_title(role_title: str) -> str:
+    title = " ".join(role_title.split()).strip(" ,") or "role"
+    title = re.sub(r"\s*\([^()]*\)\s*$", "", title).strip()
+    title = title.split(",", 1)[0].strip() or title
+    title = re.split(
+        r"\s+(?:[|/]|[-–—])\s+|\s*:\s+",
+        title,
+        maxsplit=1,
+    )[0].strip() or title
+    words = [word if word.isupper() and len(word) <= 5 else word.lower() for word in title.split()]
+    return " ".join(words)
+
+
+def _cover_letter_presentation_company_name(company_name: str) -> str:
+    company = " ".join(company_name.split()).strip() or "the company"
+    aliases = {
+        "datologyai": "Datology",
+    }
+    return aliases.get(re.sub(r"[^a-z0-9]+", "", company.lower()), company)
+
+
+def _cover_letter_presentation_opening_subject(role_title: str, company_name: str) -> str:
+    title = _cover_letter_presentation_role_title(role_title)
+    company = _cover_letter_presentation_company_name(company_name)
+    if title.casefold() in {"job", "jobs", "role", "position", "opening", "opportunity"}:
+        return f"The opportunity at {company}"
+    return f"The {title} role at {company}"
+
+
+def _naturalize_cover_letter_opening(
+    latex: str,
+    *,
+    role_title: str,
+    company_name: str,
+) -> str:
+    exact_title = " ".join(role_title.split()).strip()
+    exact_company = " ".join(company_name.split()).strip()
+    if not exact_title or not exact_company:
+        return latex
+    title_pattern = re.escape(exact_title).replace(r"\ ", r"\s+")
+    company_pattern = re.escape(exact_company).replace(r"\ ", r"\s+")
+    opening_pattern = re.compile(
+        rf"The\s+{title_pattern}\s+role\s+at\s+{company_pattern}"
+        r"\s+stands\s+out(?:\s+to\s+me)?\s+because",
+        re.IGNORECASE,
+    )
+    replacement = (
+        f"{_cover_letter_presentation_opening_subject(exact_title, exact_company)} "
+        "stands out to me because"
+    )
+    return opening_pattern.sub(lambda _match: replacement, latex, count=1)
 
 
 def _autoprep_error(error: Exception) -> str:
@@ -5125,10 +5291,18 @@ def build_role_cover_letter(
     experience_notes: list[ExperienceNote] = []
     experience_context: list[dict[str, object]] = []
     role_context: list[dict[str, object]] = []
-    applicant_specificity_context = resume.content
     cover_letter_model = DEFAULT_COVER_LETTER_MODEL
     fallback_role = _role_with_effective_company(role)
+    # Caller data is not authoritative enough to enable the automatic fallback.
+    # The saved role and all generation context must load successfully first.
+    fallback_permitted = allow_local_fallback
     role_for_prompt = dict(fallback_role)
+    role_for_prompt["cover_letter_role_title"] = _cover_letter_presentation_role_title(
+        str(role_for_prompt.get("title") or "")
+    )
+    role_for_prompt["cover_letter_company_name"] = _cover_letter_presentation_company_name(
+        str(role_for_prompt.get("company_name") or "")
+    )
 
     def search_cover_letters(query: str, *, limit: int = 3) -> list[dict[str, object]]:
         with db.connect() as connection:
@@ -5149,6 +5323,14 @@ def build_role_cover_letter(
             fallback_role["company_name"] = company.name
             fallback_role = _role_with_effective_company(fallback_role)
             role_for_prompt = dict(fallback_role)
+            role_for_prompt["cover_letter_role_title"] = _cover_letter_presentation_role_title(
+                str(role_for_prompt.get("title") or "")
+            )
+            role_for_prompt["cover_letter_company_name"] = (
+                _cover_letter_presentation_company_name(
+                    str(role_for_prompt.get("company_name") or "")
+                )
+            )
             sync_role_context_vectors(
                 connection,
                 role=authoritative_role,
@@ -5188,14 +5370,8 @@ def build_role_cover_letter(
             role=role_for_prompt,
             tweaks=tweaks,
         )
-        applicant_specificity_context = "\n".join(
-            [
-                resume.content,
-                *[
-                    str(item.get("content") or "")
-                    for item in experience_context
-                ],
-            ]
+        fallback_permitted = allow_local_fallback or bool(
+            str(fallback_role.get("description") or "").strip()
         )
         draft = asyncio.run(
             generate_cover_letter(
@@ -5211,14 +5387,18 @@ def build_role_cover_letter(
             )
         )
         latex = _normalize_cover_letter_latex(
-            draft.latex,
+            _naturalize_cover_letter_opening(
+                draft.latex,
+                role_title=str(role_for_prompt.get("title") or ""),
+                company_name=str(role_for_prompt.get("company_name") or ""),
+            ),
             hiring_contact=find_named_hiring_contact(role_for_prompt.get("description")),
             role_title=str(role_for_prompt.get("title") or ""),
         )
         example_ids = draft.example_ids
         source = "ai_cover_letter"
     except Exception:
-        if not allow_local_fallback:
+        if not fallback_permitted:
             raise
         LOGGER.exception("AI cover letter generation failed for role %s", role_id)
         return _publish_reliable_cover_letter_fallback(
@@ -5232,11 +5412,6 @@ def build_role_cover_letter(
 
     for attempt in range(3):
         try:
-            _validate_cover_letter_specificity_connections(
-                draft,
-                role=role_for_prompt,
-                applicant_context=applicant_specificity_context,
-            )
             written = _write_role_cover_letter(
                 role_for_prompt,
                 latex,
@@ -5251,10 +5426,10 @@ def build_role_cover_letter(
             return written
         except Exception as error:  # noqa: BLE001 - generated output must fall back safely.
             if attempt == 2 or source != "ai_cover_letter":
-                if not allow_local_fallback:
+                if not fallback_permitted:
                     raise RuntimeError(
-                        "Could not produce a specific, verified cover letter. The prior document "
-                        "was preserved; try regeneration again."
+                        "Could not produce a usable cover letter. The prior document was "
+                        "preserved; try regeneration again."
                     ) from error
                 return _publish_reliable_cover_letter_fallback(
                     fallback_role,
@@ -5287,15 +5462,6 @@ def build_role_cover_letter(
                     "rationale. Tighten prose and remove repetition only; never truncate text or "
                     "invent facts."
                 )
-            elif isinstance(error, GeneratedDocumentQualityError):
-                retry_tweaks = (
-                    f"{tweaks or ''}\n\n"
-                    "The previous draft failed the specificity quality gate. Rewrite it as natural "
-                    "first-person applicant prose that explicitly connects at least two exact job "
-                    "priorities to concrete source-supported evidence. Do not use stock openings "
-                    "such as 'I am excited to apply' or expose labels such as Tools, Useful "
-                    "attributes, Evidence, Repository-verified, or User-confirmed."
-                )
             else:
                 retry_tweaks = (
                     f"{tweaks or ''}\n\n"
@@ -5321,10 +5487,10 @@ def build_role_cover_letter(
                 example_ids = draft.example_ids
             except Exception:
                 LOGGER.exception("AI cover letter repair failed for role %s", role_id)
-                if not allow_local_fallback:
+                if not fallback_permitted:
                     raise RuntimeError(
-                        "Could not repair the cover letter into a specific, verified draft. The "
-                        "prior document was preserved; try regeneration again."
+                        "Could not repair the cover letter into a usable draft. The prior document "
+                        "was preserved; try regeneration again."
                     ) from None
                 return _publish_reliable_cover_letter_fallback(
                     fallback_role,
@@ -5335,7 +5501,11 @@ def build_role_cover_letter(
                     required_page_count=required_page_count,
                 )
             latex = _normalize_cover_letter_latex(
-                draft_latex,
+                _naturalize_cover_letter_opening(
+                    draft_latex,
+                    role_title=str(role_for_prompt.get("title") or ""),
+                    company_name=str(role_for_prompt.get("company_name") or ""),
+                ),
                 hiring_contact=find_named_hiring_contact(role_for_prompt.get("description")),
                 role_title=str(role_for_prompt.get("title") or ""),
             )
@@ -5386,224 +5556,6 @@ class GeneratedDocumentLengthError(RuntimeError):
         )
 
 
-class GeneratedDocumentQualityError(RuntimeError):
-    pass
-
-
-_COVER_LETTER_CONNECTION_STOPWORDS = {
-    "a",
-    "an",
-    "and",
-    "at",
-    "for",
-    "from",
-    "in",
-    "of",
-    "on",
-    "or",
-    "the",
-    "to",
-    "with",
-}
-
-
-def _cover_letter_connection_tokens(value: object) -> list[str]:
-    return [
-        token
-        for token in re.findall(
-            r"[A-Za-z0-9+#]+(?:[.-][A-Za-z0-9+#]+)*",
-            str(value or "").casefold(),
-        )
-        if len(token) > 1 and token not in _COVER_LETTER_CONNECTION_STOPWORDS
-    ]
-
-
-def _cover_letter_verbatim_tokens(value: object) -> list[str]:
-    return re.findall(
-        r"[A-Za-z0-9+#]+(?:[.-][A-Za-z0-9+#]+)*",
-        str(value or "").casefold(),
-    )
-
-
-def _cover_letter_connection_is_verbatim(value: str, corpus: str) -> bool:
-    phrase_tokens = _cover_letter_verbatim_tokens(value)
-    corpus_tokens = _cover_letter_verbatim_tokens(corpus)
-    if len(phrase_tokens) < 2 or len(phrase_tokens) > len(corpus_tokens):
-        return False
-    phrase_length = len(phrase_tokens)
-    return any(
-        corpus_tokens[index : index + phrase_length] == phrase_tokens
-        for index in range(len(corpus_tokens) - phrase_length + 1)
-    )
-
-
-def _cover_letter_connection_signature(value: str) -> tuple[str, ...]:
-    return tuple(sorted(set(_cover_letter_connection_tokens(value))))
-
-
-def _cover_letter_connections_are_near_duplicates(
-    first: tuple[str, ...],
-    second: tuple[str, ...],
-) -> bool:
-    first_tokens = set(first)
-    second_tokens = set(second)
-    if not first_tokens or not second_tokens:
-        return True
-    smaller_size = min(len(first_tokens), len(second_tokens))
-    return len(first_tokens & second_tokens) / smaller_size >= 0.8
-
-
-def _cover_letter_body_segments(body: str) -> list[str]:
-    return [
-        segment.strip()
-        for segment in re.split(r"(?<=[.!?])\s+|\n+", body)
-        if segment.strip()
-    ]
-
-
-def _cover_letter_pair_is_explicit(
-    posting_connection: str,
-    evidence_connection: str,
-    body: str,
-    other_connections: list[str],
-) -> bool:
-    return any(
-        _cover_letter_connection_is_verbatim(posting_connection, segment)
-        and _cover_letter_connection_is_verbatim(evidence_connection, segment)
-        and not any(
-            _cover_letter_connection_is_verbatim(other_connection, segment)
-            for other_connection in other_connections
-        )
-        for segment in _cover_letter_body_segments(body)
-    )
-
-
-def _validate_cover_letter_specificity_connections(
-    draft: Any,
-    *,
-    role: dict[str, Any],
-    applicant_context: str,
-) -> None:
-    posting_connections = [
-        str(item).strip()
-        for item in getattr(draft, "posting_connections", [])
-        if str(item).strip()
-    ]
-    evidence_connections = [
-        str(item).strip()
-        for item in getattr(draft, "evidence_connections", [])
-        if str(item).strip()
-    ]
-    if not (
-        2 <= len(posting_connections) <= 3
-        and len(posting_connections) == len(evidence_connections)
-    ):
-        raise GeneratedDocumentQualityError(
-            "Cover letter must connect two or three posting priorities to applicant evidence."
-        )
-
-    posting_signatures = [
-        _cover_letter_connection_signature(item) for item in posting_connections
-    ]
-    evidence_signatures = [
-        _cover_letter_connection_signature(item) for item in evidence_connections
-    ]
-    pair_signatures = [
-        (posting_signature, evidence_signature)
-        for posting_signature, evidence_signature in zip(
-            posting_signatures,
-            evidence_signatures,
-            strict=True,
-        )
-    ]
-    if (
-        any(not signature for signature in posting_signatures)
-        or any(not signature for signature in evidence_signatures)
-        or len(set(posting_signatures)) != len(posting_signatures)
-        or len(set(evidence_signatures)) != len(evidence_signatures)
-        or len(set(pair_signatures)) != len(pair_signatures)
-        or any(
-            _cover_letter_connections_are_near_duplicates(
-                posting_signatures[first_index],
-                posting_signatures[second_index],
-            )
-            for first_index in range(len(posting_signatures))
-            for second_index in range(first_index + 1, len(posting_signatures))
-        )
-        or any(
-            _cover_letter_connections_are_near_duplicates(
-                evidence_signatures[first_index],
-                evidence_signatures[second_index],
-            )
-            for first_index in range(len(evidence_signatures))
-            for second_index in range(first_index + 1, len(evidence_signatures))
-        )
-        or any(
-            _cover_letter_connections_are_near_duplicates(
-                posting_signature,
-                evidence_signature,
-            )
-            for posting_signature in posting_signatures
-            for evidence_signature in evidence_signatures
-        )
-    ):
-        raise GeneratedDocumentQualityError(
-            "Cover letter posting priorities and applicant evidence must be distinct."
-        )
-
-    job_description = str(role.get("description") or "")
-    body = _plain_text_from_latex(str(getattr(draft, "latex", "")))
-    body_segments = _cover_letter_body_segments(body)
-    for connection in posting_connections + evidence_connections:
-        occurrence_count = sum(
-            _cover_letter_connection_is_verbatim(connection, segment)
-            for segment in body_segments
-        )
-        if occurrence_count != 1:
-            raise GeneratedDocumentQualityError(
-                "Every declared cover-letter priority and evidence phrase must appear exactly "
-                "once in the body."
-            )
-    for index, (posting_connection, evidence_connection) in enumerate(
-        zip(
-            posting_connections,
-            evidence_connections,
-            strict=True,
-        )
-    ):
-        if not _cover_letter_connection_is_verbatim(
-            posting_connection,
-            job_description,
-        ):
-            raise GeneratedDocumentQualityError(
-                "A stated posting priority was not grounded in the saved job description."
-            )
-        if not _cover_letter_connection_is_verbatim(
-            evidence_connection,
-            applicant_context,
-        ):
-            raise GeneratedDocumentQualityError(
-                "A stated applicant example was not grounded in saved applicant evidence."
-            )
-        if not _cover_letter_pair_is_explicit(
-            posting_connection,
-            evidence_connection,
-            body,
-            [
-                connection
-                for other_index, pair in enumerate(
-                    zip(posting_connections, evidence_connections, strict=True)
-                )
-                if other_index != index
-                for connection in pair
-            ],
-        ):
-            raise GeneratedDocumentQualityError(
-                "Every posting-to-evidence pair must have its own sentence without another "
-                "declared pair."
-            )
-
-
 _COVER_LETTER_INTERNAL_METADATA_PATTERNS = (
     re.compile(r"(?i)\b(?:I\s+)?tools\s*:"),
     re.compile(r"(?i)\b(?:I\s+)?useful attributes\s*:"),
@@ -5613,23 +5565,6 @@ _COVER_LETTER_INTERNAL_METADATA_PATTERNS = (
     re.compile(r"(?i)\bI am excited to apply\b"),
     re.compile(r"(?i)\bI am writing to express my interest\b"),
 )
-
-
-def _validate_cover_letter_quality(latex: str) -> None:
-    plain_text = _plain_text_from_latex(latex)
-    if any(
-        pattern.search(candidate)
-        for pattern in _COVER_LETTER_INTERNAL_METADATA_PATTERNS
-        for candidate in (latex, plain_text)
-    ):
-        raise GeneratedDocumentQualityError(
-            "Generated cover letter contained generic or internal-scaffold prose."
-        )
-
-
-def _validate_cover_letter_quality_for_source(latex: str, *, source: str) -> None:
-    if source != "edited_cover_letter":
-        _validate_cover_letter_quality(latex)
 
 
 def _pdf_page_fill_ratio(pdf_path: Path) -> float | None:
@@ -6265,7 +6200,6 @@ def _write_role_cover_letter(
         source=source,
         example_count=len(example_ids),
     )
-    _validate_cover_letter_quality_for_source(latex, source=source)
     body_word_count = _cover_letter_body_word_count(latex)
     too_short = minimum_body_word_count is not None and body_word_count < minimum_body_word_count
     too_long = maximum_body_word_count is not None and body_word_count > maximum_body_word_count
@@ -6950,6 +6884,21 @@ def _fallback_cover_letter_evidence(
             if candidate and _is_fallback_evidence_candidate(candidate)
         )
     )
+    role_text = " ".join(
+        str(role.get(key) or "") for key in ("title", "description")
+    ).casefold()
+    ai_role = bool(
+        re.search(
+            r"\b(?:ai|artificial intelligence|machine learning|ml|llm|language model)\b",
+            role_text,
+        )
+    )
+    if not ai_role:
+        candidates = [
+            candidate
+            for candidate in candidates
+            if not re.search(r"\b(?:codex|hermes agent|ai tools?)\b", candidate, re.IGNORECASE)
+        ]
     role_terms = _prep_keywords(
         " ".join(str(role.get(key) or "") for key in ("title", "description"))
     )
@@ -7009,22 +6958,32 @@ def _fallback_cover_letter_latex(
 ) -> str:
     title = str(role.get("title") or "this role")
     company = str(role.get("company_name") or "your team")
+    presentation_subject = _cover_letter_presentation_opening_subject(title, company)
+    natural_subject = (
+        presentation_subject[:1].lower() + presentation_subject[1:]
+        if presentation_subject
+        else "this opportunity"
+    )
     location = str(role.get("location") or "").strip()
-    location_line = f"{location}\\\\\n" if location else ""
+    safe_title = _escape_latex_role_title(title)
+    safe_company = _escape_latex_role_title(company)
+    safe_natural_subject = _escape_latex_role_title(natural_subject)
+    safe_location = _escape_latex_role_title(location)
+    location_line = f"{safe_location}\\\\\n" if safe_location else ""
     priorities = _fallback_role_priorities(role)
     priority_text = _joined_priority_text(priorities)
     evidence = _fallback_cover_letter_evidence(role, resume, other_experience_context)
     evidence_sentences = [_first_person_evidence_sentence(item) for item in evidence]
-    primary_evidence = ". ".join(evidence_sentences[:2])
+    primary_evidence = evidence_sentences[0] if evidence_sentences else ""
     if primary_evidence:
         primary_evidence += "."
     else:
-        primary_evidence = (
-            "My application is grounded only in the experience documented in my resume."
-        )
-    secondary_evidence = ". ".join(evidence_sentences[2:4])
-    if secondary_evidence:
-        secondary_evidence += ". "
+        primary_evidence = "I am interested in bringing a careful, practical approach to this role."
+
+    safe_priority_text = _escape_latex_role_title(priority_text)
+    safe_primary_evidence = _escape_latex_role_title(primary_evidence)
+
+    safe_full_name = _escape_latex_role_title(applicant_profile.full_name)
     return (
         "\\documentclass[letterpaper,11pt]{article}\n"
         "\\usepackage[margin=1in]{geometry}\n"
@@ -7035,28 +6994,25 @@ def _fallback_cover_letter_latex(
         "\\begin{document}\n"
         f"\\noindent {applicant_profile.latex_sender_block}\\par\n"
         "\\vspace{1.1em}\n"
-        f"\\noindent {company}\\\\\n"
+        f"\\noindent {safe_company}\\\\\n"
         f"{location_line}"
-        f"{title}\\\\\n"
+        f"{safe_title}\\\\\n"
         "\\today\\par\n"
         "\\vspace{1.1em}\n\n"
         "\\noindent Dear Hiring Manager,\\par\n"
         "\\vspace{0.35em}\n\n"
-        f"I am applying for the {title} position at {company}. The opportunity to work on "
-        f"{priority_text} is a strong match for the concrete engineering work documented in my "
-        "resume. I would bring hands-on experience building, testing, and improving production "
-        "software across those areas.\n\n"
-        f"{primary_evidence} These projects required me to turn "
-        "specific product and platform requirements into maintainable implementations while "
-        "checking the resulting behavior and reliability.\n\n"
-        f"{secondary_evidence}I would apply the same practical, "
-        f"evidence-driven approach to {company}'s work across {priority_text}. Thank you for "
-        "considering my "
-        "application. I would welcome an interview to discuss how this experience can contribute "
-        "to the team.\n\n"
+        f"What interests me about {safe_natural_subject} is the opportunity to contribute to "
+        f"{safe_priority_text}. The work calls for practical judgment as well as technical "
+        "execution, which is the kind of challenge I want to take on next.\n\n"
+        f"One experience that would shape my approach is this: {safe_primary_evidence} "
+        f"That work is relevant to {safe_company}'s focus on {safe_priority_text} because it "
+        "required turning a concrete need into working software rather than treating the "
+        "technology as the end goal.\n\n"
+        f"I would welcome the chance to bring that approach to {safe_company} and learn from the "
+        "team. Thank you for your consideration.\n\n"
         "\\vspace{0.35em}\n"
         "\\noindent Sincerely,\\\\[12pt]\n"
-        f"{applicant_profile.full_name}\n"
+        f"{safe_full_name}\n"
         "\\end{document}\n"
     )
 
