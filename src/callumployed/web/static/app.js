@@ -4590,6 +4590,31 @@ async function copyApplicationAnswer(text) {
   if (!copied) throw new Error("Clipboard copy is unavailable");
 }
 
+async function copyPreparedCoverLetter(job, button) {
+  if (button.disabled) return;
+  button.disabled = true;
+  button.textContent = "Copying...";
+  try {
+    const response = await fetch(
+      `/api/autoprep/roles/${encodeURIComponent(job.role_id)}/documents/cover-letter.txt`,
+    );
+    const payload = await response.json();
+    if (!response.ok || !String(payload?.text || "").trim()) {
+      throw new Error(payload?.error || "Could not load the cover letter.");
+    }
+    await copyApplicationAnswer(String(payload.text));
+    button.textContent = "Copied cover letter";
+  } catch (error) {
+    button.textContent = error instanceof Error ? error.message : "Copy unavailable";
+  } finally {
+    window.setTimeout(() => {
+      if (!button.isConnected) return;
+      button.textContent = "Copy cover letter";
+      button.disabled = false;
+    }, 1_500);
+  }
+}
+
 async function submitApplicationQuestion(roleId) {
   const numericRoleId = Number(roleId);
   const question = String(preppedApplicationQuestionDrafts.get(numericRoleId) ?? "").trim();
@@ -4753,7 +4778,10 @@ function renderPreppedDocument(job, documentKind, label) {
       ${retryingFailedDocument && documentKind === "cover-letter" ? `<div class="prepped-failure-explanation" role="alert"><strong>Why the cover letter failed</strong><p>${escapeUiText(coverLetterFailureExplanation(job))}</p></div>` : error ? `<p class="prepped-error">${escapeUiText(error)}</p>` : ""}
       <label class="prepped-comments-label" for="prepped-comments-${escapeHtml(key)}">${commentsLabel}</label>
       <textarea id="prepped-comments-${escapeHtml(key)}" data-autoprep-comments="${documentKind}" rows="4" placeholder="${commentsPlaceholder}" ${active ? "disabled" : ""}>${escapeUiText(comments)}</textarea>
-      <button class="prepped-regenerate" type="button" data-autoprep-regenerate="${documentKind}" ${canRegenerate ? "" : "disabled"}>${active ? "Regenerating..." : `Regenerate ${escapeHtml(label)}`}</button>
+      <div class="prepped-document-actions">
+        ${documentKind === "cover-letter" ? `<button type="button" data-autoprep-copy-cover-letter ${job.cover_letter_copy_available ? "" : "disabled"}>Copy cover letter</button>` : ""}
+        <button class="prepped-regenerate" type="button" data-autoprep-regenerate="${documentKind}" ${canRegenerate ? "" : "disabled"}>${active ? "Regenerating..." : `Regenerate ${escapeHtml(label)}`}</button>
+      </div>
     </section>`;
 }
 
@@ -5098,6 +5126,11 @@ preppedDetail.addEventListener("click", async (event) => {
   const currentlyApplyingButton = event.target.closest("[data-currently-applying-open]");
   if (currentlyApplyingButton) {
     openCurrentlyApplyingFolder(currentlyApplyingButton);
+    return;
+  }
+  const copyCoverLetterButton = event.target.closest("[data-autoprep-copy-cover-letter]");
+  if (copyCoverLetterButton) {
+    await copyPreparedCoverLetter(job, copyCoverLetterButton);
     return;
   }
   const regenerateButton = event.target.closest("[data-autoprep-regenerate]");

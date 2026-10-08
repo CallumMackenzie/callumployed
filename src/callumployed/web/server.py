@@ -1505,6 +1505,24 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
             except ValueError:
                 self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
                 return
+            if document_name == "cover-letter.txt":
+                with db.connect() as connection:
+                    ensure_autoprep_schema(connection)
+                    job = get_role_autoprep_job(connection, role_id)
+                if job is None:
+                    self.send_error(HTTPStatus.NOT_FOUND, "Autoprep role not found")
+                    return
+                source_path = _role_cover_letter_tex_path(role_id)
+                if not source_path.is_file():
+                    self.send_error(HTTPStatus.NOT_FOUND, "Prepared cover letter is not available")
+                    return
+                try:
+                    text = _cover_letter_plain_text(source_path.read_text())
+                except (OSError, ValueError):
+                    self.send_error(HTTPStatus.NOT_FOUND, "Prepared cover letter is not available")
+                    return
+                self._send_json({"text": text})
+                return
             document_paths = {
                 "resume.pdf": "resume_artifact_path",
                 "cover-letter.pdf": "cover_letter_artifact_path",
@@ -4382,6 +4400,9 @@ def build_prepped_roles_payload() -> dict[str, Any]:
                 resolved_role,
                 kind="cover_letter",
             )
+            job["cover_letter_copy_available"] = _role_cover_letter_tex_path(
+                int(job["role_id"])
+            ).is_file()
         bulk_regeneration = get_latest_bulk_cover_letter_regeneration(connection)
     return {
         "jobs": jobs,
@@ -5941,6 +5962,46 @@ def _artifact_pair_is_current_page_count(
         )
     except Exception:  # noqa: BLE001 - unreadable artifacts cannot be trusted as fallbacks.
         return False
+
+
+def _cover_letter_plain_text(latex: str) -> str:
+    document_match = re.search(
+        r"\\begin\{document\}(.*?)\\end\{document\}",
+        latex,
+        flags=re.DOTALL,
+    )
+    if document_match is None:
+        raise ValueError("Cover letter source did not contain a document body")
+    text = document_match.group(1).replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"(?<!\\)%.*$", "", text, flags=re.MULTILINE)
+    text = re.sub(r"\\href\{[^{}]*\}\{([^{}]*)\}", r"\1", text)
+    for command in ("textbf", "textit", "emph", "underline"):
+        text = re.sub(rf"\\{command}\{{([^{{}}]*)\}}", r"\1", text)
+    text = re.sub(r"\\vspace\*?\{[^{}]*\}[ \t]*\n?", "\n\n", text)
+    text = re.sub(r"\\(?:par|medskip|bigskip|smallskip)\b[ \t]*\n?", "\n\n", text)
+    text = re.sub(r"\\\\(?:\[[^\]]*\])?[ \t]*\n?", "\n", text)
+    text = re.sub(r"\\(?:noindent|centering|raggedright)\b", "", text)
+    text = re.sub(r"\\(?:begin|end)\{(?:center|flushleft|flushright)\}", "\n", text)
+    replacements = {
+        r"\&": "&",
+        r"\%": "%",
+        r"\$": "$",
+        r"\#": "#",
+        r"\_": "_",
+        r"\{": "{",
+        r"\}": "}",
+        r"\textbackslash{}": "\\",
+        "~": " ",
+    }
+    for source, replacement in replacements.items():
+        text = text.replace(source, replacement)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = text.strip()
+    if not text:
+        raise ValueError("Cover letter source did not contain copyable text")
+    return f"{text}\n"
 
 
 def _existing_one_page_cover_letter_fallback(

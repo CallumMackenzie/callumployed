@@ -5404,6 +5404,16 @@ a:hover .role-link-icon {
   font-weight: 900;
 }
 
+.prepped-document-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.prepped-document-actions button {
+  flex: 1 1 12rem;
+}
+
 @media (max-width: 760px) {
   .review-entry {
     grid-template-columns: repeat(2, minmax(0, 1fr));

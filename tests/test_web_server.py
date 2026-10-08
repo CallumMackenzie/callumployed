@@ -816,7 +816,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
             app_javascript
         )
         assert '<div id="root"></div>' not in index_markup
-        assert '<script type="module" src="/assets/app.js?v=vanilla-20260917-37"></script>' in (
+        assert '<script type="module" src="/assets/app.js?v=vanilla-20260917-39"></script>' in (
             index_markup
         )
 
@@ -959,8 +959,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=vanilla-20260915-30" in index_markup
-        assert "/assets/app.js?v=vanilla-20260917-37" in index_markup
+        assert "/assets/app.css?v=vanilla-20260915-31" in index_markup
+        assert "/assets/app.js?v=vanilla-20260917-39" in index_markup
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles
@@ -1485,6 +1485,30 @@ def test_partially_complete_role_can_update_currently_applying_and_mark_applied(
         web_server.set_config_value(connection, "applicant_first_name", "Jake")
         web_server.set_config_value(connection, "applicant_last_name", "Yeo")
 
+    cover_letter_source = web_server._role_cover_letter_tex_path(role.id)
+    cover_letter_source.parent.mkdir(parents=True, exist_ok=True)
+    cover_letter_source.write_text(
+        r"""\documentclass{article}
+\begin{document}
+\noindent Jake Yeo\\
+jake@example.com\par
+\vspace{1em}
+\noindent Acme \& Co.\\
+Engineer\\
+October 8, 2026\par
+
+\noindent Dear Hiring Manager,\par
+
+I improved delivery speed by 70\% while preserving reliability.
+
+I would welcome a conversation about the role.
+
+\noindent Sincerely,\\[12pt]
+Jake Yeo
+\end{document}
+"""
+    )
+
     open_calls: list[list[str]] = []
 
     def fake_open(arguments: list[str], **_kwargs: object) -> SimpleNamespace:
@@ -1504,6 +1528,25 @@ def test_partially_complete_role_can_update_currently_applying_and_mark_applied(
         assert prepared_job["resume_filename"] == "jake-yeo-acme-engineer-resume.pdf"
         assert prepared_job["cover_letter_filename"] == (
             "jake-yeo-acme-engineer-cover-letter.pdf"
+        )
+        assert prepared_job["cover_letter_copy_available"] is True
+
+        with urlopen(
+            f"{base_url}/api/autoprep/roles/{role.id}/documents/cover-letter.txt",
+            timeout=5,
+        ) as response:
+            copied = json.loads(response.read().decode())
+        assert copied["text"] == (
+            "Jake Yeo\n"
+            "jake@example.com\n\n"
+            "Acme & Co.\n"
+            "Engineer\n"
+            "October 8, 2026\n\n"
+            "Dear Hiring Manager,\n\n"
+            "I improved delivery speed by 70% while preserving reliability.\n\n"
+            "I would welcome a conversation about the role.\n\n"
+            "Sincerely,\n"
+            "Jake Yeo\n"
         )
 
         with urlopen(
