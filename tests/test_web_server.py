@@ -816,7 +816,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
             app_javascript
         )
         assert '<div id="root"></div>' not in index_markup
-        assert '<script type="module" src="/assets/app.js?v=vanilla-20260917-39"></script>' in (
+        assert '<script type="module" src="/assets/app.js?v=vanilla-20260917-41"></script>' in (
             index_markup
         )
 
@@ -959,8 +959,19 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=vanilla-20260915-31" in index_markup
-        assert "/assets/app.js?v=vanilla-20260917-39" in index_markup
+        assert "/assets/app.css?v=vanilla-20260915-33" in index_markup
+        assert "/assets/app.js?v=vanilla-20260917-41" in index_markup
+        assert 'data-applied-search-input' in app_javascript
+        assert 'data-applied-search-clear' in app_javascript
+        assert 'data-applied-search-summary' in app_javascript
+        assert 'data-applied-search-empty' in app_javascript
+        assert 'status.key === "applied" ? renderAppliedJobsSearch(status.jobs.length)' in (
+            app_javascript
+        )
+        assert "function applyAppliedJobsSearch" in app_javascript
+        assert "job.company_name, job.title, job.location" in app_javascript
+        assert '.status-pane[data-bucket="applied"] .applied-search-panel' in app_styles
+        assert "@media (max-width: 760px)" in app_styles
         assert '.status-pane[data-bucket="applied"]' in app_styles
         assert "--bucket: var(--purple);" in app_styles
         assert '.status-pane[data-bucket="closed"]' in app_styles

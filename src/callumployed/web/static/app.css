@@ -1278,6 +1278,35 @@ h1 {
   animation: reveal 180ms ease-out both;
 }
 
+.status-pane[data-bucket="applied"] .applied-search-panel {
+  display: grid;
+  gap: 7px;
+  padding: 14px 16px 13px 18px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bucket-bg) 38%, white);
+}
+
+.applied-search > input,
+.applied-search > button {
+  height: 43px;
+}
+
+.applied-search-summary,
+.applied-search-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.applied-search-empty {
+  color: var(--bucket);
+}
+
+.applied-search-empty[hidden] {
+  display: none;
+}
+
 .jobs {
   display: grid;
   gap: 1px;

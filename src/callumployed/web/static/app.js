@@ -256,6 +256,7 @@ const DESCRIPTION_TECHNOLOGY_TERMS = [...DESCRIPTION_TECHNOLOGY_BY_NAME.values()
   .sort((left, right) => right.length - left.length);
 let hideEmpty = true;
 let trackerData = null;
+let appliedJobsSearchQuery = "";
 let masterResume = null;
 let resumeResources = [];
 let coverLetterExamples = [];
@@ -850,10 +851,78 @@ async function removeApplicationMaterial(button) {
   }
 }
 
+function normalizeAppliedJobsSearch(value) {
+  return String(value ?? "")
+    .normalize("NFKD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLocaleLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function appliedJobSearchText(job) {
+  return normalizeAppliedJobsSearch([job.company_name, job.title, job.location].filter(Boolean).join(" "));
+}
+
+function renderAppliedJobsSearch(total) {
+  const countLabel = `${total} applied ${total === 1 ? "job" : "jobs"}`;
+  return `
+    <div class="applied-search-panel">
+      <label class="sr-only" for="applied-jobs-search">search applied jobs</label>
+      <div class="search applied-search" role="search">
+        <input
+          id="applied-jobs-search"
+          type="search"
+          value="${escapeHtml(appliedJobsSearchQuery)}"
+          placeholder="search applied jobs"
+          autocomplete="off"
+          spellcheck="false"
+          data-applied-search-input
+          ${total === 0 ? "disabled" : ""}
+        />
+        <button type="button" data-applied-search-clear ${appliedJobsSearchQuery ? "" : "hidden"}>clear</button>
+      </div>
+      <p class="applied-search-summary" data-applied-search-summary aria-live="polite">${countLabel}</p>
+      <p class="applied-search-empty" data-applied-search-empty hidden>no applied jobs match your search.</p>
+    </div>
+  `;
+}
+
+function applyAppliedJobsSearch() {
+  const pane = statusListEl.querySelector('[data-bucket="applied"]');
+  const input = pane?.querySelector("[data-applied-search-input]");
+  if (!pane || !input) return;
+
+  appliedJobsSearchQuery = input.value;
+  const terms = normalizeAppliedJobsSearch(input.value).split(" ").filter(Boolean);
+  const jobs = [...pane.querySelectorAll(".job[data-applied-search-text]")];
+  input.disabled = jobs.length === 0;
+  const activeSearch = terms.length > 0 && jobs.length > 0;
+  let visibleCount = 0;
+  jobs.forEach((job) => {
+    const searchText = job.dataset.appliedSearchText ?? "";
+    const visible = terms.every((term) => searchText.includes(term));
+    job.hidden = !visible;
+    if (visible) visibleCount += 1;
+  });
+
+  const summary = pane.querySelector("[data-applied-search-summary]");
+  if (summary) {
+    summary.textContent = activeSearch
+      ? `${visibleCount} of ${jobs.length} applied jobs`
+      : `${jobs.length} applied ${jobs.length === 1 ? "job" : "jobs"}`;
+  }
+  const clearButton = pane.querySelector("[data-applied-search-clear]");
+  if (clearButton) clearButton.hidden = terms.length === 0;
+  const empty = pane.querySelector("[data-applied-search-empty]");
+  if (empty) empty.hidden = !activeSearch || visibleCount > 0;
+}
+
 function renderStatuses(statuses) {
   statusListEl.innerHTML = statuses
     .map((status) => {
       const jobs = status.jobs.map((job) => renderJob(job, status.key)).join("");
+      const appliedSearch = status.key === "applied" ? renderAppliedJobsSearch(status.jobs.length) : "";
       const hiddenCount = Math.max(Number(status.count) - status.jobs.length, 0);
       const moreEntry = ["disinterested", "rejected", "closed"].includes(status.key) && hiddenCount > 0
         ? `<p class="empty-copy status-more-copy">... and ${hiddenCount} more</p>`
@@ -867,6 +936,7 @@ function renderStatuses(statuses) {
             <span class="count">${status.count}</span>
           </button>
           <div class="pane-body" hidden>
+            ${appliedSearch}
             ${
               jobs || moreEntry
                 ? `<div class="jobs">${jobs}${moreEntry}</div>`
@@ -877,11 +947,15 @@ function renderStatuses(statuses) {
       `;
     })
     .join("");
+  applyAppliedJobsSearch();
 }
 
 function renderJob(job, statusKey) {
+  const appliedSearchAttribute = statusKey === "applied"
+    ? ` data-applied-search-text="${escapeHtml(appliedJobSearchText(job))}"`
+    : "";
   return `
-    <details class="job" data-role-id="${escapeHtml(job.id)}">
+    <details class="job" data-role-id="${escapeHtml(job.id)}"${appliedSearchAttribute}>
       <summary class="job-summary">
         <span class="job-chevron">></span>
         <span class="job-identity">
@@ -2631,7 +2705,23 @@ scanAllButton.addEventListener("click", () => {
   startScanAll();
 });
 
+statusListEl.addEventListener("input", (event) => {
+  if (!event.target.matches("[data-applied-search-input]")) return;
+  applyAppliedJobsSearch();
+});
+
 statusListEl.addEventListener("click", (event) => {
+  const clearAppliedSearch = event.target.closest("[data-applied-search-clear]");
+  if (clearAppliedSearch) {
+    const pane = clearAppliedSearch.closest('[data-bucket="applied"]');
+    const input = pane?.querySelector("[data-applied-search-input]");
+    if (!input) return;
+    input.value = "";
+    applyAppliedJobsSearch();
+    input.focus();
+    return;
+  }
+
   const roleInformationAction = event.target.closest("[data-view-role-info]");
   if (roleInformationAction) {
     try {
@@ -2801,11 +2891,19 @@ function moveRoleElement(currentJobEl, movedRole, previousStatus, nextStatus) {
 
   let jobsEl = nextBody.querySelector(".jobs");
   if (!jobsEl) {
-    nextBody.innerHTML = '<div class="jobs"></div>';
+    const jobsMarkup = '<div class="jobs"></div>';
+    if (nextStatus === "applied") {
+      nextBody.insertAdjacentHTML("beforeend", jobsMarkup);
+    } else {
+      nextBody.innerHTML = jobsMarkup;
+    }
     jobsEl = nextBody.querySelector(".jobs");
   }
   jobsEl.insertAdjacentHTML("afterbegin", renderJob(movedRole, nextStatus));
   refreshEmptyMessage(nextPane);
+  if (previousStatus === "applied" || nextStatus === "applied") {
+    applyAppliedJobsSearch();
+  }
 }
 
 function refreshEmptyMessage(pane) {
