@@ -1722,6 +1722,15 @@ a:hover .role-link-icon {
   margin-top: 2px;
 }
 
+.job-detail .applied-job-description {
+  margin: 14px 0 0;
+  color: var(--text);
+}
+
+.applied-job-description-empty {
+  color: var(--muted);
+}
+
 .description-tech {
   border-radius: 4px;
   padding: 0 0.14em;

@@ -816,7 +816,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
             app_javascript
         )
         assert '<div id="root"></div>' not in index_markup
-        assert '<script type="module" src="/assets/app.js?v=vanilla-20260917-41"></script>' in (
+        assert '<script type="module" src="/assets/app.js?v=vanilla-20260917-42"></script>' in (
             index_markup
         )
 
@@ -959,8 +959,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=vanilla-20260915-33" in index_markup
-        assert "/assets/app.js?v=vanilla-20260917-41" in index_markup
+        assert "/assets/app.css?v=vanilla-20260915-34" in index_markup
+        assert "/assets/app.js?v=vanilla-20260917-42" in index_markup
         assert 'data-applied-search-input' in app_javascript
         assert 'data-applied-search-clear' in app_javascript
         assert 'data-applied-search-summary' in app_javascript
@@ -6254,6 +6254,47 @@ def test_tracker_payload_groups_roles_by_status(
     assert applied["jobs"][0]["created_at"] is not None
     assert applied["jobs"][0]["created_at"].endswith("Z")
     assert applied["jobs"][0]["updated_at"].endswith("Z")
+
+
+def test_role_description_endpoint_returns_saved_applied_description(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "tracker-applied-description.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    with db.connect() as connection:
+        db.run_migrations(connection)
+        company = add_company(connection, Company(name="Acme"))
+        assert company.id is not None
+        role = add_role(
+            connection,
+            Role(
+                company_id=company.id,
+                title="Backend Engineer",
+                role_url="https://example.com/jobs/backend",
+                description="Build reliable systems and improve deployment tooling.",
+                role_status=RoleStatus.APPLIED,
+            ),
+        )
+        assert role.id is not None
+
+    server = LocalThreadingHTTPServer(("127.0.0.1", 0), create_handler())
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with urlopen(
+            f"http://127.0.0.1:{server.server_address[1]}/api/roles/{role.id}/description",
+            timeout=5,
+        ) as response:
+            payload = json.loads(response.read())
+        assert payload == {
+            "role_id": role.id,
+            "description": "Build reliable systems and improve deployment tooling.",
+        }
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
 
 
 def test_tracker_payload_sends_archived_count_without_archived_roles(

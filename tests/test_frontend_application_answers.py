@@ -130,8 +130,8 @@ def test_application_answer_regeneration_supports_per_answer_tweak_drafts() -> N
         regeneration.index("} catch (error)")
     )
     assert ".application-answer-tweaks" in styles
-    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260915-33" />' in index
-    assert '<script type="module" src="/assets/app.js?v=vanilla-20260917-41"></script>' in index
+    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260915-34" />' in index
+    assert '<script type="module" src="/assets/app.js?v=vanilla-20260917-42"></script>' in index
 
 
 def test_resume_regeneration_allows_empty_comments() -> None:
@@ -184,6 +184,25 @@ def test_prepped_role_description_uses_structured_description_renderer() -> None
     assert ".prepped-description-copy li + li" in styles
 
 
+def test_applied_job_details_show_the_saved_job_description() -> None:
+    source = FRONTEND_SOURCE.read_text()
+    styles = (STATIC_DIRECTORY / "app.css").read_text()
+    renderer = source[
+        source.index("function renderJob(job, statusKey)") : source.index(
+            "function renderLatestScanDot"
+        )
+    ]
+
+    assert 'statusKey === "applied" ? renderAppliedJobDescription() : ""' in renderer
+    assert "function renderAppliedJobDescription()" in source
+    assert "function loadAppliedJobDescription(job)" in source
+    assert 'fetch(`/api/roles/${encodeURIComponent(roleId)}/description`)' in source
+    assert "saved job description" in source
+    assert "renderDescriptionMarkdown(description)" in source
+    assert "no saved job description is available." in source
+    assert ".job-detail .applied-job-description" in styles
+
+
 def test_prepped_missing_description_has_an_inline_save_workflow_and_clear_failure_reason() -> None:
     source = FRONTEND_SOURCE.read_text()
     styles = (STATIC_DIRECTORY / "app.css").read_text()
@@ -204,8 +223,8 @@ def test_prepped_missing_description_has_an_inline_save_workflow_and_clear_failu
     assert 'retryingFailedDocument && documentKind === "cover-letter"' in source
     assert ".prepped-description-editor" in styles
     assert ".prepped-failure-explanation" in styles
-    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260915-33" />' in index
-    assert '<script type="module" src="/assets/app.js?v=vanilla-20260917-41"></script>' in index
+    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260915-34" />' in index
+    assert '<script type="module" src="/assets/app.js?v=vanilla-20260917-42"></script>' in index
 
 
 def test_description_renderer_highlights_curated_technical_terms_safely() -> None:
@@ -284,8 +303,8 @@ def test_application_questions_styles_and_cache_keys_are_versioned() -> None:
     assert "#close-prepped" in styles
     assert "text-transform: none" in styles
     assert ".application-questions-workspace[open]" in styles
-    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260915-33" />' in index
-    assert '<script type="module" src="/assets/app.js?v=vanilla-20260917-41"></script>' in index
+    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260915-34" />' in index
+    assert '<script type="module" src="/assets/app.js?v=vanilla-20260917-42"></script>' in index
 
 
 def test_currently_applying_folder_ui_is_explained_and_selection_driven() -> None:
@@ -303,8 +322,8 @@ def test_currently_applying_folder_ui_is_explained_and_selection_driven() -> Non
     assert "/currently-applying" in source
     assert "/currently-applying/open" in source
     assert ".currently-applying-guide" in styles
-    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260915-33" />' in index
-    assert '<script type="module" src="/assets/app.js?v=vanilla-20260917-41"></script>' in index
+    assert '<link rel="stylesheet" href="/assets/app.css?v=vanilla-20260915-34" />' in index
+    assert '<script type="module" src="/assets/app.js?v=vanilla-20260917-42"></script>' in index
 
 
 def test_every_prepped_role_transition_refreshes_currently_applying_folder() -> None:
@@ -337,7 +356,7 @@ def test_frontend_uses_direct_vanilla_assets_without_framework_shell() -> None:
     assert not (REPOSITORY_ROOT / "frontend").exists()
     assert not (STATIC_DIRECTORY / "build").exists()
     assert not (STATIC_DIRECTORY / "shell.html").exists()
-    assert '<script type="module" src="/assets/app.js?v=vanilla-20260917-41"></script>' in index
+    assert '<script type="module" src="/assets/app.js?v=vanilla-20260917-42"></script>' in index
     assert '<div id="root"></div>' not in index
     assert "dangerouslySetInnerHTML" not in index
     assert "dangerouslySetInnerHTML" not in source

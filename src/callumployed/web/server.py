@@ -789,6 +789,14 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 len(path_parts) == 4
                 and path_parts[0] == "api"
                 and path_parts[1] == "roles"
+                and path_parts[3] == "description"
+            ):
+                self._send_role_description(path_parts[2])
+                return
+            if (
+                len(path_parts) == 4
+                and path_parts[0] == "api"
+                and path_parts[1] == "roles"
                 and path_parts[3] == "prep-analysis"
             ):
                 self._send_prep_analysis(path_parts[2])
@@ -2519,6 +2527,22 @@ def create_handler() -> type[BaseHTTPRequestHandler]:
                 self.send_error(HTTPStatus.NOT_FOUND, "Career page not found")
                 return
             self._send_json(build_companies_payload())
+
+        def _send_role_description(self, role_id_text: str) -> None:
+            try:
+                role_id = int(role_id_text)
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Invalid role ID")
+                return
+
+            try:
+                with db.connect() as connection:
+                    role = get_role(connection, role_id)
+            except LookupError:
+                self.send_error(HTTPStatus.NOT_FOUND, "Role not found")
+                return
+
+            self._send_json({"role_id": role_id, "description": role.description})
 
         def _send_prep_analysis(self, role_id_text: str) -> None:
             try:

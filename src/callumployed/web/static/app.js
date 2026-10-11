@@ -987,9 +987,45 @@ function renderJob(job, statusKey) {
             <dd>${formatDate(job.updated_at)}</dd>
           </div>
         </dl>
+        ${statusKey === "applied" ? renderAppliedJobDescription() : ""}
       </div>
     </details>
   `;
+}
+
+function renderAppliedJobDescription() {
+  return `
+    <div class="review-detail review-description applied-job-description">
+      <dt>saved job description</dt>
+      <dd data-applied-job-description-copy>
+        <p class="applied-job-description-empty">loading saved job description...</p>
+      </dd>
+    </div>
+  `;
+}
+
+async function loadAppliedJobDescription(job) {
+  if (job.dataset.appliedDescriptionState) return;
+  const roleId = job.dataset.roleId;
+  const copy = job.querySelector("[data-applied-job-description-copy]");
+  if (!roleId || !copy) return;
+
+  job.dataset.appliedDescriptionState = "loading";
+  try {
+    const response = await fetch(`/api/roles/${encodeURIComponent(roleId)}/description`);
+    if (!response.ok) throw new Error("Saved job description could not be loaded.");
+    const payload = await response.json();
+    const description = String(payload?.description ?? "").trim();
+    copy.innerHTML = description
+      ? renderDescriptionMarkdown(description)
+      : '<p class="applied-job-description-empty">no saved job description is available.</p>';
+    job.dataset.appliedDescriptionState = "loaded";
+  } catch (error) {
+    copy.textContent = error instanceof Error
+      ? error.message
+      : "Saved job description could not be loaded.";
+    delete job.dataset.appliedDescriptionState;
+  }
 }
 
 function renderLatestScanDot() {
@@ -2704,6 +2740,13 @@ scanAllButton.addEventListener("click", () => {
   }
   startScanAll();
 });
+
+statusListEl.addEventListener("toggle", (event) => {
+  const job = event.target;
+  if (!(job instanceof HTMLDetailsElement) || !job.matches(".job") || !job.open) return;
+  if (job.closest("[data-bucket]")?.dataset.bucket !== "applied") return;
+  loadAppliedJobDescription(job);
+}, true);
 
 statusListEl.addEventListener("input", (event) => {
   if (!event.target.matches("[data-applied-search-input]")) return;
