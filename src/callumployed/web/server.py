@@ -4408,6 +4408,10 @@ def build_prepped_roles_payload() -> dict[str, Any]:
         db.run_migrations(connection)
         ensure_autoprep_schema(connection)
         jobs = list_autoprep_jobs(connection)
+        jobs.sort(
+            key=lambda job: (str(job.get("queued_at") or ""), int(job.get("id") or 0)),
+            reverse=True,
+        )
         for job in jobs:
             role = get_role(connection, int(job["role_id"]))
             role_payload = role.model_dump(mode="json")

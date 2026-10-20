@@ -94,6 +94,41 @@ def test_enqueue_is_durable_and_idempotent(tmp_path: Path) -> None:
             )
 
 
+def test_prepped_roles_payload_lists_newest_queued_role_first(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "autoprep-newest-first.sqlite3"
+    monkeypatch.setenv("CALLUMPLOYED_DATABASE_PATH", str(database))
+    with db.connect(database) as connection:
+        db.run_migrations(connection)
+        ensure_autoprep_schema(connection)
+        older_role_id = _interested_role(connection, title="Older Engineer")
+        newer_role_id = _interested_role(
+            connection,
+            company="Beta",
+            title="Newer Engineer",
+        )
+        enqueue_autoprep_jobs(
+            connection,
+            [older_role_id, newer_role_id],
+            idempotency_key="newest-first",
+        )
+        connection.execute(
+            "UPDATE autoprep_jobs SET queued_at = ? WHERE role_id = ?",
+            ("2026-10-01 10:00:00", older_role_id),
+        )
+        connection.execute(
+            "UPDATE autoprep_jobs SET queued_at = ? WHERE role_id = ?",
+            ("2026-10-02 10:00:00", newer_role_id),
+        )
+        connection.commit()
+
+    jobs = web_server.build_prepped_roles_payload()["jobs"]
+
+    assert [job["role_id"] for job in jobs] == [newer_role_id, older_role_id]
+
+
 def test_role_and_autoprep_enqueue_can_share_one_atomic_transaction(tmp_path: Path) -> None:
     database = tmp_path / "autoprep-atomic-role.sqlite3"
     with db.connect(database) as connection:
