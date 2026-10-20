@@ -816,7 +816,7 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
             app_javascript
         )
         assert '<div id="root"></div>' not in index_markup
-        assert '<script type="module" src="/assets/app.js?v=vanilla-20260917-42"></script>' in (
+        assert '<script type="module" src="/assets/app.js?v=vanilla-20260917-43"></script>' in (
             index_markup
         )
 
@@ -905,6 +905,18 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-status-bar"' in markup
         assert 'id="scan-status-text"' in markup
         assert markup.index('id="scan-summary"') < markup.index('id="scan-status-text"')
+        assert "scanStatusBar.hidden = !scanning;" in app_javascript
+        scan_dot_rule = app_styles[
+            app_styles.index(".scan-status-dot {") : app_styles.index(
+                ".scan-status-bar.scanning .scan-status-dot {"
+            )
+        ]
+        scanning_dot_rule = app_styles[
+            app_styles.index(".scan-status-bar.scanning .scan-status-dot {") :
+            app_styles.index(".scan-status-last {")
+        ]
+        assert "animation:" not in scan_dot_rule
+        assert "animation: scan-spin 760ms linear infinite;" in scanning_dot_rule
         assert 'window.confirm("Cancel the running scan?")' not in app_javascript
         assert 'id="settings-open"' in markup
         assert 'aria-label="open settings"' in markup
@@ -959,8 +971,8 @@ def test_index_serves_single_state_aware_status_toggle() -> None:
         assert 'id="scan-errors"' not in markup
         assert 'id="status-tabs"' not in markup
         assert 'class="status-tabs"' not in markup
-        assert "/assets/app.css?v=vanilla-20260915-34" in index_markup
-        assert "/assets/app.js?v=vanilla-20260917-42" in index_markup
+        assert "/assets/app.css?v=vanilla-20260915-35" in index_markup
+        assert "/assets/app.js?v=vanilla-20260917-43" in index_markup
         assert 'data-applied-search-input' in app_javascript
         assert 'data-applied-search-clear' in app_javascript
         assert 'data-applied-search-summary' in app_javascript

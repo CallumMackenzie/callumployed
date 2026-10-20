@@ -1133,9 +1133,13 @@ function renderScanStatus(payload) {
       : "cancel scan"
     : "scan roles";
   scanAllButton.classList.toggle("danger", scanning && !cancelRequested);
-  scanStatusBar.hidden = !scanning && !errorText && failures.length === 0;
+  scanStatusBar.hidden = !scanning;
   scanStatusBar.classList.toggle("scanning", scanning);
-  scanStatusBar.classList.toggle("scan-error", (!scanning && Boolean(errorText)) || failures.length > 0);
+  scanStatusBar.classList.remove("scan-error");
+  scanStatusBar.setAttribute(
+    "aria-label",
+    cancelRequested ? "scan cancellation in progress" : "scan in progress",
+  );
 
   if (cancelRequested) {
     scanStatusText.textContent = "cancelling scan...";
@@ -2395,6 +2399,7 @@ async function loadScanStatus() {
   if (response.status === 404) {
     scanAllButton.disabled = true;
     scanStatusBar.hidden = true;
+    scanStatusBar.classList.remove("scanning");
     scanStatusBar.classList.add("scan-error");
     scanStatusText.textContent = "restart server to enable scanning";
     return;
@@ -2419,6 +2424,7 @@ async function startScanAll() {
       scanAllButton.disabled = true;
       scanAllButton.textContent = "scan roles";
       scanStatusBar.hidden = true;
+      scanStatusBar.classList.remove("scanning");
       scanStatusBar.classList.add("scan-error");
       scanStatusText.textContent = "restart server to enable scanning";
       return;
@@ -2430,6 +2436,7 @@ async function startScanAll() {
     scanAllButton.disabled = false;
     scanAllButton.textContent = "scan roles";
     scanStatusBar.hidden = true;
+    scanStatusBar.classList.remove("scanning");
     scanStatusBar.classList.add("scan-error");
     scanStatusText.textContent = "could not start scan";
   }
@@ -2444,6 +2451,7 @@ async function cancelScanAll() {
       scanAllButton.disabled = true;
       scanAllButton.textContent = "scan roles";
       scanStatusBar.hidden = true;
+      scanStatusBar.classList.remove("scanning");
       scanStatusBar.classList.add("scan-error");
       scanStatusText.textContent = "restart server to enable scanning";
       return;
@@ -2454,7 +2462,8 @@ async function cancelScanAll() {
   } catch {
     scanAllButton.disabled = false;
     scanAllButton.textContent = "cancel scan";
-    scanStatusBar.hidden = false;
+    scanStatusBar.hidden = true;
+    scanStatusBar.classList.remove("scanning");
     scanStatusBar.classList.add("scan-error");
     scanStatusText.textContent = "could not cancel scan";
   }
@@ -5827,5 +5836,7 @@ loadScanStatus()
     startScanStatusPolling();
   })
   .catch(() => {
+    scanStatusBar.hidden = true;
+    scanStatusBar.classList.remove("scanning");
     scanStatusText.textContent = "could not load scan status";
   });

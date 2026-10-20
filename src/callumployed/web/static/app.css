@@ -971,11 +971,11 @@ h1 {
   border-top-color: var(--green);
   background: transparent;
   box-shadow: none;
-  animation: scan-spin 760ms linear infinite;
 }
 
 .scan-status-bar.scanning .scan-status-dot {
   border-top-color: var(--green-bright);
+  animation: scan-spin 760ms linear infinite;
 }
 
 .scan-status-last {
